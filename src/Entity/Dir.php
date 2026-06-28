@@ -9,6 +9,7 @@ use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity(repositoryClass: DirRepository::class)]
+#[ORM\UniqueConstraint(name: 'unique_user_dir_name', columns: ['user_id', 'name'])]
 class Dir
 {
     #[ORM\Id]
@@ -17,7 +18,7 @@ class Dir
     private ?int $id = null;
 
     #[ORM\Column(length: 255)]
-    private ?string $name = null;
+    private string $name;
 
     #[ORM\ManyToOne(inversedBy: 'dirs')]
     #[ORM\JoinColumn(nullable: false)]
@@ -42,7 +43,7 @@ class Dir
         return $this->id;
     }
 
-    public function getName(): ?string
+    public function getName(): string
     {
         return $this->name;
     }

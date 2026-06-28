@@ -16,21 +16,21 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
     {
         parent::setUp();
 
-        // Récupérer le mock service AVANT toute requête
+        // Disable kernel reboot between requests so the container (and mock instance) is stable
+        $this->client->disableReboot();
+
         $this->mockOllamaService = static::getContainer()->get(OllamaServiceInterface::class);
 
-        // Vérifier que c'est bien le mock
         $this->assertInstanceOf(MockOllamaService::class, $this->mockOllamaService,
             'OllamaServiceInterface should be mocked with MockOllamaService');
 
-        // Reset le mock avant chaque test
-        MockOllamaService::reset();
+        $this->mockOllamaService->reset();
     }
 
     protected function tearDown(): void
     {
         // Reset le mock après chaque test
-        MockOllamaService::reset();
+        $this->mockOllamaService->reset();
 
         parent::tearDown();
     }
@@ -46,10 +46,11 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Ollama Test File');
-        $path = $this->filePathGenerator->generate('Ollama Test File');
-        $file->setPath($path);
+        $filename = $this->filePathGenerator->generate('Ollama Test File');
+        $file->setPath($filename);
         $initialContent = 'Initial content. ';
-        file_put_contents($path, $initialContent);
+        $absolutePath = $this->resolveFilePath($filename);
+        file_put_contents($absolutePath, $initialContent);
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -67,7 +68,7 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $this->assertArrayHasKey('snippet', $data);
         $this->assertEquals($generatedText, $data['snippet']);
 
-        $updatedContent = file_get_contents($path);
+        $updatedContent = file_get_contents($absolutePath);
         $this->assertEquals($initialContent . $generatedText, $updatedContent);
     }
 
@@ -96,9 +97,9 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $foreignFile = new File();
         $foreignFile->setUser($user2);
         $foreignFile->setName('OtherUserFile.md');
-        $path = $this->filePathGenerator->generate('OtherUserFile.md');
-        $foreignFile->setPath($path);
-        file_put_contents($path, 'some content');
+        $filename = $this->filePathGenerator->generate('OtherUserFile.md');
+        $foreignFile->setPath($filename);
+        file_put_contents($this->resolveFilePath($filename), 'some content');
 
         $this->entityManager->persist($foreignFile);
         $this->entityManager->flush();
@@ -139,5 +140,75 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
 
         $data = json_decode($this->client->getResponse()->getContent(), true);
         $this->assertEquals($mockModels, $data);
+    }
+
+    public function test_06_list_models_exception(): void
+    {
+        $this->mockOllamaService->setShouldThrowOnGetModels(true);
+
+        $this->client->request('GET', '/api/ollama/models');
+
+        $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
+        $data = json_decode($this->client->getResponse()->getContent(), true);
+        $this->assertArrayHasKey('message', $data);
+    }
+
+    public function test_07_generate_invalid_inputs(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $file = new File();
+        $file->setUser($user);
+        $file->setName('Validation File');
+        $filename = $this->filePathGenerator->generate('Validation File');
+        $file->setPath($filename);
+        file_put_contents($this->resolveFilePath($filename), '');
+        $this->entityManager->persist($file);
+        $this->entityManager->flush();
+
+        $id = $file->getId();
+
+        // Model name too long → 422
+        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+            'id' => $id,
+            'model' => str_repeat('m', 256),
+            'prompt' => 'Valid prompt',
+        ]);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Prompt too long → 422
+        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+            'id' => $id,
+            'model' => 'valid-model',
+            'prompt' => str_repeat('p', 10001),
+        ]);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function test_08_generate_path_escapes_storage_root(): void
+    {
+        $this->mockOllamaService->setReturnedText('should not reach here');
+
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $file = new File();
+        $file->setUser($user);
+        $file->setName('Tampered Ollama File');
+        $file->setPath('/tmp/ollama-escape.txt');
+
+        $this->entityManager->persist($file);
+        $this->entityManager->flush();
+
+        $this->client->catchExceptions(true);
+        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+            'id' => $file->getId(),
+            'model' => 'test-model',
+            'prompt' => 'Write a story',
+        ]);
+
+        $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
+        $this->assertFileDoesNotExist('/tmp/ollama-escape.txt');
     }
 }

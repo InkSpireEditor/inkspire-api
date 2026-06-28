@@ -17,10 +17,11 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Update Test File');
-        $originalPath = $this->filePathGenerator->generate('Update Test File');
-        $file->setPath($originalPath);
-        touch($originalPath);
-        $this->assertFileExists($originalPath);
+        $originalFilename = $this->filePathGenerator->generate('Update Test File');
+        $file->setPath($originalFilename);
+        $originalAbsPath = $this->resolveFilePath($originalFilename);
+        touch($originalAbsPath);
+        $this->assertFileExists($originalAbsPath);
         $this->entityManager->persist($file);
         $this->entityManager->flush();
 
@@ -40,11 +41,9 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $updatedFile = $fileRepository->find($fileId);
         $this->assertNotNull($updatedFile);
         $this->assertEquals('Updated File Name', $updatedFile->getName());
-        $expectedNewPath = $this->filePathGenerator->generate('Updated File Name');
-        $this->assertEquals($expectedNewPath, $updatedFile->getPath());
-        $this->assertFileDoesNotExist($originalPath);
-        $this->assertFileExists($expectedNewPath);
-        $this->assertEquals(preg_match("/^[a-z]+(-[a-z]+)*(-[0-9]+)?\\.ink$/i", basename($updatedFile->getPath())), 1);
+        $this->assertMatchesRegularExpression('/updated-file-name-[0-9a-f]{12}\.ink$/', $updatedFile->getPath());
+        $this->assertFileDoesNotExist($originalAbsPath);
+        $this->assertFileExists($this->resolveFilePath($updatedFile->getPath()));
         $this->assertNull($updatedFile->getDir());
         $this->assertEquals($this->email, $updatedFile->getUser()->getEmail());
     }
@@ -62,10 +61,11 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Move Test File');
-        $path = $this->filePathGenerator->generate('Move Test File');
-        $file->setPath($path);
-        touch($path);
-        $this->assertFileExists($path);
+        $filename = $this->filePathGenerator->generate('Move Test File');
+        $file->setPath($filename);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath);
+        $this->assertFileExists($absolutePath);
         $this->entityManager->persist($file);
         $this->entityManager->flush();
 
@@ -86,8 +86,8 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $movedFile = $fileRepository->find($fileId);
         $this->assertNotNull($movedFile);
         $this->assertEquals('Move Test File', $movedFile->getName());
-        $this->assertEquals($path, $movedFile->getPath());
-        $this->assertFileExists($path);
+        $this->assertEquals($filename, $movedFile->getPath());
+        $this->assertFileExists($absolutePath);
         $this->assertNotNull($movedFile->getDir());
         $this->assertEquals($dirId, $movedFile->getDir()->getId());
         $this->assertEquals($this->email, $movedFile->getUser()->getEmail());
@@ -105,8 +105,8 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $movedFile = $fileRepository->find($fileId);
         $this->assertNotNull($movedFile);
         $this->assertEquals('Move Test File', $movedFile->getName());
-        $this->assertEquals($path, $movedFile->getPath());
-        $this->assertFileExists($path);
+        $this->assertEquals($filename, $movedFile->getPath());
+        $this->assertFileExists($absolutePath);
         $this->assertNull($movedFile->getDir());
         $this->assertEquals($this->email, $movedFile->getUser()->getEmail());
     }
@@ -119,19 +119,21 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Original Name');
-        $originalPath = $this->filePathGenerator->generate('Original Name');
-        $file->setPath($originalPath);
-        touch($originalPath);
-        $this->assertFileExists($originalPath);
+        $originalFilename = $this->filePathGenerator->generate('Original Name');
+        $file->setPath($originalFilename);
+        $originalAbsPath = $this->resolveFilePath($originalFilename);
+        touch($originalAbsPath);
+        $this->assertFileExists($originalAbsPath);
         $this->entityManager->persist($file);
 
         $otherFile = new File();
         $otherFile->setUser($user);
         $otherFile->setName('Existing Name');
-        $existingPath = $this->filePathGenerator->generate('Existing Name');
-        $otherFile->setPath($existingPath);
-        touch($existingPath);
-        $this->assertFileExists($existingPath);
+        $existingFilename = $this->filePathGenerator->generate('Existing Name');
+        $otherFile->setPath($existingFilename);
+        $existingAbsPath = $this->resolveFilePath($existingFilename);
+        touch($existingAbsPath);
+        $this->assertFileExists($existingAbsPath);
         $this->entityManager->persist($otherFile);
         $this->entityManager->flush();
 
@@ -149,9 +151,9 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $unchangedFile = $fileRepository->find($fileId);
         $this->assertNotNull($unchangedFile);
         $this->assertEquals('Original Name', $unchangedFile->getName());
-        $this->assertEquals($originalPath, $unchangedFile->getPath());
-        $this->assertFileExists($originalPath);
-        $this->assertFileExists($existingPath);
+        $this->assertEquals($originalFilename, $unchangedFile->getPath());
+        $this->assertFileExists($originalAbsPath);
+        $this->assertFileExists($existingAbsPath);
         $this->assertNull($unchangedFile->getDir());
         $this->assertEquals($this->email, $unchangedFile->getUser()->getEmail());
     }
@@ -164,10 +166,11 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Test File');
-        $path = $this->filePathGenerator->generate('Test File');
-        $file->setPath($path);
-        touch($path);
-        $this->assertFileExists($path);
+        $filename = $this->filePathGenerator->generate('Test File');
+        $file->setPath($filename);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath);
+        $this->assertFileExists($absolutePath);
         $this->entityManager->persist($file);
         $this->entityManager->flush();
 
@@ -185,8 +188,8 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $unchangedFile = $fileRepository->find($fileId);
         $this->assertNotNull($unchangedFile);
         $this->assertEquals('Test File', $unchangedFile->getName());
-        $this->assertEquals($path, $unchangedFile->getPath());
-        $this->assertFileExists($path);
+        $this->assertEquals($filename, $unchangedFile->getPath());
+        $this->assertFileExists($absolutePath);
         $this->assertNull($unchangedFile->getDir());
         $this->assertEquals($this->email, $unchangedFile->getUser()->getEmail());
     }
@@ -203,10 +206,11 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $user2File = new File();
         $user2File->setUser($user2);
         $user2File->setName('User2 File');
-        $path = $this->filePathGenerator->generate('User2 File');
-        $user2File->setPath($path);
-        touch($path);
-        $this->assertFileExists($path);
+        $filename = $this->filePathGenerator->generate('User2 File');
+        $user2File->setPath($filename);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath);
+        $this->assertFileExists($absolutePath);
         $this->entityManager->persist($user2File);
         $this->entityManager->flush();
 
@@ -224,8 +228,8 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $unchangedFile = $fileRepository->find($fileId);
         $this->assertNotNull($unchangedFile);
         $this->assertEquals('User2 File', $unchangedFile->getName());
-        $this->assertEquals($path, $unchangedFile->getPath());
-        $this->assertFileExists($path);
+        $this->assertEquals($filename, $unchangedFile->getPath());
+        $this->assertFileExists($absolutePath);
         $this->assertNull($unchangedFile->getDir());
         $this->assertEquals('user2-for-update@example.com', $unchangedFile->getUser()->getEmail());
     }
@@ -364,7 +368,67 @@ class FilesControllerEditTest extends AuthenticatedWebTestCase
         $this->assertEquals($this->email, $unchangedDir->getUser()->getEmail());
     }
 
-    public function test_10_dirUpdateForbidden(): void
+    public function test_10_fileUpdateInvalidName(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $file = new File();
+        $file->setUser($user);
+        $file->setName('Validation Test File');
+        $file->setPath($this->filePathGenerator->generate('Validation Test File')); // filename only
+        $this->entityManager->persist($file);
+        $this->entityManager->flush();
+
+        $fileId = $file->getId();
+
+        // Empty name → 422
+        $this->client->jsonRequest('PUT', '/api/file/' . $fileId, ['name' => '']);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Name too long → 422
+        $this->client->jsonRequest('PUT', '/api/file/' . $fileId, ['name' => str_repeat('a', 256)]);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Verify file was not modified
+        $this->entityManager->clear();
+        $fileRepository = $this->entityManager->getRepository(File::class);
+        $this->assertEquals('Validation Test File', $fileRepository->find($fileId)->getName());
+    }
+
+    public function test_11_dirUpdateInvalidNameOrSummary(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $dir = new Dir();
+        $dir->setUser($user);
+        $dir->setName('Validation Test Dir');
+        $dir->setSummary('ok');
+        $this->entityManager->persist($dir);
+        $this->entityManager->flush();
+
+        $dirId = $dir->getId();
+
+        // Empty name → 422
+        $this->client->jsonRequest('PUT', '/api/dir/' . $dirId, ['name' => '']);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Summary too long → 422
+        $this->client->jsonRequest('PUT', '/api/dir/' . $dirId, [
+            'summary' => str_repeat('x', 2001),
+        ]);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Verify dir was not modified
+        $this->entityManager->clear();
+        $dirRepository = $this->entityManager->getRepository(Dir::class);
+        $unchanged = $dirRepository->find($dirId);
+        $this->assertEquals('Validation Test Dir', $unchanged->getName());
+        $this->assertEquals('ok', $unchanged->getSummary());
+    }
+
+    public function test_12_dirUpdateForbidden(): void
     {
         $userRepository = $this->entityManager->getRepository(User::class);
         $user1 = $userRepository->findOneBy(['email' => $this->email]);

@@ -43,6 +43,8 @@ class LoginControllerTest extends WebTestCase
             'password' => 'password',
         ]);
         $this->assertResponseStatusCodeSame(401);
+        $data = json_decode($this->client->getResponse()->getContent(), true);
+        $this->assertArrayHasKey('message', $data);
 
         // Denied - Can't login with invalid password.
         $this->client->jsonRequest('POST', '/auth', [
@@ -50,6 +52,8 @@ class LoginControllerTest extends WebTestCase
             'password' => 'bad-password',
         ]);
         $this->assertResponseStatusCodeSame(401);
+        $data = json_decode($this->client->getResponse()->getContent(), true);
+        $this->assertArrayHasKey('message', $data);
 
         // Success - Login with valid credentials is allowed.
         $this->client->jsonRequest('POST', '/auth', [

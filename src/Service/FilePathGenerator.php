@@ -4,15 +4,6 @@ namespace App\Service;
 
 class FilePathGenerator
 {
-    private string $projectRoot;
-    private string $basePathRelative;
-
-    public function __construct(string $projectRoot, string $basePathRelative = "var/files")
-    {
-        $this->projectRoot = $projectRoot;
-        $this->basePathRelative = $basePathRelative;
-    }
-
     public function generate(string $title, string $extension = 'ink'): string
     {
         // 1. Convert to lowercase.
@@ -33,14 +24,22 @@ class FilePathGenerator
 
         // 6. Ensure the filename is not empty (e.g., if input was just symbols).
         if (empty($filename)) {
-            return 'default-file.' . strtolower($extension);
+            $filename = 'default-file';
         }
 
-        // 7. Append the extension.
-        $filename .=  '.' . strtolower($extension);
+        // 7. Append a unique suffix so two files with the same title never share a path.
+        $filename .= '-' . substr(bin2hex(random_bytes(8)), 0, 12);
 
-        // Check that the form is correct.
-        assert(preg_match("/^[a-z]+(-[a-z]+)*(-[0-9]+)?\.ink$/i", $filename) === 1);
-        return $this->projectRoot . '/' . $this->basePathRelative . "/" . $filename;
+        // 8. Append the extension.
+        $filename .= '.' . strtolower($extension);
+
+        $ext = preg_quote(strtolower($extension), '/');
+        if (preg_match('/^[a-z0-9]+(-[a-z0-9]+)*\.' . $ext . '$/', $filename) !== 1) {
+            throw new \RuntimeException(
+                sprintf('FilePathGenerator produced an invalid filename: "%s"', $filename)
+            );
+        }
+
+        return $filename;
     }
 }

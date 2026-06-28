@@ -9,34 +9,40 @@ use App\Entity\User;
 use App\Entity\File;
 use App\Entity\Dir;
 use App\Service\FilePathGenerator;
+use App\Service\FileStorageServiceInterface;
 
 class AppFixtures extends Fixture
 {
-    private string $email = 'admin@admin.com';
-    private string $password = 'aaaaaa';
-
     public function __construct(
         private UserPasswordHasherInterface $passwordHasher,
         private FilePathGenerator $filePathGenerator,
+        private FileStorageServiceInterface $fileStorage,
     ) {
     }
 
     public function load(ObjectManager $manager): void
     {
-        // Ensure the base directory exists
-        $baseDir = dirname($this->filePathGenerator->generate('temp'));
-        if (!is_dir($baseDir)) {
-            mkdir($baseDir, 0777, true);
+        $email = $_ENV['FIXTURE_ADMIN_EMAIL'] ?? null;
+        if ($email === null) {
+            throw new \RuntimeException(
+                'FIXTURE_ADMIN_EMAIL is not set. Add it to .env.local before loading fixtures.'
+            );
+        }
+
+        $password = $_ENV['FIXTURE_ADMIN_PASSWORD'] ?? null;
+        if ($password === null) {
+            $password = bin2hex(random_bytes(8));
+            echo sprintf("Fixture admin credentials — email: %s  password: %s\n", $email, $password);
         }
 
         // --- User ---
         $userRepository = $manager->getRepository(User::class);
-        $user = $userRepository->findOneBy(['email' => $this->email]);
+        $user = $userRepository->findOneBy(['email' => $email]);
 
         if (!$user) {
             $user = new User();
-            $user->setEmail($this->email);
-            $user->setPassword($this->passwordHasher->hashPassword($user, $this->password));
+            $user->setEmail($email);
+            $user->setPassword($this->passwordHasher->hashPassword($user, $password));
             $manager->persist($user);
         }
 
@@ -53,31 +59,27 @@ class AppFixtures extends Fixture
         }
 
         // --- Files ---
+        // File paths include a unique suffix, so idempotency is handled at the name level.
         $fileRepository = $manager->getRepository(File::class);
-        $looseFileName = 'Loose File';
-        $looseFilePath = $this->filePathGenerator->generate($looseFileName);
-        $looseFile = $fileRepository->findOneBy(['path' => $looseFilePath, 'user' => $user]);
 
-        if (!$looseFile) {
+        if (!$fileRepository->findOneBy(['name' => 'Loose File', 'user' => $user])) {
             $looseFile = new File();
             $looseFile->setUser($user);
-            $looseFile->setName($looseFileName);
+            $looseFile->setName('Loose File');
+            $looseFilePath = $this->filePathGenerator->generate('Loose File');
             $looseFile->setPath($looseFilePath);
-            file_put_contents($looseFilePath, '# Loose File Content');
+            $this->fileStorage->write($looseFilePath, '# Loose File Content');
             $manager->persist($looseFile);
         }
 
-        $fileInDirName = 'File in Dir';
-        $fileInDirPath = $this->filePathGenerator->generate($fileInDirName);
-        $fileInDir = $fileRepository->findOneBy(['path' => $fileInDirPath, 'user' => $user]);
-
-        if (!$fileInDir) {
+        if (!$fileRepository->findOneBy(['name' => 'File in Dir', 'user' => $user])) {
             $fileInDir = new File();
             $fileInDir->setUser($user);
-            $fileInDir->setName($fileInDirName);
+            $fileInDir->setName('File in Dir');
+            $fileInDirPath = $this->filePathGenerator->generate('File in Dir');
             $fileInDir->setPath($fileInDirPath);
             $fileInDir->setDir($dir);
-            file_put_contents($fileInDirPath, '# File in Dir Content');
+            $this->fileStorage->write($fileInDirPath, '# File in Dir Content');
             $manager->persist($fileInDir);
         }
 

@@ -6,6 +6,7 @@ use App\Repository\FileRepository;
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity(repositoryClass: FileRepository::class)]
+#[ORM\UniqueConstraint(name: 'unique_user_file_name', columns: ['user_id', 'name'])]
 class File
 {
     #[ORM\Id]
@@ -14,10 +15,10 @@ class File
     private ?int $id = null;
 
     #[ORM\Column(length: 255)]
-    private ?string $name = null;
+    private string $name;
 
     #[ORM\Column(length: 255)]
-    private ?string $path = null;
+    private string $path;
 
     #[ORM\ManyToOne(inversedBy: 'files')]
     private ?Dir $dir = null;
@@ -30,7 +31,7 @@ class File
         return $this->id;
     }
 
-    public function getName(): ?string
+    public function getName(): string
     {
         return $this->name;
     }
@@ -42,7 +43,7 @@ class File
         return $this;
     }
 
-    public function getPath(): ?string
+    public function getPath(): string
     {
         return $this->path;
     }

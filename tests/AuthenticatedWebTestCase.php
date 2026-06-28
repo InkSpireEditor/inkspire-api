@@ -19,6 +19,18 @@ abstract class AuthenticatedWebTestCase extends WebTestCase
 
     protected ?string $token = null;
 
+    /**
+     * Resolves a stored filename (relative) to its absolute path in the test storage directory.
+     * Use this whenever a test needs to call file_put_contents(), touch(), assertFileExists(), etc.
+     */
+    protected function resolveFilePath(string $filename): string
+    {
+        $container = static::getContainer();
+        return $container->getParameter('kernel.project_dir')
+            . '/' . $container->getParameter('app.files_dir')
+            . '/' . $filename;
+    }
+
     protected function deauthenticateClient(): void
     {
         $this->client->setServerParameter('HTTP_Authorization', '');
@@ -89,8 +101,9 @@ abstract class AuthenticatedWebTestCase extends WebTestCase
         $filesDir = $projectRoot . '/' . $container->getParameter('app.files_dir');
         
         if (is_dir($filesDir)) {
-            $files = glob($filesDir . '/*.ink');
-            foreach ($files as $file) {
+            // Delete all files in the test storage directory, not just *.ink, so
+            // files with any extension created during a test are always cleaned up.
+            foreach (glob($filesDir . '/*') as $file) {
                 if (is_file($file)) {
                     unlink($file);
                 }

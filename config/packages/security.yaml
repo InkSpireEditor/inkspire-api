@@ -20,6 +20,9 @@ security:
                 check_path: /auth
                 success_handler: lexik_jwt_authentication.handler.authentication_success
                 failure_handler: lexik_jwt_authentication.handler.authentication_failure
+            login_throttling:
+                max_attempts: 5
+                interval: '1 minute'
         api:
             pattern: ^/api
             stateless: true
@@ -35,6 +38,9 @@ security:
 
 when@test:
     security:
+        firewalls:
+            login:
+                login_throttling: false
         password_hashers:
             # By default, password hashers are resource intensive and take time. This is
             # important to generate secure password hashes. In tests however, secure hashes

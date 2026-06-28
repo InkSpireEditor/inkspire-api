@@ -16,10 +16,10 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Test File');
-        $path = $this->filePathGenerator->generate('Test File');
-        $file->setPath($path);
+        $filename = $this->filePathGenerator->generate('Test File');
+        $file->setPath($filename);
         $fileContent = 'This is the content of the test file.';
-        file_put_contents($path, $fileContent);
+        file_put_contents($this->resolveFilePath($filename), $fileContent);
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -42,9 +42,9 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $foreignFile = new File();
         $foreignFile->setUser($user2);
         $foreignFile->setName('OtherUserFile.md');
-        $path = $this->filePathGenerator->generate('OtherUserFile.md');
-        $foreignFile->setPath($path);
-        file_put_contents($path, 'some content');
+        $filename = $this->filePathGenerator->generate('OtherUserFile.md');
+        $foreignFile->setPath($filename);
+        file_put_contents($this->resolveFilePath($filename), 'some content');
 
         $this->entityManager->persist($foreignFile);
         $this->entityManager->flush();
@@ -64,9 +64,9 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('UnauthorizedFile.md');
-        $path = $this->filePathGenerator->generate('UnauthorizedFile.md');
-        $file->setPath($path);
-        file_put_contents($path, 'some content');
+        $filename = $this->filePathGenerator->generate('UnauthorizedFile.md');
+        $file->setPath($filename);
+        file_put_contents($this->resolveFilePath($filename), 'some content');
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -85,10 +85,9 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('File not on disk');
-        $path = $this->filePathGenerator->generate('File not on disk');
-        $file->setPath($path);
+        $filename = $this->filePathGenerator->generate('File not on disk');
+        $file->setPath($filename);
         // We don't write the file to disk
-        // file_put_contents($path, 'some content');
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -96,7 +95,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $this->client->request('GET', '/api/file/' . $file->getId() . '/contents');
 
         $this->assertResponseStatusCodeSame(Response::HTTP_NOT_FOUND);
-        $this->assertFileDoesNotExist($path);
+        $this->assertFileDoesNotExist($this->resolveFilePath($filename));
     }
 
     public function test_05_update_file_contents_success(): void
@@ -107,10 +106,11 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('Test File to Update');
-        $path = $this->filePathGenerator->generate('Test File to Update');
-        $file->setPath($path);
+        $filename = $this->filePathGenerator->generate('Test File to Update');
+        $file->setPath($filename);
         $initialContent = 'This is the initial content.';
-        file_put_contents($path, $initialContent);
+        $absolutePath = $this->resolveFilePath($filename);
+        file_put_contents($absolutePath, $initialContent);
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -120,7 +120,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
 
         $this->assertResponseStatusCodeSame(Response::HTTP_NO_CONTENT);
 
-        $updatedContent = file_get_contents($path);
+        $updatedContent = file_get_contents($absolutePath);
         $this->assertEquals($newContent, $updatedContent);
     }
 
@@ -135,10 +135,11 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $foreignFile = new File();
         $foreignFile->setUser($user2);
         $foreignFile->setName('OtherUserFileUpdate.md');
-        $path = $this->filePathGenerator->generate('OtherUserFileUpdate.md');
-        $foreignFile->setPath($path);
+        $filename = $this->filePathGenerator->generate('OtherUserFileUpdate.md');
+        $foreignFile->setPath($filename);
         $content = 'some content';
-        file_put_contents($path, $content);
+        $absolutePath = $this->resolveFilePath($filename);
+        file_put_contents($absolutePath, $content);
 
         $this->entityManager->persist($foreignFile);
         $this->entityManager->flush();
@@ -149,7 +150,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
 
         // Expect 403 Forbidden
         $this->assertResponseStatusCodeSame(Response::HTTP_FORBIDDEN);
-        $updatedContent = file_get_contents($path);
+        $updatedContent = file_get_contents($absolutePath);
         $this->assertEquals($content, $updatedContent);
         $this->assertNotEquals($newContent, $updatedContent);
     }
@@ -162,10 +163,11 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('UnauthorizedFileUpdate.md');
-        $path = $this->filePathGenerator->generate('UnauthorizedFileUpdate.md');
-        $file->setPath($path);
+        $filename = $this->filePathGenerator->generate('UnauthorizedFileUpdate.md');
+        $file->setPath($filename);
         $content = 'some content';
-        file_put_contents($path, $content);
+        $absolutePath = $this->resolveFilePath($filename);
+        file_put_contents($absolutePath, $content);
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -175,7 +177,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], $newContent);
 
         $this->assertResponseStatusCodeSame(Response::HTTP_UNAUTHORIZED);
-        $updatedContent = file_get_contents($path);
+        $updatedContent = file_get_contents($absolutePath);
         $this->assertEquals($content, $updatedContent);
         $this->assertNotEquals($newContent, $updatedContent);
     }
@@ -188,10 +190,9 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('File not on disk update');
-        $path = $this->filePathGenerator->generate('File not on disk update');
-        $file->setPath($path);
+        $filename = $this->filePathGenerator->generate('File not on disk update');
+        $file->setPath($filename);
         // We don't write the file to disk
-        // file_put_contents($path, 'some content');
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -200,6 +201,45 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], $newContent);
 
         $this->assertResponseStatusCodeSame(Response::HTTP_NOT_FOUND);
-        $this->assertFileDoesNotExist($path);
+        $this->assertFileDoesNotExist($this->resolveFilePath($filename));
+    }
+
+    public function test_09_file_contents_path_escapes_storage_root(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $file = new File();
+        $file->setUser($user);
+        $file->setName('Tampered File');
+        $file->setPath('/etc/passwd');
+
+        $this->entityManager->persist($file);
+        $this->entityManager->flush();
+
+        $this->client->catchExceptions(true);
+        $this->client->request('GET', '/api/file/' . $file->getId() . '/contents');
+
+        $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+
+    public function test_10_update_file_contents_path_escapes_storage_root(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $file = new File();
+        $file->setUser($user);
+        $file->setName('Tampered File Write');
+        $file->setPath('/tmp/should-not-be-written.txt');
+
+        $this->entityManager->persist($file);
+        $this->entityManager->flush();
+
+        $this->client->catchExceptions(true);
+        $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], 'evil content');
+
+        $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
+        $this->assertFileDoesNotExist('/tmp/should-not-be-written.txt');
     }
 }

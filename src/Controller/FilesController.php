@@ -8,21 +8,27 @@ use App\Entity\File;
 use App\Repository\DirRepository;
 use App\Repository\FileRepository;
 use App\Service\FilePathGenerator;
+use App\Service\FileStorageServiceInterface;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
+use Symfony\Component\Security\Http\Attribute\IsGranted;
 
 /**
  * Controller for handling file and directory operations.
  */
+#[IsGranted('IS_AUTHENTICATED_FULLY')]
 #[Route('/api', name: 'app_api')]
 class FilesController extends AbstractController
 {
-    public function __construct(private readonly FilePathGenerator $filePathGenerator)
-    {
+    public function __construct(
+        private readonly FilePathGenerator $filePathGenerator,
+        private readonly FileStorageServiceInterface $fileStorage,
+    ) {
     }
 
     /**
@@ -33,15 +39,8 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/tree', name: 'tree', methods: ['GET'])]
-    public function tree(#[CurrentUser] ?User $user, Request $request): Response
+    public function getTree(#[CurrentUser] User $user, Request $request): Response
     {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json([
-                'message' => 'missing credentials',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Initialize an array to store file details.
         $resultFiles = [];
         // Get all files associated with the user.
@@ -84,15 +83,8 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/file/{id}', name: 'file_info', methods: ['GET'])]
-    public function file_info(#[CurrentUser] ?User $user, File $file): Response
+    public function fileInfo(#[CurrentUser] User $user, File $file): Response
     {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json([
-                'message' => 'missing credentials',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Check if the user has access to the file.
         if ($file->getUser() !== $user) {
             return $this->json([
@@ -115,15 +107,8 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/dir/{id}', name: 'dir_info', methods: ['GET'])]
-    public function dir_info(#[CurrentUser] ?User $user, Dir $dir): Response
+    public function dirInfo(#[CurrentUser] User $user, Dir $dir): Response
     {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json([
-                'message' => 'missing credentials',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Check if the user has access to the directory.
         if ($dir->getUser() !== $user) {
             return $this->json([
@@ -159,21 +144,19 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/file', name: 'file_create', methods: ['POST'])]
-    public function file_create(
-        #[CurrentUser] ?User $user,
+    public function createFile(
+        #[CurrentUser] User $user,
         Request $request,
         FileRepository $fileRepository,
         DirRepository $dirRepository,
         EntityManagerInterface $entityManager
     ): Response {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json(['message' => 'missing credentials'], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Decode the request content.
         $data = json_decode($request->getContent(), true);
-        $name = $data['name'] ?? 'new file';
+        $name = trim($data['name'] ?? '');
+        if ($name === '' || mb_strlen($name) > 255) {
+            return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
         $dir = null;
         if (array_key_exists('dir', $data) and $data['dir'] !== null) {
             $dir = $dirRepository->findOneBy(['user' => $user, 'id' => $data['dir']]);
@@ -199,10 +182,15 @@ class FilesController extends AbstractController
             $file->setDir($dir);
         }
 
-        file_put_contents($path, '');
-
         $entityManager->persist($file);
-        $entityManager->flush();
+
+        try {
+            $entityManager->flush();
+        } catch (UniqueConstraintViolationException) {
+            return $this->json(['message' => 'File name already exists'], Response::HTTP_CONFLICT);
+        }
+
+        $this->fileStorage->create($path);
 
         // Return the new file's information.
         return $this->json([
@@ -222,21 +210,22 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/dir', name: 'dir_create', methods: ['POST'])]
-    public function dir_create(
-        #[CurrentUser] ?User $user,
+    public function createDir(
+        #[CurrentUser] User $user,
         Request $request,
         DirRepository $dirRepository,
         EntityManagerInterface $entityManager
     ): Response {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json(['message' => 'missing credentials'], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Decode the request content.
         $data = json_decode($request->getContent(), true);
-        $name = $data['name'] ?? 'new directory';
+        $name = trim($data['name'] ?? '');
+        if ($name === '' || mb_strlen($name) > 255) {
+            return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
         $summary = $data['summary'] ?? null;
+        if ($summary !== null && mb_strlen((string) $summary) > 2000) {
+            return $this->json(['message' => 'Summary too long (max 2000 characters)'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
 
         // Ensure the directory name is unique.
         $originalName = $name;
@@ -252,7 +241,12 @@ class FilesController extends AbstractController
         $dir->setSummary($summary);
 
         $entityManager->persist($dir);
-        $entityManager->flush();
+
+        try {
+            $entityManager->flush();
+        } catch (UniqueConstraintViolationException) {
+            return $this->json(['message' => 'Directory name already exists'], Response::HTTP_CONFLICT);
+        }
 
         // Return the new directory's information.
         return $this->json([
@@ -274,19 +268,14 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/file/{id}', name: 'file_update', methods: ['PUT'])]
-    public function file_update(
-        #[CurrentUser] ?User $user,
+    public function updateFile(
+        #[CurrentUser] User $user,
         Request $request,
         File $file,
         FileRepository $fileRepository,
         DirRepository $dirRepository,
         EntityManagerInterface $entityManager
     ): Response {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json(['message' => 'missing credentials'], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Check if the user has access to the file.
         if ($file->getUser() !== $user) {
             return $this->json([
@@ -298,21 +287,22 @@ class FilesController extends AbstractController
         $data = json_decode($request->getContent(), true);
 
         // Update file properties if provided in the request.
-        if (array_key_exists('name', $data) && $data['name'] !== $file->getName()) {
-            $existingFile = $fileRepository->findOneBy(['user' => $user, 'name' => $data['name']]);
-            if ($existingFile) {
-                return $this->json(['message' => 'File name already exists'], Response::HTTP_CONFLICT);
+        if (array_key_exists('name', $data)) {
+            $newName = trim((string) ($data['name'] ?? ''));
+            if ($newName === '' || mb_strlen($newName) > 255) {
+                return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
             }
-            $oldPath = $file->getPath();
-            $newName = $data['name'];
-            $newPath = $this->filePathGenerator->generate($newName);
+            if ($newName !== $file->getName()) {
+                $existingFile = $fileRepository->findOneBy(['user' => $user, 'name' => $newName]);
+                if ($existingFile) {
+                    return $this->json(['message' => 'File name already exists'], Response::HTTP_CONFLICT);
+                }
+                $oldPath = $file->getPath();
+                $newPath = $this->filePathGenerator->generate($newName);
 
-            if (file_exists($oldPath)) {
-                rename($oldPath, $newPath);
+                $file->setName($newName);
+                $file->setPath($newPath);
             }
-
-            $file->setName($newName);
-            $file->setPath($newPath);
         }
         if (array_key_exists('dir', $data)) {
             $dir = null;
@@ -326,6 +316,10 @@ class FilesController extends AbstractController
         }
 
         $entityManager->flush();
+
+        if (isset($oldPath, $newPath)) {
+            $this->fileStorage->rename($oldPath, $newPath);
+        }
 
         // Return the updated file's information.
         return $this->json([
@@ -346,18 +340,13 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/dir/{id}', name: 'dir_update', methods: ['PUT'])]
-    public function dir_update(
-        #[CurrentUser] ?User $user,
+    public function updateDir(
+        #[CurrentUser] User $user,
         Request $request,
         Dir $dir,
         DirRepository $dirRepository,
         EntityManagerInterface $entityManager
     ): Response {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json(['message' => 'missing credentials'], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Check if the user has access to the directory.
         if ($dir->getUser() !== $user) {
             return $this->json([
@@ -369,15 +358,25 @@ class FilesController extends AbstractController
         $data = json_decode($request->getContent(), true);
 
         // Update directory properties if provided in the request.
-        if (array_key_exists('name', $data) && $data['name'] !== $dir->getName()) {
-            $existingDir = $dirRepository->findOneBy(['user' => $user, 'name' => $data['name']]);
-            if ($existingDir) {
-                return $this->json(['message' => 'Directory name already exists'], Response::HTTP_CONFLICT);
+        if (array_key_exists('name', $data)) {
+            $newName = trim((string) ($data['name'] ?? ''));
+            if ($newName === '' || mb_strlen($newName) > 255) {
+                return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
             }
-            $dir->setName($data['name']);
+            if ($newName !== $dir->getName()) {
+                $existingDir = $dirRepository->findOneBy(['user' => $user, 'name' => $newName]);
+                if ($existingDir) {
+                    return $this->json(['message' => 'Directory name already exists'], Response::HTTP_CONFLICT);
+                }
+                $dir->setName($newName);
+            }
         }
         if (array_key_exists('summary', $data)) {
-            $dir->setSummary($data['summary']);
+            $summary = $data['summary'];
+            if ($summary !== null && mb_strlen((string) $summary) > 2000) {
+                return $this->json(['message' => 'Summary too long (max 2000 characters)'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+            $dir->setSummary($summary);
         }
 
         $entityManager->flush();
@@ -399,16 +398,11 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/file/{id}', name: 'file_delete', methods: ['DELETE'])]
-    public function file_delete(
-        #[CurrentUser] ?User $user,
+    public function deleteFile(
+        #[CurrentUser] User $user,
         File $file,
         EntityManagerInterface $entityManager
     ): Response {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json(['message' => 'missing credentials'], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Check if the user has access to the file.
         if ($file->getUser() !== $user) {
             return $this->json([
@@ -416,13 +410,10 @@ class FilesController extends AbstractController
             ], Response::HTTP_FORBIDDEN);
         }
 
-        // Delete the file from disk
-        if (file_exists($file->getPath())) {
-            unlink($file->getPath());
-        }
-
         $entityManager->remove($file);
         $entityManager->flush();
+
+        $this->fileStorage->delete($file->getPath());
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
     }
@@ -436,16 +427,11 @@ class FilesController extends AbstractController
      * @return Response The JSON response.
      */
     #[Route('/dir/{id}', name: 'dir_delete', methods: ['DELETE'])]
-    public function dir_delete(
-        #[CurrentUser] ?User $user,
+    public function deleteDir(
+        #[CurrentUser] User $user,
         Dir $dir,
         EntityManagerInterface $entityManager
     ): Response {
-        // Check if the user is authenticated.
-        if (null === $user) {
-            return $this->json(['message' => 'missing credentials'], Response::HTTP_UNAUTHORIZED);
-        }
-
         // Check if the user has access to the directory.
         if ($dir->getUser() !== $user) {
             return $this->json([
@@ -453,21 +439,19 @@ class FilesController extends AbstractController
             ], Response::HTTP_FORBIDDEN);
         }
 
-        // Delete all files within the directory, both from the filesystem and the database.
+        $pathsToDelete = [];
         foreach ($dir->getFiles() as $file) {
-            // Delete the physical file if it exists
-            if ($file->getPath() && file_exists($file->getPath())) {
-                unlink($file->getPath());
-            }
-            // Remove the file entity from the entity manager
+            $pathsToDelete[] = $file->getPath();
             $entityManager->remove($file);
         }
 
-        // Now, remove the directory entity itself
         $entityManager->remove($dir);
-        
-        // Flush all changes (file deletions and directory deletion) to the database
         $entityManager->flush();
+
+        // Physical deletion happens after the DB commit — if flush threw, we never reach this.
+        foreach ($pathsToDelete as $path) {
+            $this->fileStorage->delete($path);
+        }
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
     }

@@ -19,10 +19,11 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('ToDelete.md');
-        $path = $this->filePathGenerator->generate('ToDelete.md');
-        $file->setPath($path);
-        touch($path);
-        $this->assertFileExists($path);
+        $filename = $this->filePathGenerator->generate('ToDelete.md');
+        $file->setPath($filename);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath);
+        $this->assertFileExists($absolutePath);
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -38,7 +39,7 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $this->assertNull($deleted);
 
         // Verify the file no longer exists on disk
-        $this->assertFileDoesNotExist($path);
+        $this->assertFileDoesNotExist($absolutePath);
     }
 
     public function test_02_deleteFile_forbidden(): void
@@ -52,10 +53,11 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $foreignFile = new File();
         $foreignFile->setUser($user2);
         $foreignFile->setName('OtherUserFile.md');
-        $path = $this->filePathGenerator->generate('OtherUserFile.md');
-        $foreignFile->setPath($path);
-        touch($path);
-        $this->assertFileExists($path);
+        $filename = $this->filePathGenerator->generate('OtherUserFile.md');
+        $foreignFile->setPath($filename);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath);
+        $this->assertFileExists($absolutePath);
 
         $this->entityManager->persist($foreignFile);
         $this->entityManager->flush();
@@ -71,7 +73,7 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $this->assertNotNull($stillExists);
 
         // Verify the file still exists on disk
-        $this->assertFileExists($path);
+        $this->assertFileExists($absolutePath);
     }
 
     public function test_03_deleteFile_unauthorized(): void
@@ -84,10 +86,11 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $file = new File();
         $file->setUser($user);
         $file->setName('UnauthorizedDelete.md');
-        $path = $this->filePathGenerator->generate('UnauthorizedDelete.md');
-        $file->setPath($path);
-        touch($path);
-        $this->assertFileExists($path);
+        $filename = $this->filePathGenerator->generate('UnauthorizedDelete.md');
+        $file->setPath($filename);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath);
+        $this->assertFileExists($absolutePath);
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
@@ -100,7 +103,7 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $this->assertResponseStatusCodeSame(Response::HTTP_UNAUTHORIZED);
 
         // Verify the file still exists on disk
-        $this->assertFileExists($path);
+        $this->assertFileExists($absolutePath);
     }
 
     public function test_04_deleteDir_with_nested_files_success(): void
@@ -118,13 +121,14 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $fileInDir = new File();
         $fileInDir->setUser($user);
         $fileInDir->setName('NestedFileToDelete.md');
-        $filePath = $this->filePathGenerator->generate('NestedFileToDelete.md');
-        $fileInDir->setPath($filePath);
+        $filename = $this->filePathGenerator->generate('NestedFileToDelete.md');
+        $fileInDir->setPath($filename);
         $fileInDir->setDir($dir);
-        touch($filePath); // Create physical file
-        $this->assertFileExists($filePath);
+        $absolutePath = $this->resolveFilePath($filename);
+        touch($absolutePath); // Create physical file
+        $this->assertFileExists($absolutePath);
         $this->entityManager->persist($fileInDir);
-        
+
         $this->entityManager->flush();
 
         // Store IDs for later verification
@@ -146,7 +150,7 @@ class FilesControllerDeleteTest extends AuthenticatedWebTestCase
         $this->assertNull($deletedFile);
 
         // Verify the physical file no longer exists on disk
-        $this->assertFileDoesNotExist($filePath);
+        $this->assertFileDoesNotExist($absolutePath);
     }
 
     public function test_05_deleteDir_forbidden(): void

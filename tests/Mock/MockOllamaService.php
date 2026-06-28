@@ -6,36 +6,43 @@ use App\Service\OllamaServiceInterface;
 
 class MockOllamaService implements OllamaServiceInterface
 {
-    // Variables STATIQUES partagées entre TOUTES les instances
-    private static string $returnedText = '';
-    private static array $availableModels = [];
+    private string $returnedText = '';
+    private array $availableModels = [];
+    private bool $throwOnGetModels = false;
 
     public function setReturnedText(string $text): void
     {
-        self::$returnedText = $text;
+        $this->returnedText = $text;
     }
 
     public function setAvailableModels(array $models): void
     {
-        self::$availableModels = $models;
+        $this->availableModels = $models;
+    }
+
+    public function setShouldThrowOnGetModels(bool $throw): void
+    {
+        $this->throwOnGetModels = $throw;
     }
 
     public function generateText(string $model, string $prompt): string
     {
-        return self::$returnedText;
+        return $this->returnedText;
     }
 
     public function getAvailableModels(): array
     {
-        return self::$availableModels;
+        if ($this->throwOnGetModels) {
+            throw new \RuntimeException('Ollama service unreachable');
+        }
+
+        return $this->availableModels;
     }
 
-    /**
-     * Reset static state between tests
-     */
-    public static function reset(): void
+    public function reset(): void
     {
-        self::$returnedText = '';
-        self::$availableModels = [];
+        $this->returnedText = '';
+        $this->availableModels = [];
+        $this->throwOnGetModels = false;
     }
 }

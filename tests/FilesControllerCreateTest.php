@@ -53,10 +53,8 @@ class FilesControllerCreateTest extends AuthenticatedWebTestCase
         $file = $fileRepository->find($fileId);
         $this->assertNotNull($file);
         $this->assertEquals('My Test File', $file->getName());
-        $expectedPath = $this->filePathGenerator->generate('My Test File');
-        $this->assertEquals($expectedPath, $file->getPath());
-        $this->assertFileExists($expectedPath);
-        $this->assertEquals(preg_match("/^[a-z]+(-[a-z]+)*(-[0-9]+)?\.ink$/i", basename($file->getPath())), 1);
+        $this->assertMatchesRegularExpression('/my-test-file-[0-9a-f]{12}\.ink$/', $file->getPath());
+        $this->assertFileExists($this->resolveFilePath($file->getPath()));
         $this->assertNull($file->getDir());
         $this->assertEquals($this->email, $file->getUser()->getEmail());
 
@@ -81,10 +79,8 @@ class FilesControllerCreateTest extends AuthenticatedWebTestCase
         $fileWithDir = $fileRepository->find($fileWithDirId);
         $this->assertNotNull($fileWithDir);
         $this->assertEquals('My Other Test File', $fileWithDir->getName());
-        $expectedPath = $this->filePathGenerator->generate('My Other Test File');
-        $this->assertEquals($expectedPath, $fileWithDir->getPath());
-        $this->assertFileExists($expectedPath);
-        $this->assertEquals(preg_match("/^[a-z]+(-[a-z]+)*(-[0-9]+)?\.ink$/i", basename($fileWithDir->getPath())), 1);
+        $this->assertMatchesRegularExpression('/my-other-test-file-[0-9a-f]{12}\.ink$/', $fileWithDir->getPath());
+        $this->assertFileExists($this->resolveFilePath($fileWithDir->getPath()));
         $this->assertNotNull($fileWithDir->getDir());
         $this->assertEquals($dirId, $fileWithDir->getDir()->getId());
         $this->assertEquals($this->email, $fileWithDir->getUser()->getEmail());
@@ -98,9 +94,9 @@ class FilesControllerCreateTest extends AuthenticatedWebTestCase
         $file1 = new File();
         $file1->setUser($user);
         $file1->setName('Duplicate Name');
-        $path1 = $this->filePathGenerator->generate('Duplicate Name');
-        $file1->setPath($path1);
-        file_put_contents($path1, '');
+        $filename1 = $this->filePathGenerator->generate('Duplicate Name');
+        $file1->setPath($filename1);
+        file_put_contents($this->resolveFilePath($filename1), '');
         $this->entityManager->persist($file1);
 
         $dir1 = new Dir();
@@ -124,10 +120,8 @@ class FilesControllerCreateTest extends AuthenticatedWebTestCase
         $createdFile = $fileRepository->find($createdFileId);
         $this->assertNotNull($createdFile);
         $this->assertEquals('Duplicate Name (1)', $createdFile->getName());
-        $expectedPath = $this->filePathGenerator->generate('Duplicate Name (1)');
-        $this->assertEquals($expectedPath, $createdFile->getPath());
-        $this->assertEquals(preg_match("/^[a-z]+(-[a-z]+)*(-[0-9]+)?\.ink$/i", basename($createdFile->getPath())), 1);
-        $this->assertFileExists($expectedPath);
+        $this->assertMatchesRegularExpression('/duplicate-name-1-[0-9a-f]{12}\.ink$/', $createdFile->getPath());
+        $this->assertFileExists($this->resolveFilePath($createdFile->getPath()));
         $this->assertEquals($this->email, $createdFile->getUser()->getEmail());
 
         $this->client->jsonRequest('POST', '/api/dir', ['name' => 'Duplicate Name']);
@@ -147,7 +141,79 @@ class FilesControllerCreateTest extends AuthenticatedWebTestCase
         $this->assertEquals($this->email, $createdDir->getUser()->getEmail());
     }
 
-    public function test_03_fileCreateWithInvalidDir(): void
+    public function test_03_uniqueConstraintEnforcedAtDbLevel(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $file1 = new File();
+        $file1->setUser($user);
+        $file1->setName('Race Condition File');
+        $file1->setPath($this->filePathGenerator->generate('Race Condition File')); // filename only
+        $this->entityManager->persist($file1);
+        $this->entityManager->flush();
+
+        // Bypass the soft-uniqueness check (as a concurrent request would) and insert directly
+        $file2 = new File();
+        $file2->setUser($user);
+        $file2->setName('Race Condition File');
+        $file2->setPath($this->filePathGenerator->generate('Race Condition File (1)')); // filename only
+        $this->entityManager->persist($file2);
+
+        $this->expectException(\Doctrine\DBAL\Exception\UniqueConstraintViolationException::class);
+        $this->entityManager->flush();
+    }
+
+    public function test_04_uniqueConstraintDirEnforcedAtDbLevel(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $this->email]);
+
+        $dir1 = new Dir();
+        $dir1->setUser($user);
+        $dir1->setName('Race Condition Dir');
+        $this->entityManager->persist($dir1);
+        $this->entityManager->flush();
+
+        $dir2 = new Dir();
+        $dir2->setUser($user);
+        $dir2->setName('Race Condition Dir');
+        $this->entityManager->persist($dir2);
+
+        $this->expectException(\Doctrine\DBAL\Exception\UniqueConstraintViolationException::class);
+        $this->entityManager->flush();
+    }
+
+    public function test_05_fileCreateInvalidName(): void
+    {
+        // Empty name → 422
+        $this->client->jsonRequest('POST', '/api/file', ['name' => '']);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Whitespace-only name → 422
+        $this->client->jsonRequest('POST', '/api/file', ['name' => '   ']);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Name too long → 422
+        $this->client->jsonRequest('POST', '/api/file', ['name' => str_repeat('a', 256)]);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function test_06_dirCreateInvalidNameOrSummary(): void
+    {
+        // Empty name → 422
+        $this->client->jsonRequest('POST', '/api/dir', ['name' => '']);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        // Summary too long → 422
+        $this->client->jsonRequest('POST', '/api/dir', [
+            'name' => 'Valid Name',
+            'summary' => str_repeat('x', 2001),
+        ]);
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function test_07_fileCreateWithInvalidDir(): void
     {
         $userRepository = $this->entityManager->getRepository(User::class);
         $user1 = $userRepository->findOneBy(['email' => $this->email]);
@@ -174,6 +240,9 @@ class FilesControllerCreateTest extends AuthenticatedWebTestCase
         $fileRepository = $this->entityManager->getRepository(File::class);
         $sneakyFile = $fileRepository->findOneBy(['name' => 'Sneaky File']);
         $this->assertNull($sneakyFile);
-        $this->assertFileDoesNotExist($this->filePathGenerator->generate('Sneaky File'));
+        // Assert no sneaky-file-*.ink was created on disk
+        $container = static::getContainer();
+        $filesDir = $container->getParameter('kernel.project_dir') . '/' . $container->getParameter('app.files_dir');
+        $this->assertEmpty(glob($filesDir . '/sneaky-file-*.ink'));
     }
 }

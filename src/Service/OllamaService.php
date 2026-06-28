@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Contracts\Cache\CacheInterface;
@@ -11,7 +12,7 @@ use Twig\Environment;
 class OllamaService implements OllamaServiceInterface
 {
     private string $ollamaServiceUrl;
-    private int $temperature;
+    private ?int $temperature;
     private ?int $numCtx;
     private ?int $topK;
     private ?float $topP;
@@ -47,10 +48,14 @@ class OllamaService implements OllamaServiceInterface
         return $this->cache->get(self::CACHE_KEY_MODELS, function (ItemInterface $item) {
             $item->expiresAfter(self::CACHE_TTL_MODELS);
 
-            $response = $this->client->request(
-                'GET',
-                $this->ollamaServiceUrl . '/api/tags'
-            );
+            try {
+                $response = $this->client->request('GET', $this->ollamaServiceUrl . '/api/tags', [
+                    'timeout' => 5,
+                    'max_duration' => 10,
+                ]);
+            } catch (TransportExceptionInterface) {
+                return [];
+            }
 
             if ($response->getStatusCode() !== Response::HTTP_OK) {
                 return [];
@@ -85,7 +90,7 @@ class OllamaService implements OllamaServiceInterface
         ]);
 
         $options = [
-            'temperature' => $this->temperature,
+            'temperature' => $this->temperature ?? 1,
             'num_ctx' => $this->numCtx,
             'top_k' => $this->topK,
             'top_p' => $this->topP,
@@ -94,23 +99,23 @@ class OllamaService implements OllamaServiceInterface
         // Filter out null values
         $options = array_filter($options, fn ($value) => !is_null($value));
 
-        $response = $this->client->request(
-            'POST',
-            $this->ollamaServiceUrl . '/api/generate',
-            [
+        try {
+            $response = $this->client->request('POST', $this->ollamaServiceUrl . '/api/generate', [
                 'json' => [
                     'model' => $model,
                     'prompt' => $finalPrompt,
-                    'stream' => false, // We want the full response at once
+                    'stream' => false,
                     'options' => $options,
                 ],
-            ]
-        );
+                'timeout' => 5,
+                'max_duration' => 60,
+            ]);
+        } catch (TransportExceptionInterface $e) {
+            throw new \RuntimeException('Ollama service is unreachable: ' . $e->getMessage(), 0, $e);
+        }
 
         if ($response->getStatusCode() !== Response::HTTP_OK) {
-            // In a real app, you might throw a more specific exception
-            // with details from $response->getContent(false)
-            throw new \Exception('Failed to generate text from Ollama API.');
+            throw new \RuntimeException('Failed to generate text from Ollama API.');
         }
 
         $data = $response->toArray();

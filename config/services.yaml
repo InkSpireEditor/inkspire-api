@@ -27,10 +27,13 @@ services:
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
 
-    'App\Service\FilePathGenerator':
+    'App\Service\FilePathValidator':
         arguments:
             $projectRoot: '%kernel.project_dir%'
             $basePathRelative: '%app.files_dir%'
+
+    'App\Service\FileStorageServiceInterface':
+        alias: App\Service\FileStorageService
 
     'App\Service\OllamaService':
         arguments:

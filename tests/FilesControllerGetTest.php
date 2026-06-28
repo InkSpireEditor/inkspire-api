@@ -204,4 +204,69 @@ class FilesControllerGetTest extends AuthenticatedWebTestCase
         $this->assertEquals('User2 File', $foundFile->getName());
         $this->assertEquals('user2@example.com', $foundFile->getUser()->getEmail());
     }
+
+    public function test_05_treeUnauthorized(): void
+    {
+        $this->deauthenticateClient();
+        $this->client->request('GET', '/api/tree');
+        $this->assertResponseStatusCodeSame(Response::HTTP_UNAUTHORIZED);
+    }
+
+    public function test_06_treeIsolation(): void
+    {
+        $userRepository = $this->entityManager->getRepository(User::class);
+        $user1 = $userRepository->findOneBy(['email' => $this->email]);
+
+        $user2 = $this->createUser('user2-isolation@example.com', 'password');
+        $this->entityManager->persist($user2);
+
+        $user2File = new File();
+        $user2File->setUser($user2);
+        $user2File->setName('User2 Secret File');
+        $user2File->setPath('');
+        $this->entityManager->persist($user2File);
+
+        $user2Dir = new Dir();
+        $user2Dir->setUser($user2);
+        $user2Dir->setName('User2 Secret Dir');
+        $this->entityManager->persist($user2Dir);
+
+        $this->entityManager->flush();
+
+        $user2FileId = $user2File->getId();
+        $user2DirId = $user2Dir->getId();
+
+        // Authenticated as user1; user2's resources must not appear in the tree
+        $this->client->request('GET', '/api/tree');
+        $this->assertResponseStatusCodeSame(Response::HTTP_OK);
+        $response = json_decode($this->client->getResponse()->getContent(), true);
+
+        $this->assertArrayNotHasKey($user2FileId, $response['files']);
+        $this->assertArrayNotHasKey($user2DirId, $response['dirs']);
+    }
+
+    public function test_07_dirInfoForbidden(): void
+    {
+        $user2 = $this->createUser('user2-dir@example.com', 'password');
+        $this->entityManager->persist($user2);
+
+        $dir = new Dir();
+        $dir->setUser($user2);
+        $dir->setName('User2 Dir');
+        $this->entityManager->persist($dir);
+        $this->entityManager->flush();
+
+        $dirId = $dir->getId();
+
+        // Authenticated as user1; attempting to read user2's dir
+        $this->client->request('GET', '/api/dir/' . $dirId);
+        $this->assertResponseStatusCodeSame(Response::HTTP_FORBIDDEN);
+
+        // Verify dir still belongs to user2
+        $this->entityManager->clear();
+        $dirRepository = $this->entityManager->getRepository(Dir::class);
+        $foundDir = $dirRepository->find($dirId);
+        $this->assertNotNull($foundDir);
+        $this->assertEquals('user2-dir@example.com', $foundDir->getUser()->getEmail());
+    }
 }
