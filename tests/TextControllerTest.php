@@ -116,7 +116,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $this->entityManager->flush();
 
         $newContent = 'This is the updated content.';
-        $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], $newContent);
+        $this->client->request('PUT', '/api/file/' .$file->getId() . '/contents', [], [], [], $newContent);
 
         $this->assertResponseStatusCodeSame(Response::HTTP_NO_CONTENT);
 
@@ -146,7 +146,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
 
         // Attempt to update content using user1's credentials
         $newContent = 'This is the updated content.';
-        $this->client->request('POST', '/api/file/' . $foreignFile->getId() . '/contents', [], [], [], $newContent);
+        $this->client->request('PUT', '/api/file/' .$foreignFile->getId() . '/contents', [], [], [], $newContent);
 
         // Expect 403 Forbidden
         $this->assertResponseStatusCodeSame(Response::HTTP_FORBIDDEN);
@@ -174,7 +174,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
 
         $this->deauthenticateClient();
         $newContent = 'This is the updated content.';
-        $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], $newContent);
+        $this->client->request('PUT', '/api/file/' .$file->getId() . '/contents', [], [], [], $newContent);
 
         $this->assertResponseStatusCodeSame(Response::HTTP_UNAUTHORIZED);
         $updatedContent = file_get_contents($absolutePath);
@@ -198,7 +198,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $this->entityManager->flush();
 
         $newContent = 'This is the updated content.';
-        $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], $newContent);
+        $this->client->request('PUT', '/api/file/' .$file->getId() . '/contents', [], [], [], $newContent);
 
         $this->assertResponseStatusCodeSame(Response::HTTP_NOT_FOUND);
         $this->assertFileDoesNotExist($this->resolveFilePath($filename));
@@ -237,7 +237,7 @@ class TextControllerTest extends AuthenticatedWebTestCase
         $this->entityManager->flush();
 
         $this->client->catchExceptions(true);
-        $this->client->request('POST', '/api/file/' . $file->getId() . '/contents', [], [], [], 'evil content');
+        $this->client->request('PUT', '/api/file/' .$file->getId() . '/contents', [], [], [], 'evil content');
 
         $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
         $this->assertFileDoesNotExist('/tmp/should-not-be-written.txt');

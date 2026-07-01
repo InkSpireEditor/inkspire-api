@@ -36,7 +36,7 @@ class TextController extends AbstractController
         return new Response($this->fileStorage->read($path), Response::HTTP_OK, ['Content-Type' => 'text/plain']);
     }
 
-    #[Route('/file/{id}/contents', name: 'update_file_contents', methods: ['POST'])]
+    #[Route('/file/{id}/contents', name: 'update_file_contents', methods: ['PUT'])]
     public function updateFileContents(#[CurrentUser] User $user, File $file, Request $request): Response
     {
         if ($file->getUser() !== $user) {
