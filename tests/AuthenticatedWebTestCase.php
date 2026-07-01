@@ -34,6 +34,9 @@ abstract class AuthenticatedWebTestCase extends WebTestCase
     protected function deauthenticateClient(): void
     {
         $this->client->setServerParameter('HTTP_Authorization', '');
+        // Also drop the jwt_token cookie the client kept from login, so the
+        // client carries no credentials by any transport.
+        $this->client->getCookieJar()->clear();
     }
 
     protected function authenticateClient(): void
@@ -85,6 +88,7 @@ abstract class AuthenticatedWebTestCase extends WebTestCase
         // Clean up the database before each test
         $this->entityManager->createQuery('DELETE FROM App\\Entity\\File')->execute();
         $this->entityManager->createQuery('DELETE FROM App\\Entity\\Dir')->execute();
+        $this->entityManager->createQuery('DELETE FROM App\\Entity\\RefreshToken')->execute();
         $this->entityManager->createQuery('DELETE FROM App\\Entity\\User')->execute();
 
         $user = $this->createUser($this->email, $this->password);

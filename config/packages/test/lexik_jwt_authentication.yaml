@@ -1,0 +1,17 @@
+# Test-environment JWT config.
+#
+# Uses a dedicated, passphrase-less keypair generated at bootstrap time
+# (see bootstrap.sh: `lexik:jwt:generate-keypair --env=test`). Both *-test.pem
+# files are gitignored via /config/jwt/*.pem, so no keys are committed and the
+# test suite needs no JWT_PASSPHRASE secret in CI.
+lexik_jwt_authentication:
+    secret_key: '%kernel.project_dir%/config/jwt/private-test.pem'
+    public_key: '%kernel.project_dir%/config/jwt/public-test.pem'
+    pass_phrase: ''
+    token_extractors:
+        # The test suite authenticates via the Authorization header only.
+        # The browser test client retains the jwt_token cookie set at login,
+        # which would otherwise keep de-authenticated requests authenticated
+        # and defeat the *_unauthorized tests. Disable cookie extraction in test.
+        cookie:
+            enabled: false

@@ -2,4 +2,15 @@ lexik_jwt_authentication:
     secret_key: '%env(resolve:JWT_SECRET_KEY)%'
     public_key: '%env(resolve:JWT_PUBLIC_KEY)%'
     pass_phrase: '%env(JWT_PASSPHRASE)%'
-    token_ttl: 86400  # in seconds, that is 24h.
+    token_ttl: 3600  # 1 hour
+    token_extractors:
+        authorization_header:
+            enabled: true   # kept for API clients and test suite
+            prefix: Bearer
+            name: Authorization
+        cookie:
+            enabled: true
+            name: jwt_token
+
+# Test-environment overrides live in config/packages/test/lexik_jwt_authentication.yaml
+# (a directory Symfony auto-loads — unlike the former config/test/).
