@@ -2,9 +2,9 @@
 
 namespace App\Tests\Mock;
 
-use App\Service\OllamaServiceInterface;
+use App\Service\LLMServiceInterface;
 
-class MockOllamaService implements OllamaServiceInterface
+class MockLLMService implements LLMServiceInterface
 {
     private string $returnedText = '';
     private array $availableModels = [];
@@ -33,7 +33,7 @@ class MockOllamaService implements OllamaServiceInterface
     public function getAvailableModels(): array
     {
         if ($this->throwOnGetModels) {
-            throw new \RuntimeException('Ollama service unreachable');
+            throw new \RuntimeException('LLM service unreachable');
         }
 
         return $this->availableModels;

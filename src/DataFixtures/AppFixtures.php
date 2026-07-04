@@ -22,14 +22,14 @@ class AppFixtures extends Fixture
 
     public function load(ObjectManager $manager): void
     {
-        $email = $_ENV['FIXTURE_ADMIN_EMAIL'] ?? null;
+        $email = $_ENV['FIXTURE_ADMIN_EMAIL'] ?? $_SERVER['FIXTURE_ADMIN_EMAIL'] ?? getenv('FIXTURE_ADMIN_EMAIL') ?: null;
         if ($email === null) {
             throw new \RuntimeException(
                 'FIXTURE_ADMIN_EMAIL is not set. Add it to .env.local before loading fixtures.'
             );
         }
 
-        $password = $_ENV['FIXTURE_ADMIN_PASSWORD'] ?? null;
+        $password = $_ENV['FIXTURE_ADMIN_PASSWORD'] ?? $_SERVER['FIXTURE_ADMIN_PASSWORD'] ?? getenv('FIXTURE_ADMIN_PASSWORD') ?: null;
         if ($password === null) {
             $password = bin2hex(random_bytes(8));
             echo sprintf("Fixture admin credentials — email: %s  password: %s\n", $email, $password);
