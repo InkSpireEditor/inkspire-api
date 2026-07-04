@@ -4,13 +4,13 @@ namespace App\Tests;
 
 use App\Entity\User;
 use App\Entity\File;
-use App\Service\OllamaServiceInterface;
-use App\Tests\Mock\MockOllamaService;
+use App\Service\LLMServiceInterface;
+use App\Tests\Mock\MockLLMService;
 use Symfony\Component\HttpFoundation\Response;
 
-class OllamaControllerTest extends AuthenticatedWebTestCase
+class LLMControllerTest extends AuthenticatedWebTestCase
 {
-    private MockOllamaService $mockOllamaService;
+    private MockLLMService $mockLLMService;
 
     protected function setUp(): void
     {
@@ -19,18 +19,18 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         // Disable kernel reboot between requests so the container (and mock instance) is stable
         $this->client->disableReboot();
 
-        $this->mockOllamaService = static::getContainer()->get(OllamaServiceInterface::class);
+        $this->mockLLMService = static::getContainer()->get(LLMServiceInterface::class);
 
-        $this->assertInstanceOf(MockOllamaService::class, $this->mockOllamaService,
-            'OllamaServiceInterface should be mocked with MockOllamaService');
+        $this->assertInstanceOf(MockLLMService::class, $this->mockLLMService,
+            'LLMServiceInterface should be mocked with MockLLMService');
 
-        $this->mockOllamaService->reset();
+        $this->mockLLMService->reset();
     }
 
     protected function tearDown(): void
     {
         // Reset le mock après chaque test
-        $this->mockOllamaService->reset();
+        $this->mockLLMService->reset();
 
         parent::tearDown();
     }
@@ -38,15 +38,15 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
     public function test_01_generate_success(): void
     {
         $generatedText = 'This is the AI generated text.';
-        $this->mockOllamaService->setReturnedText($generatedText);
+        $this->mockLLMService->setReturnedText($generatedText);
 
         $userRepository = $this->entityManager->getRepository(User::class);
         $user = $userRepository->findOneBy(['email' => $this->email]);
 
         $file = new File();
         $file->setUser($user);
-        $file->setName('Ollama Test File');
-        $filename = $this->filePathGenerator->generate('Ollama Test File');
+        $file->setName('LLM Test File');
+        $filename = $this->filePathGenerator->generate('LLM Test File');
         $file->setPath($filename);
         $initialContent = 'Initial content. ';
         $absolutePath = $this->resolveFilePath($filename);
@@ -55,7 +55,7 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $this->entityManager->persist($file);
         $this->entityManager->flush();
 
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => $file->getId(),
             'model' => 'test-model',
             'prompt' => 'Write a story'
@@ -74,9 +74,9 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
 
     public function test_02_generate_missing_params(): void
     {
-        $this->mockOllamaService->setReturnedText('dummy');
+        $this->mockLLMService->setReturnedText('dummy');
 
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => 1
             // missing model and prompt
         ]);
@@ -86,10 +86,10 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
 
     public function test_03_generate_file_forbidden(): void
     {
-        $this->mockOllamaService->setReturnedText('dummy');
+        $this->mockLLMService->setReturnedText('dummy');
 
         // Create a second user
-        $user2 = $this->createUser('user2_ollama@example.com', 'password2');
+        $user2 = $this->createUser('user2_llm@example.com', 'password2');
         $this->entityManager->persist($user2);
         $this->entityManager->flush();
 
@@ -105,7 +105,7 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $this->entityManager->flush();
 
         // Attempt to generate using user1's credentials
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => $foreignFile->getId(),
             'model' => 'test-model',
             'prompt' => 'prompt'
@@ -116,10 +116,10 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
 
     public function test_04_generate_unauthorized(): void
     {
-        $this->mockOllamaService->setReturnedText('dummy');
+        $this->mockLLMService->setReturnedText('dummy');
 
         $this->deauthenticateClient();
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => 1,
             'model' => 'test-model',
             'prompt' => 'prompt'
@@ -131,9 +131,9 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
     public function test_05_list_models_success(): void
     {
         $mockModels = [['name' => 'model1'], ['name' => 'model2']];
-        $this->mockOllamaService->setAvailableModels($mockModels);
+        $this->mockLLMService->setAvailableModels($mockModels);
 
-        $this->client->request('GET', '/api/ollama/models');
+        $this->client->request('GET', '/api/llm/models');
 
         $this->assertResponseIsSuccessful();
         $this->assertResponseStatusCodeSame(Response::HTTP_OK);
@@ -144,9 +144,9 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
 
     public function test_06_list_models_exception(): void
     {
-        $this->mockOllamaService->setShouldThrowOnGetModels(true);
+        $this->mockLLMService->setShouldThrowOnGetModels(true);
 
-        $this->client->request('GET', '/api/ollama/models');
+        $this->client->request('GET', '/api/llm/models');
 
         $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
         $data = json_decode($this->client->getResponse()->getContent(), true);
@@ -170,7 +170,7 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $id = $file->getId();
 
         // Model name too long → 422
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => $id,
             'model' => str_repeat('m', 256),
             'prompt' => 'Valid prompt',
@@ -178,7 +178,7 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
         $this->assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
 
         // Prompt too long → 422
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => $id,
             'model' => 'valid-model',
             'prompt' => str_repeat('p', 10001),
@@ -188,27 +188,27 @@ class OllamaControllerTest extends AuthenticatedWebTestCase
 
     public function test_08_generate_path_escapes_storage_root(): void
     {
-        $this->mockOllamaService->setReturnedText('should not reach here');
+        $this->mockLLMService->setReturnedText('should not reach here');
 
         $userRepository = $this->entityManager->getRepository(User::class);
         $user = $userRepository->findOneBy(['email' => $this->email]);
 
         $file = new File();
         $file->setUser($user);
-        $file->setName('Tampered Ollama File');
-        $file->setPath('/tmp/ollama-escape.txt');
+        $file->setName('Tampered LLM File');
+        $file->setPath('/tmp/llm-escape.txt');
 
         $this->entityManager->persist($file);
         $this->entityManager->flush();
 
         $this->client->catchExceptions(true);
-        $this->client->jsonRequest('POST', '/api/ollama/generate', [
+        $this->client->jsonRequest('POST', '/api/llm/generate', [
             'id' => $file->getId(),
             'model' => 'test-model',
             'prompt' => 'Write a story',
         ]);
 
         $this->assertResponseStatusCodeSame(Response::HTTP_INTERNAL_SERVER_ERROR);
-        $this->assertFileDoesNotExist('/tmp/ollama-escape.txt');
+        $this->assertFileDoesNotExist('/tmp/llm-escape.txt');
     }
 }
