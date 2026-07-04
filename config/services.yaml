@@ -3,14 +3,16 @@
 
 # Put parameters here that don't need to change on each machine where the app is deployed
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
+imports:
+    # Order matters: the committed default sets app.llm_providers to [], then the
+    # gitignored user file (if present) overrides it. Imports are always processed
+    # before this file's own parameters block, so the default cannot live here.
+    - { resource: 'llm_providers_default.yaml' }
+    - { resource: 'llm_providers.yaml', ignore_errors: true }
+
 parameters:
-    app.ollama_service_url: 'http://127.0.0.1:11434' # Default value, should be overridden by .env
-    # app.ollama_service_url: 'http://127.0.0.1:11444' # Default value, should be overridden by .env
-    # app.ollama_service_url: 'http://192.168.128.44:11434' # Default value, should be overridden by .env
-    app.ollama_temperature: 1
-    app.ollama_num_ctx: 4096
-    app.ollama_top_k: 40
-    app.ollama_top_p: 0.9
+    app.llm_temperature: 1
+    app.llm_timeout: 120   # seconds; idle+total budget for a generation (raise for slow reasoning models)
     app.files_dir: 'var/files'
 
 services:
@@ -35,13 +37,14 @@ services:
     'App\Service\FileStorageServiceInterface':
         alias: App\Service\FileStorageService
 
-    'App\Service\OllamaService':
+    'App\Service\LLMServiceInterface':
+        alias: App\Service\LLMService
+
+    'App\Service\LLMService':
         arguments:
-            $ollamaServiceUrl: '%app.ollama_service_url%'
-            $temperature: '%app.ollama_temperature%'
-            $numCtx: '%app.ollama_num_ctx%'
-            $topK: '%app.ollama_top_k%'
-            $topP: '%app.ollama_top_p%'
+            $providers: '%app.llm_providers%'
+            $temperature: '%app.llm_temperature%'
+            $timeout: '%app.llm_timeout%'
 
 when@test:
     parameters:

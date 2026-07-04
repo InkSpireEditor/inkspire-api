@@ -23,6 +23,9 @@
 /config/jwt/*.pem
 ###< lexik/jwt-authentication-bundle ###
 
+/config/llm_providers.yaml
+
 .idea/*
 .php-version
 .php-cs-fixer.cache
+.php-cs-fixer.dist.php

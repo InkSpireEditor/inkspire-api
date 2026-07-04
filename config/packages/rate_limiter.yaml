@@ -1,6 +1,6 @@
 framework:
     rate_limiter:
-        ollama_generate:
+        llm_generate:
             policy: sliding_window
             limit: 20
             interval: '1 minute'
@@ -8,5 +8,5 @@ framework:
 when@test:
     framework:
         rate_limiter:
-            ollama_generate:
+            llm_generate:
                 policy: no_limit

@@ -1,0 +1,16 @@
+# Copy this file to config/llm_providers.yaml (gitignored) and fill in your values.
+# Each key is a provider name that becomes the prefix in model identifiers.
+# Models will appear as "provider-name/model-name" throughout the app.
+#
+# Supported protocols: any OpenAI-compatible endpoint (Ollama, LiteLLM, …).
+# Set key to null (~) for unauthenticated instances (e.g. local Ollama).
+# A trailing "/v1" in url is optional.
+
+parameters:
+    app.llm_providers:
+        # local-ollama:
+        #     url: 'http://127.0.0.1:11434'
+        #     key: ~
+        # my-litellm:
+        #     url: 'https://your-litellm-instance'
+        #     key: 'sk-...'

@@ -4,7 +4,7 @@ namespace App\Controller;
 
 use App\Entity\User;
 use App\Service\FileStorageServiceInterface;
-use App\Service\OllamaServiceInterface;
+use App\Service\LLMServiceInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\Request;
@@ -15,25 +15,23 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Security\Http\Attribute\IsGranted;
 
 #[IsGranted('IS_AUTHENTICATED_FULLY')]
-#[Route('/api/ollama', name: 'app_api_ollama_')]
-class OllamaController extends AbstractController
+#[Route('/api/llm', name: 'app_api_llm_')]
+class LLMController extends AbstractController
 {
-    public function __construct(private readonly FileStorageServiceInterface $fileStorage)
-    {
-    }
+    public function __construct(private readonly FileStorageServiceInterface $fileStorage) {}
 
     /**
-     * Lists available Ollama models.
+     * Lists available models across all configured LLM providers.
      */
     #[Route('/models', name: 'models_list', methods: ['GET'])]
-    public function listModels(#[CurrentUser] User $user, OllamaServiceInterface $ollamaService): Response
+    public function listModels(#[CurrentUser] User $user, LLMServiceInterface $llmService): Response
     {
         try {
-            $models = $ollamaService->getAvailableModels();
+            $models = $llmService->getAvailableModels();
             return $this->json($models);
         } catch (\Exception $e) {
             return $this->json([
-                'message' => 'Could not retrieve models from the Ollama service.',
+                'message' => 'Could not retrieve models from the LLM providers.',
                 'error' => $e->getMessage(),
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
@@ -45,12 +43,14 @@ class OllamaController extends AbstractController
     #[Route('/generate', name: 'generate', methods: ['POST'])]
     public function generate(
         Request $request,
-        #[CurrentUser] User $user,
-        OllamaServiceInterface $ollamaService,
+        #[CurrentUser]
+        User $user,
+        LLMServiceInterface $llmService,
         \App\Repository\FileRepository $fileRepository,
-        #[Autowire(service: 'limiter.ollama_generate')] RateLimiterFactory $ollamaGenerateLimiter
+        #[Autowire(service: 'limiter.llm_generate')]
+        RateLimiterFactory $llmGenerateLimiter
     ): Response {
-        $limiter = $ollamaGenerateLimiter->create($user->getUserIdentifier());
+        $limiter = $llmGenerateLimiter->create($user->getUserIdentifier());
         if (!$limiter->consume()->isAccepted()) {
             return $this->json(['message' => 'Too many requests'], Response::HTTP_TOO_MANY_REQUESTS);
         }
@@ -76,7 +76,7 @@ class OllamaController extends AbstractController
             return $this->json(['message' => 'File not found or access denied'], Response::HTTP_FORBIDDEN);
         }
 
-        // Storage checks are intentionally outside the Ollama try/catch so path
+        // Storage checks are intentionally outside the LLM try/catch so path
         // validation errors and missing-file errors are not swallowed by it.
         $path = $file->getPath();
         if (!$this->fileStorage->exists($path)) {
@@ -85,10 +85,10 @@ class OllamaController extends AbstractController
         $currentContent = $this->fileStorage->read($path);
 
         try {
-            $generatedText = $ollamaService->generateText($model, $prompt);
+            $generatedText = $llmService->generateText($model, $prompt);
         } catch (\Exception $e) {
             return $this->json(
-                ['message' => 'An error occurred while communicating with the Ollama service: ' . $e->getMessage()],
+                ['message' => 'An error occurred while communicating with the LLM provider: ' . $e->getMessage()],
                 Response::HTTP_INTERNAL_SERVER_ERROR
             );
         }
@@ -97,7 +97,7 @@ class OllamaController extends AbstractController
         $this->fileStorage->write($path, $currentContent . $generatedText);
 
         return $this->json([
-            'snippet' => $generatedText
+            'snippet' => $generatedText,
         ]);
     }
 }

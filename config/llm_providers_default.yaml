@@ -1,0 +1,5 @@
+# Committed fallback so app.llm_providers always exists even when the
+# (gitignored) config/llm_providers.yaml is absent. Imported BEFORE it in
+# services.yaml, so a present llm_providers.yaml overrides this empty default.
+parameters:
+    app.llm_providers: []

@@ -3,9 +3,9 @@ services:
         autowire: true
         autoconfigure: true
 
-    App\Tests\Mock\MockOllamaService:
+    App\Tests\Mock\MockLLMService:
         public: true
 
-    App\Service\OllamaServiceInterface:
-        alias: App\Tests\Mock\MockOllamaService
+    App\Service\LLMServiceInterface:
+        alias: App\Tests\Mock\MockLLMService
         public: true
