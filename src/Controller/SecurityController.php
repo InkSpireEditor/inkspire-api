@@ -7,6 +7,7 @@ use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTTokenManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -15,8 +16,11 @@ use Symfony\Component\Routing\Attribute\Route;
 
 class SecurityController extends AbstractController
 {
-    private const JWT_COOKIE_TTL = 3600;
-    private const REFRESH_COOKIE_TTL = 604800; // 7 days
+    public function __construct(
+        #[Autowire('%app.jwt_ttl%')] private readonly int $jwtTtl,
+        #[Autowire('%app.refresh_token_ttl%')] private readonly int $refreshTokenTtl,
+    ) {
+    }
 
     /** Handled entirely by LexikJWT's json_login firewall listener. */
     #[Route('/auth', name: 'app_login_jwt', methods: ['POST'])]
@@ -52,9 +56,9 @@ class SecurityController extends AbstractController
         $secure = $request->isSecure();
 
         // Rotate the refresh token before issuing the new JWT.
-        $newRefreshString = bin2hex(random_bytes(32));
+        $newRefreshString = bin2hex(random_bytes(RefreshToken::TOKEN_BYTES));
         $refreshToken->setToken($newRefreshString)
-                     ->setExpiresAt(new \DateTimeImmutable(sprintf('+%d seconds', self::REFRESH_COOKIE_TTL)));
+                     ->setExpiresAt(new \DateTimeImmutable(sprintf('+%d seconds', $this->refreshTokenTtl)));
         $em->flush();
 
         $newJwt = $jwtManager->create($user);
@@ -63,7 +67,7 @@ class SecurityController extends AbstractController
         $response->headers->setCookie(new Cookie(
             name: 'jwt_token',
             value: $newJwt,
-            expire: time() + self::JWT_COOKIE_TTL,
+            expire: time() + $this->jwtTtl,
             path: '/',
             domain: null,
             secure: $secure,
@@ -75,7 +79,7 @@ class SecurityController extends AbstractController
         $response->headers->setCookie(new Cookie(
             name: 'refresh_token',
             value: $newRefreshString,
-            expire: time() + self::REFRESH_COOKIE_TTL,
+            expire: time() + $this->refreshTokenTtl,
             path: '/auth',
             domain: null,
             secure: $secure,
@@ -87,7 +91,7 @@ class SecurityController extends AbstractController
         $response->headers->setCookie(new Cookie(
             name: 'auth_status',
             value: '1',
-            expire: time() + self::REFRESH_COOKIE_TTL,
+            expire: time() + $this->refreshTokenTtl,
             path: '/',
             domain: null,
             secure: $secure,

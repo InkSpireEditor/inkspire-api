@@ -14,6 +14,14 @@ class LLMService implements LLMServiceInterface
     private const CACHE_TTL = 3600;
 
     /**
+     * Timeouts for listing a provider's models, in seconds. Kept separate from
+     * $timeout, which budgets a generation: listing is a cheap metadata call and
+     * should fail fast rather than wait out a generation-sized budget.
+     */
+    private const MODELS_CONNECT_TIMEOUT = 5;
+    private const MODELS_MAX_DURATION = 10;
+
+    /**
      * @param array<string, array{url: string, key: string|null}> $providers
      */
     public function __construct(
@@ -115,8 +123,8 @@ class LLMService implements LLMServiceInterface
         try {
             $response = $this->client->request('GET', $this->endpoint($config['url'], 'models'), [
                 'headers' => $this->buildHeaders($config),
-                'timeout' => 5,
-                'max_duration' => 10,
+                'timeout' => self::MODELS_CONNECT_TIMEOUT,
+                'max_duration' => self::MODELS_MAX_DURATION,
             ]);
         } catch (TransportExceptionInterface) {
             return [];

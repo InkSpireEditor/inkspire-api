@@ -14,6 +14,11 @@ use Symfony\Component\Validator\Constraints\NotBlank;
 
 class RegistrationFormType extends AbstractType
 {
+    private const MIN_PASSWORD_LENGTH = 6;
+
+    /** Symfony refuses to hash passwords longer than this, to bound hashing cost. */
+    private const MAX_PASSWORD_LENGTH = 4096;
+
     public function buildForm(FormBuilderInterface $builder, array $options): void
     {
         $builder
@@ -36,10 +41,9 @@ class RegistrationFormType extends AbstractType
                         'message' => 'Please enter a password',
                     ]),
                     new Length([
-                        'min' => 6,
+                        'min' => self::MIN_PASSWORD_LENGTH,
                         'minMessage' => 'Your password should be at least {{ limit }} characters',
-                        // max length allowed by Symfony for security reasons
-                        'max' => 4096,
+                        'max' => self::MAX_PASSWORD_LENGTH,
                     ]),
                 ],
             ])

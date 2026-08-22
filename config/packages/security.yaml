@@ -21,8 +21,8 @@ security:
                 success_handler: lexik_jwt_authentication.handler.authentication_success
                 failure_handler: lexik_jwt_authentication.handler.authentication_failure
             login_throttling:
-                max_attempts: 5
-                interval: '1 minute'
+                max_attempts: '%app.rate_limiter.login_max_attempts%'
+                interval: '%app.rate_limiter.login_interval%'
         api:
             pattern: ^/api
             stateless: true

@@ -12,6 +12,9 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Security\Http\Attribute\IsGranted;
 
+/**
+ * Controller for reading and writing the text content of a file.
+ */
 #[IsGranted('IS_AUTHENTICATED_FULLY')]
 #[Route('/api', name: 'app_api_text')]
 class TextController extends AbstractController
@@ -20,9 +23,13 @@ class TextController extends AbstractController
     {
     }
 
+    /**
+     * Returns the raw contents of a file as text/plain.
+     */
     #[Route('/file/{id}/contents', name: 'file_contents', methods: ['GET'])]
     public function fileContents(#[CurrentUser] User $user, File $file): Response
     {
+        // Check if the user has access to the file.
         if ($file->getUser() !== $user) {
             return $this->json(['message' => 'You do not have access to this file'], Response::HTTP_FORBIDDEN);
         }
@@ -36,9 +43,13 @@ class TextController extends AbstractController
         return new Response($this->fileStorage->read($path), Response::HTTP_OK, ['Content-Type' => 'text/plain']);
     }
 
+    /**
+     * Overwrites a file's contents with the raw request body.
+     */
     #[Route('/file/{id}/contents', name: 'update_file_contents', methods: ['PUT'])]
     public function updateFileContents(#[CurrentUser] User $user, File $file, Request $request): Response
     {
+        // Check if the user has access to the file.
         if ($file->getUser() !== $user) {
             return $this->json(['message' => 'You do not have access to this file'], Response::HTTP_FORBIDDEN);
         }

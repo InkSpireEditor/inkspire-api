@@ -2,8 +2,8 @@ framework:
     rate_limiter:
         llm_generate:
             policy: sliding_window
-            limit: 20
-            interval: '1 minute'
+            limit: '%app.rate_limiter.llm_limit%'
+            interval: '%app.rate_limiter.llm_interval%'
 
 when@test:
     framework:

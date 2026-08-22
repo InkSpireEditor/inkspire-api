@@ -14,10 +14,23 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Security\Http\Attribute\IsGranted;
 
+/**
+ * Controller for the LLM-backed text generation endpoints.
+ */
 #[IsGranted('IS_AUTHENTICATED_FULLY')]
 #[Route('/api/llm', name: 'app_api_llm_')]
 class LLMController extends AbstractController
 {
+    /** Upper bound on a model identifier, across every configured provider. */
+    private const MAX_MODEL_NAME_LENGTH = 255;
+
+    /**
+     * Upper bound on a single generation prompt. Kept well under the smallest
+     * context window we expect a provider to offer, so the rendered template
+     * still fits alongside it.
+     */
+    private const MAX_PROMPT_LENGTH = 10000;
+
     public function __construct(private readonly FileStorageServiceInterface $fileStorage) {}
 
     /**
@@ -64,11 +77,14 @@ class LLMController extends AbstractController
             return $this->json(['message' => 'Missing "id", "model" or "prompt" in request body'], Response::HTTP_BAD_REQUEST);
         }
 
-        if (!is_string($model) || mb_strlen($model) > 255) {
+        if (!is_string($model) || mb_strlen($model) > self::MAX_MODEL_NAME_LENGTH) {
             return $this->json(['message' => 'Invalid model name'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
-        if (!is_string($prompt) || mb_strlen($prompt) > 10000) {
-            return $this->json(['message' => 'Prompt too long (max 10000 characters)'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        if (!is_string($prompt) || mb_strlen($prompt) > self::MAX_PROMPT_LENGTH) {
+            return $this->json(
+                ['message' => sprintf('Prompt too long (max %d characters)', self::MAX_PROMPT_LENGTH)],
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
         }
 
         $file = $fileRepository->find($fileId);

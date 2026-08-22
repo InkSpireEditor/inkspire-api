@@ -25,6 +25,15 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
 #[Route('/api', name: 'app_api')]
 class FilesController extends AbstractController
 {
+    /** Must match the `length` of the `name` column on both the File and Dir entities. */
+    private const MAX_NAME_LENGTH = 255;
+
+    /**
+     * Application-level cap on directory summaries. The `summary` column is TEXT
+     * and imposes no length limit of its own.
+     */
+    private const MAX_SUMMARY_LENGTH = 2000;
+
     public function __construct(
         private readonly FilePathGenerator $filePathGenerator,
         private readonly FileStorageServiceInterface $fileStorage,
@@ -34,7 +43,7 @@ class FilesController extends AbstractController
     /**
      * Retrieves the file and directory tree for the authenticated user.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Request $request The request object.
      * @return Response The JSON response.
      */
@@ -78,7 +87,7 @@ class FilesController extends AbstractController
     /**
      * Retrieves information for a specific file.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param File $file The file entity.
      * @return Response The JSON response.
      */
@@ -102,7 +111,7 @@ class FilesController extends AbstractController
     /**
      * Retrieves information for a specific directory.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Dir $dir The directory entity.
      * @return Response The JSON response.
      */
@@ -136,7 +145,7 @@ class FilesController extends AbstractController
     /**
      * Creates a new file.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Request $request The request object.
      * @param FileRepository $fileRepository The file repository.
      * @param DirRepository $dirRepository The directory repository.
@@ -154,8 +163,8 @@ class FilesController extends AbstractController
         // Decode the request content.
         $data = json_decode($request->getContent(), true);
         $name = trim($data['name'] ?? '');
-        if ($name === '' || mb_strlen($name) > 255) {
-            return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        if ($name === '' || mb_strlen($name) > self::MAX_NAME_LENGTH) {
+            return $this->json(['message' => sprintf('Invalid name: must be between 1 and %d characters', self::MAX_NAME_LENGTH)], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
         $dir = null;
         if (array_key_exists('dir', $data) and $data['dir'] !== null) {
@@ -203,7 +212,7 @@ class FilesController extends AbstractController
     /**
      * Creates a new directory.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Request $request The request object.
      * @param DirRepository $dirRepository The directory repository.
      * @param EntityManagerInterface $entityManager The entity manager.
@@ -219,12 +228,12 @@ class FilesController extends AbstractController
         // Decode the request content.
         $data = json_decode($request->getContent(), true);
         $name = trim($data['name'] ?? '');
-        if ($name === '' || mb_strlen($name) > 255) {
-            return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        if ($name === '' || mb_strlen($name) > self::MAX_NAME_LENGTH) {
+            return $this->json(['message' => sprintf('Invalid name: must be between 1 and %d characters', self::MAX_NAME_LENGTH)], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
         $summary = $data['summary'] ?? null;
-        if ($summary !== null && mb_strlen((string) $summary) > 2000) {
-            return $this->json(['message' => 'Summary too long (max 2000 characters)'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        if ($summary !== null && mb_strlen((string) $summary) > self::MAX_SUMMARY_LENGTH) {
+            return $this->json(['message' => sprintf('Summary too long (max %d characters)', self::MAX_SUMMARY_LENGTH)], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
         // Ensure the directory name is unique.
@@ -259,7 +268,7 @@ class FilesController extends AbstractController
     /**
      * Updates an existing file.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Request $request The request object.
      * @param File $file The file entity to update.
      * @param FileRepository $fileRepository The file repository.
@@ -289,8 +298,8 @@ class FilesController extends AbstractController
         // Update file properties if provided in the request.
         if (array_key_exists('name', $data)) {
             $newName = trim((string) ($data['name'] ?? ''));
-            if ($newName === '' || mb_strlen($newName) > 255) {
-                return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            if ($newName === '' || mb_strlen($newName) > self::MAX_NAME_LENGTH) {
+                return $this->json(['message' => sprintf('Invalid name: must be between 1 and %d characters', self::MAX_NAME_LENGTH)], Response::HTTP_UNPROCESSABLE_ENTITY);
             }
             if ($newName !== $file->getName()) {
                 $existingFile = $fileRepository->findOneBy(['user' => $user, 'name' => $newName]);
@@ -332,7 +341,7 @@ class FilesController extends AbstractController
     /**
      * Updates an existing directory.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Request $request The request object.
      * @param Dir $dir The directory entity to update.
      * @param DirRepository $dirRepository The directory repository.
@@ -360,8 +369,8 @@ class FilesController extends AbstractController
         // Update directory properties if provided in the request.
         if (array_key_exists('name', $data)) {
             $newName = trim((string) ($data['name'] ?? ''));
-            if ($newName === '' || mb_strlen($newName) > 255) {
-                return $this->json(['message' => 'Invalid name: must be between 1 and 255 characters'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            if ($newName === '' || mb_strlen($newName) > self::MAX_NAME_LENGTH) {
+                return $this->json(['message' => sprintf('Invalid name: must be between 1 and %d characters', self::MAX_NAME_LENGTH)], Response::HTTP_UNPROCESSABLE_ENTITY);
             }
             if ($newName !== $dir->getName()) {
                 $existingDir = $dirRepository->findOneBy(['user' => $user, 'name' => $newName]);
@@ -373,8 +382,8 @@ class FilesController extends AbstractController
         }
         if (array_key_exists('summary', $data)) {
             $summary = $data['summary'];
-            if ($summary !== null && mb_strlen((string) $summary) > 2000) {
-                return $this->json(['message' => 'Summary too long (max 2000 characters)'], Response::HTTP_UNPROCESSABLE_ENTITY);
+            if ($summary !== null && mb_strlen((string) $summary) > self::MAX_SUMMARY_LENGTH) {
+                return $this->json(['message' => sprintf('Summary too long (max %d characters)', self::MAX_SUMMARY_LENGTH)], Response::HTTP_UNPROCESSABLE_ENTITY);
             }
             $dir->setSummary($summary);
         }
@@ -392,7 +401,7 @@ class FilesController extends AbstractController
     /**
      * Deletes an existing file.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param File $file The file entity to delete.
      * @param EntityManagerInterface $entityManager The entity manager.
      * @return Response The JSON response.
@@ -413,6 +422,8 @@ class FilesController extends AbstractController
         $entityManager->remove($file);
         $entityManager->flush();
 
+        // Delete the file from disk only after the DB commit succeeds, so a failed
+        // flush cannot leave the entity behind with its content already gone.
         $this->fileStorage->delete($file->getPath());
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
@@ -421,7 +432,7 @@ class FilesController extends AbstractController
     /**
      * Deletes an existing directory.
      *
-     * @param User|null $user The current user.
+     * @param User $user The current user.
      * @param Dir $dir The directory entity to delete.
      * @param EntityManagerInterface $entityManager The entity manager.
      * @return Response The JSON response.
@@ -439,12 +450,16 @@ class FilesController extends AbstractController
             ], Response::HTTP_FORBIDDEN);
         }
 
+        // Collect the paths before removing the entities: once they are detached,
+        // getPath() is no longer reachable through the directory's file collection.
         $pathsToDelete = [];
         foreach ($dir->getFiles() as $file) {
             $pathsToDelete[] = $file->getPath();
             $entityManager->remove($file);
         }
 
+        // Remove the directory entity itself, then commit the file and directory
+        // deletions together.
         $entityManager->remove($dir);
         $entityManager->flush();
 

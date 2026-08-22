@@ -7,6 +7,7 @@ use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Lexik\Bundle\JWTAuthenticationBundle\Event\AuthenticationSuccessEvent;
 use Lexik\Bundle\JWTAuthenticationBundle\Events;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Cookie;
 use Symfony\Component\HttpFoundation\RequestStack;
@@ -17,9 +18,11 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * browser clients don't need to manage the token in JS storage.
  *
  * Three cookies are set:
- *   jwt_token    — httpOnly, 1 h, mirrors the JWT TTL
- *   refresh_token — httpOnly, 7 days, path /auth, rotated on every refresh
- *   auth_status  — NOT httpOnly, 7 days; JS reads this to detect a live session
+ *   jwt_token     — httpOnly, lives for app.jwt_ttl, matching the JWT's own TTL
+ *   refresh_token — httpOnly, lives for app.refresh_token_ttl, path /auth,
+ *                   rotated on every call to /auth/refresh
+ *   auth_status   — NOT httpOnly, same lifetime as the refresh token;
+ *                   JS reads this to detect a live session
  *
  * The JSON body still contains the token so that non-browser API clients
  * and the test suite (which use the Authorization header) continue to work.
@@ -27,12 +30,11 @@ use Symfony\Component\HttpFoundation\RequestStack;
 #[AsEventListener(event: Events::AUTHENTICATION_SUCCESS, method: 'onAuthenticationSuccess')]
 class AuthenticationSuccessListener
 {
-    private const JWT_COOKIE_TTL = 3600;
-    private const REFRESH_COOKIE_TTL = 604800; // 7 days
-
     public function __construct(
         private EntityManagerInterface $em,
         private RequestStack $requestStack,
+        #[Autowire('%app.jwt_ttl%')] private readonly int $jwtTtl,
+        #[Autowire('%app.refresh_token_ttl%')] private readonly int $refreshTokenTtl,
     ) {}
 
     public function onAuthenticationSuccess(AuthenticationSuccessEvent $event): void
@@ -49,7 +51,7 @@ class AuthenticationSuccessListener
         $response->headers->setCookie(new Cookie(
             name: 'jwt_token',
             value: $jwt,
-            expire: time() + self::JWT_COOKIE_TTL,
+            expire: time() + $this->jwtTtl,
             path: '/',
             domain: null,
             secure: $secure,
@@ -58,11 +60,11 @@ class AuthenticationSuccessListener
             sameSite: Cookie::SAMESITE_STRICT,
         ));
 
-        $refreshTokenString = bin2hex(random_bytes(32));
+        $refreshTokenString = bin2hex(random_bytes(RefreshToken::TOKEN_BYTES));
         $refreshToken = (new RefreshToken())
             ->setToken($refreshTokenString)
             ->setUser($user)
-            ->setExpiresAt(new \DateTimeImmutable(sprintf('+%d seconds', self::REFRESH_COOKIE_TTL)));
+            ->setExpiresAt(new \DateTimeImmutable(sprintf('+%d seconds', $this->refreshTokenTtl)));
 
         $this->em->persist($refreshToken);
         $this->em->flush();
@@ -70,7 +72,7 @@ class AuthenticationSuccessListener
         $response->headers->setCookie(new Cookie(
             name: 'refresh_token',
             value: $refreshTokenString,
-            expire: time() + self::REFRESH_COOKIE_TTL,
+            expire: time() + $this->refreshTokenTtl,
             path: '/auth',
             domain: null,
             secure: $secure,
@@ -84,7 +86,7 @@ class AuthenticationSuccessListener
         $response->headers->setCookie(new Cookie(
             name: 'auth_status',
             value: '1',
-            expire: time() + self::REFRESH_COOKIE_TTL,
+            expire: time() + $this->refreshTokenTtl,
             path: '/',
             domain: null,
             secure: $secure,

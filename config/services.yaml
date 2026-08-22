@@ -15,6 +15,19 @@ parameters:
     app.llm_timeout: 120   # seconds; idle+total budget for a generation (raise for slow reasoning models)
     app.files_dir: 'var/files'
 
+    # Login throttling, applied per client IP by the security firewall.
+    app.rate_limiter.login_max_attempts: 5
+    app.rate_limiter.login_interval: '1 minute'
+
+    # Generation throttling, applied per authenticated user.
+    app.rate_limiter.llm_limit: 20
+    app.rate_limiter.llm_interval: '1 minute'
+
+    # Auth cookie lifetimes, in seconds. app.jwt_ttl also drives
+    # lexik_jwt_authentication.token_ttl so the cookie and the token expire together.
+    app.jwt_ttl: 3600
+    app.refresh_token_ttl: 604800
+
 services:
     # default configuration for services in *this* file
     _defaults:

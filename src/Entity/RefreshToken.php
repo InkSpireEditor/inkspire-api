@@ -8,6 +8,12 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Entity(repositoryClass: RefreshTokenRepository::class)]
 class RefreshToken
 {
+    /**
+     * Bytes of randomness behind a refresh token. Hex-encoded, so the stored
+     * string is twice this long — well within the 128-char column.
+     */
+    public const TOKEN_BYTES = 32;
+
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
