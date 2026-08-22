@@ -44,11 +44,10 @@ class FilesController extends AbstractController
      * Retrieves the file and directory tree for the authenticated user.
      *
      * @param User $user The current user.
-     * @param Request $request The request object.
      * @return Response The JSON response.
      */
     #[Route('/tree', name: 'tree', methods: ['GET'])]
-    public function getTree(#[CurrentUser] User $user, Request $request): Response
+    public function getTree(#[CurrentUser] User $user): Response
     {
         // Initialize an array to store file details.
         $resultFiles = [];
