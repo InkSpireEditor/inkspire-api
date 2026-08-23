@@ -31,6 +31,7 @@ class LLMService implements LLMServiceInterface
         private readonly array $providers,
         private readonly float $temperature = 1.0,
         private readonly int $timeout = 120,
+        private readonly ?bool $think = null,
     ) {
     }
 
@@ -57,15 +58,25 @@ class LLMService implements LLMServiceInterface
         $config = $this->providers[$providerName];
         $finalPrompt = $this->twig->render('prompt.twig', ['prompt' => $prompt]);
 
+        $payload = [
+            'model' => $modelName,
+            'messages' => [['role' => 'user', 'content' => $finalPrompt]],
+            'stream' => false,
+            'temperature' => $this->temperature,
+        ];
+
+        // `think` is an Ollama extension, not part of the OpenAI chat-completions
+        // spec, so the key is sent only when app.llm_think is set. Leaving it null
+        // omits it entirely, which keeps strict providers from rejecting the
+        // request as containing an unknown field.
+        if ($this->think !== null) {
+            $payload['think'] = $this->think;
+        }
+
         try {
             $response = $this->client->request('POST', $this->endpoint($config['url'], 'chat/completions'), [
                 'headers' => $this->buildHeaders($config),
-                'json' => [
-                    'model' => $modelName,
-                    'messages' => [['role' => 'user', 'content' => $finalPrompt]],
-                    'stream' => false,
-                    'temperature' => $this->temperature,
-                ],
+                'json' => $payload,
                 // 'timeout' is the idle timeout (max wait for a response chunk). With
                 // stream=false, reasoning models emit nothing until generation finishes,
                 // so this must cover the whole generation, not just connect time.

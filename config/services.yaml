@@ -13,6 +13,10 @@ imports:
 parameters:
     app.llm_temperature: 1
     app.llm_timeout: 120   # seconds; idle+total budget for a generation (raise for slow reasoning models)
+    # Ollama's `think` extension: true asks a reasoning model to think, false asks
+    # it not to. Left null the key is not sent at all, which is what a provider
+    # that only speaks the OpenAI spec expects.
+    app.llm_think: ~
     app.files_dir: 'var/files'
 
     # Login throttling, applied per client IP by the security firewall.
@@ -58,6 +62,7 @@ services:
             $providers: '%app.llm_providers%'
             $temperature: '%app.llm_temperature%'
             $timeout: '%app.llm_timeout%'
+            $think: '%app.llm_think%'
 
 when@test:
     parameters:
