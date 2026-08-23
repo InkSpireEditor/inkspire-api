@@ -21,7 +21,10 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column]
     private ?int $id = null;
 
-    #[ORM\Column(length: 180)]
+    /** Also enforced by CreateUserCommand, so the CLI cannot exceed the column. */
+    public const MAX_EMAIL_LENGTH = 180;
+
+    #[ORM\Column(length: self::MAX_EMAIL_LENGTH)]
     private ?string $email = null;
 
     /**
