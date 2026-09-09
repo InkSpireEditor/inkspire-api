@@ -8,7 +8,7 @@
 
 **This project is currently under active and heavy development. It is NOT ready for general use and may contain bugs, incomplete features, or breaking changes. Use at your own risk.**
 
-![](https://github.com/drakes00/inkspire-api/actions/workflows/phpunit.yaml/badge.svg)
+![CI](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/ci.yml/badge.svg?branch=main)
 
 This is the backend API for InkSpire, a modern web-based text editor. It provides all the necessary services for the [InkSpire Frontend](../inkspire-frontend) to function.
 
