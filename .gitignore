@@ -25,6 +25,14 @@
 
 /config/llm_providers.yaml
 
+###> python ###
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.venv/
+/.ruff_cache/
+###< python ###
+
 .idea/*
 .php-version
 .php-cs-fixer.cache

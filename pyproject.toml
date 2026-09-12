@@ -1,0 +1,33 @@
+[project]
+name = "inkspire-api"
+version = "0.1.0"
+description = "InkSpire REST API"
+requires-python = ">=3.12,<4.0.0"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "alembic",
+    "pydantic-settings",
+    "pyjwt",
+    "bcrypt",
+    "typer",
+]
+
+[project.scripts]
+inkspire = "inkspire_api.cli:app"
+
+[tool.poetry]
+requires-poetry = ">=2.0"
+packages = [{ include = "inkspire_api" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+httpx = "*"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"
