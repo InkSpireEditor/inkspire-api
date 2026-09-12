@@ -24,6 +24,7 @@
 ###< lexik/jwt-authentication-bundle ###
 
 /config/llm_providers.yaml
+/config/providers.yaml
 
 ###> python ###
 __pycache__/

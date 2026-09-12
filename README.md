@@ -86,8 +86,8 @@ This branch carries a rewrite of the API in Python — FastAPI, SQLAlchemy and A
 finished and is not on `main`. The Symfony application above is still the released
 one, and both run from this working tree in the meantime.
 
-Working so far: authentication, access control on `/api`, and account management from
-the shell. Not yet written: text generation and the file and directory routes.
+Working so far: authentication, access control on `/api`, text generation, and account
+management from the shell. Not yet written: the file and directory routes.
 
 ```bash
 poetry install
@@ -97,10 +97,16 @@ echo "INKSPIRE_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_hex(3
 
 poetry run alembic upgrade head      # creates `user` and `refresh_token`
 poetry run inkspire user create you@example.com
-poetry run uvicorn inkspire_api.main:app --port 8000 --reload
+poetry run inkspire run              # http://127.0.0.1:8000
+poetry run inkspire run --reload --host 0.0.0.0 --port 8001
 
 poetry run pytest
 ```
+
+`run` serves one process. The model cache and both rate limiters are held in the
+serving process, so running several would multiply the effective generation limit by
+the number of them. It refuses to start without a signing secret, and warns when no
+provider file is present.
 
 The default database is `var/data_dev.db`. A database that already holds `user` and
 `refresh_token` tables satisfies the first revision as it stands, so record it as
@@ -115,11 +121,15 @@ poetry run alembic stamp 9755af1d75c1
 There is no registration endpoint. Accounts are made and reset from the shell:
 
 ```bash
+poetry run inkspire user list                                          # who exists, and their open sessions
 poetry run inkspire user create alice@example.com                      # prints a generated password
 poetry run inkspire user create alice@example.com -p '...' -r ROLE_ADMIN
 poetry run inkspire user reset-password alice@example.com              # also revokes refresh tokens
 poetry run inkspire user reset-password alice@example.com --keep-sessions
 ```
+
+`list` writes its header to standard error and the rows to standard output, so the rows
+pipe cleanly. A session is a refresh token that has not expired.
 
 ### Authentication
 
@@ -135,6 +145,67 @@ A request to `/api` authenticates with either the `jwt_token` cookie or an
 nothing outside this application verifies one, so there is no keypair to manage.
 
 Errors are `{"code", "message"}` at every status.
+
+### Text generation
+
+Providers are configured in `config/providers.yaml`, which is not committed because it
+holds API keys:
+
+```yaml
+local-ollama:
+  url: http://127.0.0.1:11434
+  key: null
+  protocol: ollama
+
+hosted:
+  url: https://api.example.com/v1
+  key: sk-...
+```
+
+The provider name becomes the prefix of every model it offers, so models are addressed
+as `local-ollama/llama3`. `protocol` is `openai` by default, for any chat-completions
+endpoint. Use `ollama` for an Ollama instance: its compatibility layer accepts `think`
+and ignores it, so reasoning cannot be turned off through it, and sampling options
+cannot be set either.
+
+`GET /api/llm/models` lists every provider's models. A provider that cannot be reached
+contributes nothing instead of failing the list. Results are held for an hour per
+provider, in the serving process.
+
+`POST /api/llm/generate` takes `{"model", "prompt"}` and answers `text/event-stream`:
+
+| Event | Meaning |
+|---|---|
+| `{"delta": "..."}` | Text to append. |
+| `{"error": "..."}` | The provider failed after the stream had started. |
+| `[DONE]` | End of generation. |
+
+A failure *before* any text is an ordinary status code instead — 422 for an unknown
+model, 429 over the rate limit (20 generations per minute per account), 500 for an
+unreachable provider — so a client only has to handle an error event once it is already
+displaying text. The generated text is not written to disk: the client owns the chapter
+and saves it.
+
+Thinking is worth knowing about. A reasoning model produces its reasoning on a separate
+field, which is dropped and never appended to the chapter, but it still delays the
+first visible chunk by the whole reasoning pass. A model whose context window fills
+with reasoning can finish without writing anything at all; that answers as an error
+naming the cause rather than as an empty continuation. Set `INKSPIRE_LLM_THINK=false`
+to turn it off, or raise `INKSPIRE_LLM_NUM_CTX`.
+
+Run a generation from the shell to see all of this without a browser or an account.
+The text comes from standard input and the continuation goes to standard output, so it
+pipes and redirects:
+
+```bash
+poetry run inkspire llm models
+poetry run inkspire llm generate -m local-ollama/llama3 < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --no-think < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt < chapter.ink
+```
+
+It sends the same prompt the API sends, so a model that behaves badly here behaves
+badly in the editor. `--show-prompt` prints what would be sent and generates nothing.
 
 ---
 

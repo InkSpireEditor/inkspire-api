@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Login throttling, per client address.
+"""Sliding-window counters for login attempts and generation requests.
 
-Failed attempts are counted in a sliding window and the count is cleared by a
-successful login, so a user who mistypes a password twice and then gets it right
-starts from zero again.
-
-The store is a dictionary in this process: it does not survive a restart and is not
-shared between workers. A deployment running more than one worker needs a shared
-backend here, otherwise the effective limit is the configured one times the number
-of workers.
+Both stores are dictionaries in this process: they do not survive a restart and are
+not shared between workers. A deployment running more than one worker needs a shared
+backend here, otherwise the effective limit is the configured one times the number of
+workers.
 """
 
 from __future__ import annotations
@@ -17,29 +13,72 @@ import time
 from collections import defaultdict
 
 
-class LoginThrottle:
-    def __init__(self, max_attempts: int, interval: int) -> None:
-        self.max_attempts = max_attempts
+class SlidingWindow:
+    """Counts events per key over the last `interval` seconds."""
+
+    def __init__(self, limit: int, interval: int) -> None:
+        self.limit = limit
         self.interval = interval
-        self._failures: dict[str, list[float]] = defaultdict(list)
+        self._events: dict[str, list[float]] = defaultdict(list)
 
     @property
     def enabled(self) -> bool:
-        return self.max_attempts > 0
+        return self.limit > 0
 
-    def _recent(self, key: str, now: float) -> list[float]:
-        kept = [t for t in self._failures[key] if now - t < self.interval]
-        self._failures[key] = kept
-        return kept
+    def count(self, key: str, now: float | None = None) -> int:
+        """The events still inside the window, dropping the ones that have aged out."""
+        now = time.monotonic() if now is None else now
+        kept = [at for at in self._events[key] if now - at < self.interval]
+        self._events[key] = kept
+        return len(kept)
 
-    def blocked(self, key: str, now: float | None = None) -> bool:
-        if not self.enabled:
-            return False
-        return len(self._recent(key, now if now is not None else time.monotonic())) >= self.max_attempts
-
-    def record_failure(self, key: str, now: float | None = None) -> None:
+    def record(self, key: str, now: float | None = None) -> None:
         if self.enabled:
-            self._failures[key].append(now if now is not None else time.monotonic())
+            self._events[key].append(time.monotonic() if now is None else now)
 
     def reset(self, key: str) -> None:
-        self._failures.pop(key, None)
+        self._events.pop(key, None)
+
+
+class LoginThrottle:
+    """Refuses logins from an address that keeps failing.
+
+    Only failures are counted, and a successful login clears the count, so someone who
+    mistypes a password twice and then gets it right starts from zero again.
+    """
+
+    def __init__(self, max_attempts: int, interval: int) -> None:
+        self._window = SlidingWindow(max_attempts, interval)
+
+    @property
+    def enabled(self) -> bool:
+        return self._window.enabled
+
+    def blocked(self, key: str) -> bool:
+        return self.enabled and self._window.count(key) >= self._window.limit
+
+    def record_failure(self, key: str) -> None:
+        self._window.record(key)
+
+    def reset(self, key: str) -> None:
+        self._window.reset(key)
+
+
+class RateLimiter:
+    """Caps how often one key may do something, counting every attempt."""
+
+    def __init__(self, limit: int, interval: int) -> None:
+        self._window = SlidingWindow(limit, interval)
+
+    @property
+    def enabled(self) -> bool:
+        return self._window.enabled
+
+    def consume(self, key: str) -> bool:
+        """Records an attempt and reports whether it is within the limit."""
+        if not self.enabled:
+            return True
+        if self._window.count(key) >= self._window.limit:
+            return False
+        self._window.record(key)
+        return True

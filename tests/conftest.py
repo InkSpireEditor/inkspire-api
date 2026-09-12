@@ -8,14 +8,18 @@ no cleanup step that could leave a row behind.
 from __future__ import annotations
 
 import datetime
+import json
 from collections.abc import Iterator
+from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from inkspire_api.db import get_session
+from inkspire_api.llm import LLMService
 from inkspire_api.main import create_app
 from inkspire_api.models import Base, RefreshToken, User, new_refresh_token, utcnow
 from inkspire_api.security import hash_password
@@ -125,6 +129,46 @@ def set_cookies(response) -> dict[str, dict[str, str]]:
             attributes[key.lower()] = attribute_value
         parsed[name] = attributes
     return parsed
+
+
+def llm_settings(
+    tmp_path: Path,
+    *,
+    protocol: str = "openai",
+    think: bool | None = None,
+    num_ctx: int | None = None,
+    ttl: int = 3600,
+) -> Settings:
+    """Settings with one provider, named `p`, reachable at https://provider.test."""
+    providers = tmp_path / "providers.yaml"
+    providers.write_text(
+        f"p:\n  url: https://provider.test\n  key: secret\n  protocol: {protocol}\n",
+        encoding="utf-8",
+    )
+    return Settings(
+        jwt_secret="x" * 32,
+        llm_providers_file=providers,
+        llm_think=think,
+        llm_num_ctx=num_ctx,
+        llm_cache_ttl=ttl,
+    )
+
+
+def llm_service(tmp_path: Path, handler, **kwargs) -> LLMService:
+    """A service whose provider is answered by `handler` instead of over the network."""
+    return LLMService(
+        llm_settings(tmp_path, **kwargs), transport=httpx.MockTransport(handler)
+    )
+
+
+def sse_body(*events: dict) -> str:
+    """A complete chat-completions response body, terminator included."""
+    return "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
+
+
+def delta(text: str) -> dict:
+    """One chat-completions content chunk."""
+    return {"choices": [{"delta": {"content": text}, "finish_reason": None}]}
 
 
 def add_refresh_token(
