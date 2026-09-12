@@ -79,6 +79,65 @@ The API will be running at `http://127.0.0.1:8000`.
 
 ---
 
+## 🐍 The Python API (in progress, this branch only)
+
+This branch carries a rewrite of the API in Python — FastAPI, SQLAlchemy and Alembic
+— following the design in the umbrella repository's `ARCHITECTURE.md`. It is not
+finished and is not on `main`. The Symfony application above is still the released
+one, and both run from this working tree in the meantime.
+
+Working so far: authentication, access control on `/api`, and account management from
+the shell. Not yet written: text generation and the file and directory routes.
+
+```bash
+poetry install
+
+# A signing secret is required and has no default.
+echo "INKSPIRE_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))')" >> .env.local
+
+poetry run alembic upgrade head      # creates `user` and `refresh_token`
+poetry run inkspire user create you@example.com
+poetry run uvicorn inkspire_api.main:app --port 8000 --reload
+
+poetry run pytest
+```
+
+The default database is `var/data_dev.db`. A database that already holds `user` and
+`refresh_token` tables satisfies the first revision as it stands, so record it as
+applied rather than running it:
+
+```bash
+poetry run alembic stamp 9755af1d75c1
+```
+
+### Accounts
+
+There is no registration endpoint. Accounts are made and reset from the shell:
+
+```bash
+poetry run inkspire user create alice@example.com                      # prints a generated password
+poetry run inkspire user create alice@example.com -p '...' -r ROLE_ADMIN
+poetry run inkspire user reset-password alice@example.com              # also revokes refresh tokens
+poetry run inkspire user reset-password alice@example.com --keep-sessions
+```
+
+### Authentication
+
+`POST /auth` takes `{"username", "password"}` and answers `{"token"}`, setting three
+`SameSite=Strict` cookies: `jwt_token` (httpOnly, path `/`), `refresh_token`
+(httpOnly, path `/auth`, so it is not sent with ordinary API calls) and a readable
+`auth_status=1` that lets a browser client tell it has a session without reading the
+token. `POST /auth/refresh` issues a new JWT and rotates the refresh token;
+`POST /auth/logout` deletes it and clears all three cookies.
+
+A request to `/api` authenticates with either the `jwt_token` cookie or an
+`Authorization: Bearer` header. Tokens are signed HS256 with `INKSPIRE_JWT_SECRET`;
+nothing outside this application verifies one, so there is no keypair to manage.
+
+Errors are `{"code", "message"}` at every status.
+
+---
+
 ## 🧪 API Endpoints
 
 A Postman collection or OpenAPI/Swagger documentation will be available soon. Here are the main endpoints:
