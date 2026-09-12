@@ -479,3 +479,19 @@ def test_the_refresh_token_is_long_and_random(logged_in: TestClient, session: Se
     stored = session.scalars(select(RefreshToken)).all()[0]
     assert len(stored.token) == 64  # 32 bytes, hex encoded
     assert stored.expires_at > datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
+
+def test_the_server_refuses_to_start_without_a_signing_secret() -> None:
+    """A 500 on every login is a worse way to learn this than a failure to start."""
+    from inkspire_api.settings import SecretNotConfigured
+
+    with pytest.raises(SecretNotConfigured, match="INKSPIRE_JWT_SECRET"):
+        with TestClient(create_app(Settings(jwt_secret=None))):
+            pass  # entering the context is what runs startup
+
+
+def test_importing_the_module_does_not_require_configuration() -> None:
+    """Tooling and the CLI import this; only serving needs a secret."""
+    import importlib
+
+    importlib.reload(importlib.import_module("inkspire_api.main"))

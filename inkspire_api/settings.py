@@ -9,6 +9,7 @@ defaults below.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,7 +21,9 @@ class SecretNotConfigured(RuntimeError):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="INKSPIRE_",
-        env_file=".env",
+        # Layered, last one winning: `.env` is committed and holds defaults, `.env.local`
+        # is not committed and holds secrets and per-machine paths.
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -42,6 +45,32 @@ class Settings(BaseSettings):
     login_interval: int = 60
 
     cors_allow_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$"
+
+    #: Maps a provider name to its base URL and optional API key. Holds API keys, so
+    #: it is not committed. Absent on an installation with no provider configured, in
+    #: which case no model is offered.
+    llm_providers_file: Path = Path("config/providers.yaml")
+
+    llm_temperature: float = 1.0
+
+    # Context window, sent to Ollama providers only, and only when set. A reasoning
+    # model can spend a small window entirely on thinking and never answer.
+    llm_num_ctx: int | None = None
+
+    # The longest acceptable gap between two streamed chunks. A whole generation may
+    # take much longer than this; only silence ends it.
+    llm_timeout: float = 120.0
+
+    # Ollama's `think` extension: True asks a reasoning model to think, False asks it
+    # not to. Left unset the key is not sent at all, which is what a provider speaking
+    # only the chat-completions specification expects.
+    llm_think: bool | None = None
+
+    llm_cache_ttl: int = 3600
+
+    # Generation requests per authenticated account. Zero disables the limit.
+    llm_limit: int = 20
+    llm_interval: int = 60
 
     def jwt_secret_or_raise(self) -> str:
         if not self.jwt_secret:

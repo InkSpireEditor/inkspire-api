@@ -6,23 +6,38 @@ Run it with: poetry run uvicorn inkspire_api.main:app --port 8000
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import auth
+from . import auth, llm
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
-from .throttle import LoginThrottle
+from .throttle import LoginThrottle, RateLimiter
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="InkSpire API")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Checked on the way up, so a missing secret stops the server starting rather
+        # than answering every login with a 500 once it is already serving. Checked
+        # here rather than in this function's body because importing this module must
+        # not require a configured installation.
+        settings.jwt_secret_or_raise()
+        yield
+
+    app = FastAPI(title="InkSpire API", lifespan=lifespan)
     app.state.login_throttle = LoginThrottle(
         settings.login_max_attempts, settings.login_interval
     )
+    app.state.llm_limiter = RateLimiter(settings.llm_limit, settings.llm_interval)
+    app.state.llm_service = None
 
     # The frontend is served from a different port, so every request to this API is
     # cross-origin. allow_credentials is what lets the browser attach the auth
@@ -71,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The account the request is authenticated as."""
         return {"email": user.email, "roles": user.all_roles()}
 
+    api.include_router(llm.router)
     app.include_router(api)
     return app
 
