@@ -107,6 +107,8 @@ def free_path(directory: Path, stem: str, suffix: str = "") -> Path:
 
 @dataclass(frozen=True)
 class Chapter:
+    """One `.ink` file in a story's chapters directory."""
+
     id: str
     #: Relative to the repository root.
     relpath: PurePosixPath
@@ -115,11 +117,14 @@ class Chapter:
 
     @property
     def filename(self) -> str:
+        """The file's own name, which is what a manifest entry refers to."""
         return self.relpath.name
 
 
 @dataclass(frozen=True)
 class Story:
+    """One story directory, with the chapters found in it."""
+
     id: str
     slug: str
     relpath: PurePosixPath
@@ -262,9 +267,11 @@ class Scanner:
 
     @property
     def stories_dir(self) -> Path:
+        """The directory the stories sit in."""
         return self.root / STORIES
 
     def tree(self) -> Tree:
+        """The current scan, rebuilt first if the repository has changed."""
         with self._lock:
             stamp = self._current_stamp()
             if self._tree is None or stamp != self._stamp:
@@ -279,12 +286,14 @@ class Scanner:
             self._stamp = None
 
     def story(self, story_id: str) -> Story:
+        """The story with that id, or `NotFound`."""
         story = self.tree().stories.get(story_id)
         if story is None:
             raise NotFound(f'No story with id "{story_id}".')
         return story
 
     def chapter(self, chapter_id: str) -> Chapter:
+        """The chapter with that id, or `NotFound`."""
         chapter = self.tree().chapters.get(chapter_id)
         if chapter is None:
             raise NotFound(f'No chapter with id "{chapter_id}".')
@@ -565,6 +574,7 @@ class Scanner:
     # --- content -----------------------------------------------------------
 
     def read_chapter(self, chapter_id: str) -> str:
+        """A chapter's text."""
         chapter = self.chapter(chapter_id)
         try:
             return self.path(chapter.relpath).read_text(encoding="utf-8")
@@ -576,6 +586,7 @@ class Scanner:
             ) from error
 
     def write_chapter(self, chapter_id: str, text: str) -> None:
+        """Replaces a chapter's text, leaving the previous text if the write fails."""
         chapter = self.chapter(chapter_id)
         path = self.path(chapter.relpath)
         if not path.is_file():

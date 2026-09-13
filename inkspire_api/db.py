@@ -22,7 +22,7 @@ def _enforce_sqlite_foreign_keys(dbapi_connection, _record) -> None:
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
-    except Exception:  # a non-SQLite driver has no such pragma
+    except Exception:  # pylint: disable=broad-exception-caught  # a non-SQLite driver has no such pragma
         pass
     finally:
         cursor.close()

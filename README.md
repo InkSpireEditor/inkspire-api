@@ -8,86 +8,37 @@
 
 **This project is currently under active and heavy development. It is NOT ready for general use and may contain bugs, incomplete features, or breaking changes. Use at your own risk.**
 
-![CI](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/ci.yml/badge.svg?branch=main)
+![Pytest](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/test.yaml/badge.svg)
+![Pylint](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/lint.yaml/badge.svg)
 
-This is the backend API for InkSpire, a modern web-based text editor. It provides all the necessary services for the [InkSpire Frontend](../inkspire-frontend) to function.
-
----
-
-## ✨ Features
-
-- **RESTful API**: Provides a complete set of endpoints for file and directory management.
-- **JWT Authentication**: Secures the API using JSON Web Tokens for stateless authentication.
+The backend for InkSpire, a web editor for writing novels. It serves the
+[InkSpire frontend](../inkspire-frontend): the stories on disk, the text a writer saves,
+and the continuations a language model streams back.
 
 ---
 
-## 🧠 Technology Stack
+## ✨ What it does
 
-- [Symfony](https://symfony.com/) — A set of reusable PHP components and a PHP framework to build web applications.
-- [PHP](https://www.php.net/) 8.2+
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- [PHP](https://www.php.net/) 8.2 or later
-- [Composer](https://getcomposer.org/)
-- [Symfony CLI](https://symfony.com/download)
-
-### Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd inkspire-api
-    ```
-
-2.  **Install dependencies:**
-    ```bash
-    composer install
-    ```
-
-3.  **Set up environment variables:**
-    Create a `.env` file and configure your database connection and other variables. You will need to generate the JWT keys.
-    ```bash
-    php bin/console lexik:jwt:generate-keypair
-    ```
-    This will generate `config/jwt/private.pem` and `config/jwt/public.pem` and update your `.env` file.
-
-5.  **Run database migrations:**
-    ```bash
-    php bin/console doctrine:database:create --env=dev
-    php bin/console doctrine:database:create --env=test
-    php bin/console doctrine:migrations:migrate --env=dev
-    php bin/console doctrine:migrations:migrate --env=test
-    php bin/console doctrine:fixtures:load
-    ```
-
-6. **Create file storage folder:**
-    ```bash
-    mkdir var/files
-    ```
-
-7.  **Start the server:**
-    ```bash
-    symfony server:start
-    ```
-
-The API will be running at `http://127.0.0.1:8000`.
+- **Serves the stories from a git working tree.** The filesystem decides what exists, so a
+  chapter added by `git pull` or by an editor appears, and one deleted that way stops
+  being served. See [Stories on disk](#stories-on-disk).
+- **Streams generated text.** `POST /api/llm/generate` forwards a model's output chunk by
+  chunk over server-sent events, from any of several providers.
+- **Authenticates with JWTs in cookies**, rotating a refresh token, with accounts made
+  from the shell rather than by registration.
 
 ---
 
-## 🐍 The Python API (in progress, this branch only)
+## 🧠 Built with
 
-This branch carries a rewrite of the API in Python — FastAPI, SQLAlchemy and Alembic
-— following the design in the umbrella repository's `ARCHITECTURE.md`. It is not
-finished and is not on `main`. The Symfony application above is still the released
-one, and both run from this working tree in the meantime.
+- [FastAPI](https://fastapi.tiangolo.com/) on [Python](https://www.python.org/) 3.12 or later
+- [SQLAlchemy](https://www.sqlalchemy.org/) and [Alembic](https://alembic.sqlalchemy.org/), over SQLite
+- [Typer](https://typer.tiangolo.com/) for the `inkspire` command
+- [Poetry](https://python-poetry.org/) for dependencies
 
-Working so far: authentication, access control on `/api`, text generation, the file and
-directory routes over the story repository, and account management from the shell.
+---
+
+## 🚀 Getting started
 
 ```bash
 poetry install
@@ -110,13 +61,9 @@ stories are held in the serving process, so running several would multiply the
 effective generation limit by the number of them. It refuses to start without a signing
 secret, and warns when the stories or the provider file are not where it expects them.
 
-The default database is `var/data_dev.db`. A database that already holds `user` and
-`refresh_token` tables satisfies the first revision as it stands, so record it as
-applied rather than running it:
-
-```bash
-poetry run alembic stamp 9755af1d75c1
-```
+The default database is `var/data_dev.db`, holding `user` and `refresh_token` and
+nothing else. It is cheap to throw away and rebuild — deleting the file and running
+`alembic upgrade head` again costs one `inkspire user create`.
 
 ### Accounts
 
@@ -165,6 +112,12 @@ One story is one directory in the tree, and its chapters are that directory's fi
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
 this API's to remove.
+
+**Known limitation.** A directory here is a story and a file is a chapter, so there is
+nowhere to put a file that belongs to no story: `POST /api/file` with `dir: null`
+answers 422, `GET /api/tree` always returns an empty `files` map, and every directory
+created is a story. The umbrella repository's `ARCHITECTURE.md` records what has to be
+decided to lift that.
 
 Ids are `blake2b(path).hexdigest()[:16]`, derived from the repository-relative path. A
 client never sends a path, so nothing it sends can point out of the repository, and every
@@ -253,43 +206,37 @@ badly in the editor. `--show-prompt` prints what would be sent and generates not
 
 ---
 
-## 🧪 API Endpoints
+## 🧪 Quality and testing
 
-A Postman collection or OpenAPI/Swagger documentation will be available soon. Here are the main endpoints:
+This project uses **AI-assisted development** for rapid implementation, with human
+oversight and validation.
 
-### Auth
-- `POST /auth`: Authenticate and receive a JWT.
-
-### Files & Directories
-- `GET /api/tree`: Get the full file and directory structure for the user.
-- `POST /api/file`: Create a new file.
-- `GET /api/file/{id}`: Get details for a specific file.
-- `PUT /api/file/{id}`: Update a file's details (e.g., name, parent directory).
-- `DELETE /api/file/{id}`: Delete a file.
-- `POST /api/dir`: Create a new directory.
-- `GET /api/dir/{id}`: Get details for a specific directory and its contents.
-- `PUT /api/dir/{id}`: Update a directory's details (e.g., name, summary).
-- `DELETE /api/dir/{id}`: Delete a directory.
-
-### Text Generation
-- `POST /api/ollama/generate`: Get a completion for the provided text using the provided model.
-
----
-
-## 🧪 Quality and Testing
-
-This project uses **AI-assisted development** for rapid implementation, with human oversight and validation. Automated tests are in place to ensure API correctness and reliability.
-
-Run the test suite:
 ```bash
-php bin/phpunit
+poetry run pytest                                    # the suite
+poetry run pytest --cov inkspire_api                 # with coverage
+poetry run pytest tests/test_files.py                # one file
+poetry run pytest -k "loose or symlink"              # by name
+
+poetry run pylint --rcfile=.github/workflows/pylintrc inkspire_api
+poetry run ty check
 ```
+
+Tests build their own SQLite file and their own story repository under `tmp_path`, so
+there is nothing to set up and nothing shared between them. No provider is contacted:
+requests are answered by a transport constructed in the test.
+
+Both commands above run on every push, as the Pytest and Pylint workflows.
 
 ---
 
 ## 📜 License
 
-This project is released under the [MIT License](../inkspire-frontend/LICENSE).
+This project is released under the [PolyForm Noncommercial License 1.0.0](LICENSE). Any
+noncommercial purpose is permitted, which the licence spells out as including personal
+study, hobby projects and use by charities, schools, public research organisations and
+government bodies. It grants no licence for commercial use. The `LICENSE` file is the
+terms; this paragraph is not.
+
 It is provided *as is*, without warranty, but every effort is made to ensure code reliability and responsible use of AI-generated components.
 
 ---

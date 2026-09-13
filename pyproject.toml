@@ -2,6 +2,8 @@
 name = "inkspire-api"
 version = "0.1.0"
 description = "InkSpire REST API"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<4.0.0"
 dependencies = [
     "fastapi",
@@ -29,6 +31,9 @@ pytest = "*"
 httpx = "*"
 pytest-asyncio = "^1.4.0"
 anyio = "^4.15.1"
+pylint = "^4.0.8"
+ty = "^0.0.80"
+pytest-cov = "^7.1.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

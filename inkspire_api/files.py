@@ -59,22 +59,30 @@ ScannerDep = Annotated[Scanner, Depends(get_scanner)]
 
 
 class DirCreate(BaseModel):
+    """A story to create."""
+
     name: Name
     summary: Summary | None = None
 
 
 class DirUpdate(BaseModel):
+    """What to change about a story. An absent field is left as it is."""
+
     name: Name | None = None
     summary: Summary | None = None
 
 
 class FileCreate(BaseModel):
+    """A chapter to create, and the story to create it in."""
+
     #: The story to create the chapter in. Named `dir` by the clients.
     dir: str | None = None
     name: Name
 
 
 class FileUpdate(BaseModel):
+    """What to change about a chapter. An absent field is left as it is."""
+
     name: Name | None = None
     #: A story to move the chapter to. A chapter always belongs to one, so there is
     #: nowhere to move it out to and `null` leaves it where it is.
@@ -101,6 +109,7 @@ def tree(user: CurrentUser, scanner: ScannerDep) -> dict:
 
 @router.get("/dir/{dir_id}")
 def dir_info(dir_id: str, scanner: ScannerDep) -> dict:
+    """One story, and the chapters in it."""
     story = scanner.story(dir_id)
     return {
         "id": story.id,
@@ -112,24 +121,28 @@ def dir_info(dir_id: str, scanner: ScannerDep) -> dict:
 
 @router.post("/dir", status_code=status.HTTP_201_CREATED)
 def create_dir(body: DirCreate, scanner: ScannerDep) -> dict:
+    """Creates a story directory, with a manifest and an empty chapters directory."""
     story = scanner.create_story(body.name, body.summary or "")
     return {"id": story.id, "name": story.name, "summary": story.summary}
 
 
 @router.put("/dir/{dir_id}")
 def update_dir(dir_id: str, body: DirUpdate, scanner: ScannerDep) -> dict:
+    """Retitles a story, or rewrites its synopsis. Its id does not change."""
     story = scanner.update_story(dir_id, name=body.name, summary=body.summary)
     return {"id": story.id, "name": story.name, "summary": story.summary}
 
 
 @router.delete("/dir/{dir_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_dir(dir_id: str, scanner: ScannerDep) -> Response:
+    """Deletes a story and its chapters, unless the directory holds anything else."""
     scanner.delete_story(dir_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/file", status_code=status.HTTP_201_CREATED)
 def create_file(body: FileCreate, scanner: ScannerDep) -> dict:
+    """Creates an empty chapter in a story."""
     if body.dir is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -141,24 +154,28 @@ def create_file(body: FileCreate, scanner: ScannerDep) -> dict:
 
 @router.get("/file/{file_id}")
 def file_info(file_id: str, scanner: ScannerDep) -> dict:
+    """One chapter's id and name."""
     chapter = scanner.chapter(file_id)
     return {"id": chapter.id, "name": chapter.name}
 
 
 @router.put("/file/{file_id}")
 def update_file(file_id: str, body: FileUpdate, scanner: ScannerDep) -> dict:
+    """Renames a chapter, or moves it to another story. Either changes its id."""
     chapter = scanner.update_chapter(file_id, name=body.name, story_id=body.dir)
     return {"id": chapter.id, "name": chapter.name, "dir": chapter.story_id}
 
 
 @router.delete("/file/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_file(file_id: str, scanner: ScannerDep) -> Response:
+    """Deletes a chapter."""
     scanner.delete_chapter(file_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/file/{file_id}/contents", response_class=PlainTextResponse)
 def read_contents(file_id: str, scanner: ScannerDep) -> PlainTextResponse:
+    """A chapter's text, as `text/plain`."""
     return PlainTextResponse(scanner.read_chapter(file_id))
 
 
