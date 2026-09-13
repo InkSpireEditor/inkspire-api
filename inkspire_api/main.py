@@ -9,15 +9,22 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import auth, llm
+from . import auth, files, llm
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
+from .storage import Conflict, NotFound, StorageError
 from .throttle import LoginThrottle, RateLimiter
+
+#: How a failure to read or change the stories on disk is answered.
+STORAGE_STATUS = {
+    NotFound: status.HTTP_404_NOT_FOUND,
+    Conflict: status.HTTP_409_CONFLICT,
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -38,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.llm_limiter = RateLimiter(settings.llm_limit, settings.llm_interval)
     app.state.llm_service = None
+    app.state.scanner = None
 
     # The frontend is served from a different port, so every request to this API is
     # cross-origin. allow_credentials is what lets the browser attach the auth
@@ -75,6 +83,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=400,
         )
 
+    @app.exception_handler(StorageError)
+    def _storage(_request: Request, exc: StorageError) -> JSONResponse:
+        """The routes let storage errors out, and each becomes the status that fits it.
+
+        Anything not listed is a 500: the repository is not in the state the API needs,
+        and that is not something the client did.
+        """
+        code = STORAGE_STATUS.get(type(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return JSONResponse({"code": code, "message": str(exc)}, status_code=code)
+
     app.include_router(auth.router)
 
     # Everything under /api requires a valid token. Declaring it on the router rather
@@ -86,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The account the request is authenticated as."""
         return {"email": user.email, "roles": user.all_roles()}
 
+    api.include_router(files.router)
     api.include_router(llm.router)
     app.include_router(api)
     return app

@@ -121,6 +121,14 @@ def run(
     except SecretNotConfigured as error:
         fail(str(error))
 
+    if not settings.data_root.is_dir():
+        typer.secho(
+            f"No stories ({settings.data_root} is not there), so the tree will be "
+            "empty. Clone the story repository, or set INKSPIRE_DATA_ROOT.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
     if not settings.llm_providers_file.is_file():
         typer.secho(
             f"No providers configured ({settings.llm_providers_file} is absent), so no "

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -39,11 +40,55 @@ def settings(tmp_path) -> Settings:
     """
     return Settings(
         database_url=f"sqlite:///{tmp_path / 'data_test.db'}",
+        data_root=tmp_path / "novel-data",
         # At least 32 bytes, or PyJWT warns that the HMAC key is short for SHA-256.
         jwt_secret="test-only-signing-secret-padded-to-32-bytes",
         bcrypt_rounds=4,
         login_max_attempts=0,
     )
+
+
+@pytest.fixture
+def data_root(settings: Settings) -> Path:
+    """An empty story repository, where the test settings expect one."""
+    (settings.data_root / "stories").mkdir(parents=True)
+    return settings.data_root
+
+
+def make_story(
+    root: Path,
+    slug: str,
+    *,
+    title: str | None = None,
+    synopsis: str = "",
+    chapters: dict[str, str] | None = None,
+    listed: list | None = None,
+    manifest: bool = True,
+) -> Path:
+    """Writes `stories/<slug>/` with a manifest and the chapter files given.
+
+    `chapters` maps a filename to its content. `listed` is the manifest's `chapters:`
+    entries, which are empty unless a test is about ordering or titles. `manifest=False`
+    leaves out `story.yaml`, which is what makes a directory something other than a story.
+    """
+    story_dir = root / "stories" / slug
+    (story_dir / "chapters").mkdir(parents=True)
+    for filename, text in (chapters or {}).items():
+        (story_dir / "chapters" / filename).write_text(text, encoding="utf-8")
+    if manifest:
+        (story_dir / "story.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "title": title if title is not None else slug,
+                    "synopsis": synopsis,
+                    "chapters": listed or [],
+                },
+                sort_keys=False,
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+    return story_dir
 
 
 @pytest.fixture

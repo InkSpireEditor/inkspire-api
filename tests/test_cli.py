@@ -82,11 +82,21 @@ def serve(monkeypatch, tmp_path):
 
     monkeypatch.setattr(uvicorn, "run", record)
 
-    def run(*args: str, secret: str | None = "s" * 32, providers: bool = True):
+    def run(
+        *args: str,
+        secret: str | None = "s" * 32,
+        providers: bool = True,
+        stories: bool = True,
+    ):
         settings = llm_settings(tmp_path) if providers else Settings(
             llm_providers_file=tmp_path / "absent.yaml"
         )
-        settings = settings.model_copy(update={"jwt_secret": secret})
+        data_root = tmp_path / "novel-data"
+        if stories:
+            (data_root / "stories").mkdir(parents=True, exist_ok=True)
+        settings = settings.model_copy(
+            update={"jwt_secret": secret, "data_root": data_root}
+        )
         monkeypatch.setattr(cli, "get_settings", lambda: settings)
         return runner.invoke(cli.app, ["run", *args]), started
 
@@ -126,6 +136,14 @@ def test_run_warns_when_no_provider_is_configured(serve) -> None:
     result, started = serve(providers=False)
     assert result.exit_code == 0, result.output
     assert "No providers configured" in result.output
+    assert started["target"] == "inkspire_api.main:app"
+
+
+def test_run_warns_when_the_stories_are_not_there(serve) -> None:
+    """An empty tree is what an unconfigured story repository looks like from a browser."""
+    result, started = serve(stories=False)
+    assert result.exit_code == 0, result.output
+    assert "INKSPIRE_DATA_ROOT" in result.output
     assert started["target"] == "inkspire_api.main:app"
 
 
