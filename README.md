@@ -8,114 +8,296 @@
 
 **This project is currently under active and heavy development. It is NOT ready for general use and may contain bugs, incomplete features, or breaking changes. Use at your own risk.**
 
-![CI](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/ci.yml/badge.svg?branch=main)
+![Pytest](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/test.yaml/badge.svg)
+![Pylint](https://github.com/InkSpireEditor/inkspire-api/actions/workflows/lint.yaml/badge.svg)
 
-This is the backend API for InkSpire, a modern web-based text editor. It provides all the necessary services for the [InkSpire Frontend](../inkspire-frontend) to function.
-
----
-
-## ✨ Features
-
-- **RESTful API**: Provides a complete set of endpoints for file and directory management.
-- **JWT Authentication**: Secures the API using JSON Web Tokens for stateless authentication.
+The backend for InkSpire, a web editor for writing novels. It serves the
+[InkSpire frontend](../inkspire-frontend): the stories on disk, the text a writer saves,
+and the continuations a language model streams back.
 
 ---
 
-## 🧠 Technology Stack
+## ✨ What it does
 
-- [Symfony](https://symfony.com/) — A set of reusable PHP components and a PHP framework to build web applications.
-- [PHP](https://www.php.net/) 8.2+
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- [PHP](https://www.php.net/) 8.2 or later
-- [Composer](https://getcomposer.org/)
-- [Symfony CLI](https://symfony.com/download)
-
-### Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd inkspire-api
-    ```
-
-2.  **Install dependencies:**
-    ```bash
-    composer install
-    ```
-
-3.  **Set up environment variables:**
-    Create a `.env` file and configure your database connection and other variables. You will need to generate the JWT keys.
-    ```bash
-    php bin/console lexik:jwt:generate-keypair
-    ```
-    This will generate `config/jwt/private.pem` and `config/jwt/public.pem` and update your `.env` file.
-
-5.  **Run database migrations:**
-    ```bash
-    php bin/console doctrine:database:create --env=dev
-    php bin/console doctrine:database:create --env=test
-    php bin/console doctrine:migrations:migrate --env=dev
-    php bin/console doctrine:migrations:migrate --env=test
-    php bin/console doctrine:fixtures:load
-    ```
-
-6. **Create file storage folder:**
-    ```bash
-    mkdir var/files
-    ```
-
-7.  **Start the server:**
-    ```bash
-    symfony server:start
-    ```
-
-The API will be running at `http://127.0.0.1:8000`.
+- **Serves the stories from a git working tree.** The filesystem decides what exists, so a
+  chapter added by `git pull` or by an editor appears, and one deleted that way stops
+  being served. See [Stories on disk](#stories-on-disk).
+- **Streams generated text.** `POST /api/llm/generate` forwards a model's output chunk by
+  chunk over server-sent events, from any of several providers.
+- **Authenticates with JWTs in cookies**, rotating a refresh token, with accounts made
+  from the shell rather than by registration.
 
 ---
 
-## 🧪 API Endpoints
+## 🧠 Built with
 
-A Postman collection or OpenAPI/Swagger documentation will be available soon. Here are the main endpoints:
-
-### Auth
-- `POST /auth`: Authenticate and receive a JWT.
-
-### Files & Directories
-- `GET /api/tree`: Get the full file and directory structure for the user.
-- `POST /api/file`: Create a new file.
-- `GET /api/file/{id}`: Get details for a specific file.
-- `PUT /api/file/{id}`: Update a file's details (e.g., name, parent directory).
-- `DELETE /api/file/{id}`: Delete a file.
-- `POST /api/dir`: Create a new directory.
-- `GET /api/dir/{id}`: Get details for a specific directory and its contents.
-- `PUT /api/dir/{id}`: Update a directory's details (e.g., name, summary).
-- `DELETE /api/dir/{id}`: Delete a directory.
-
-### Text Generation
-- `POST /api/ollama/generate`: Get a completion for the provided text using the provided model.
+- [FastAPI](https://fastapi.tiangolo.com/) on [Python](https://www.python.org/) 3.12 or later
+- [SQLAlchemy](https://www.sqlalchemy.org/) and [Alembic](https://alembic.sqlalchemy.org/), over SQLite
+- [Typer](https://typer.tiangolo.com/) for the `inkspire` command
+- [Poetry](https://python-poetry.org/) for dependencies
 
 ---
 
-## 🧪 Quality and Testing
+## 🚀 Getting started
 
-This project uses **AI-assisted development** for rapid implementation, with human oversight and validation. Automated tests are in place to ensure API correctness and reliability.
-
-Run the test suite:
 ```bash
-php bin/phpunit
+poetry install
+
+# A signing secret is required and has no default.
+echo "INKSPIRE_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))')" >> .env.local
+# Where the stories are. See "Stories on disk" below.
+echo "INKSPIRE_DATA_ROOT=~/Documents/novel-data" >> .env.local
+
+poetry run alembic upgrade head      # creates `user` and `refresh_token`
+poetry run inkspire user create you@example.com
+poetry run inkspire run              # http://127.0.0.1:8000
+poetry run inkspire run --reload --host 0.0.0.0 --port 8001
+
+poetry run pytest
 ```
+
+`run` serves one process. The model cache, both rate limiters and the scan of the
+stories are held in the serving process, so running several would multiply the
+effective generation limit by the number of them. It refuses to start without a signing
+secret, and warns when the stories or the provider file are not where it expects them.
+
+The default database is `var/data_dev.db`, holding `user` and `refresh_token` and
+nothing else. It is cheap to throw away and rebuild — deleting the file and running
+`alembic upgrade head` again costs one `inkspire user create`.
+
+### Accounts
+
+There is no registration endpoint. Accounts are made and reset from the shell:
+
+```bash
+poetry run inkspire user list                                          # who exists, and their open sessions
+poetry run inkspire user create alice@example.com                      # prints a generated password
+poetry run inkspire user create alice@example.com -p '...' -r ROLE_ADMIN
+poetry run inkspire user reset-password alice@example.com              # also revokes refresh tokens
+poetry run inkspire user reset-password alice@example.com --keep-sessions
+```
+
+`list` writes its header to standard error and the rows to standard output, so the rows
+pipe cleanly. A session is a refresh token that has not expired.
+
+### Stories on disk
+
+`INKSPIRE_DATA_ROOT` points at the story repository, a git working tree of its own:
+
+    stories/<story-slug>/story.yaml            title, synopsis and order, written by the API
+    stories/<story-slug>/chapters/<slug>.ink   a header and prose, written by the API
+    stories/<story-slug>/lorebook/             read by the lorebook tool, never written here
+    stories/<story-slug>/timeline.yaml         read by the timeline tool, never written here
+
+A directory is a story if and only if it holds a `story.yaml`. The filesystem determines
+what exists: a chapter dropped in by `git pull` or by an editor appears in the API, and a
+chapter the manifest does not list is shown after the ones it does.
+
+### The `.ink` file
+
+A chapter may open with front matter — a YAML mapping between two `---` lines — and the
+rest of the file is the prose:
+
+    ---
+    title: The Letter in the Study
+    status: draft
+    summary: |
+      She finally opens it, and it is not what she was told it was.
+    ---
+    She had not opened it. Three years of not opening it, and the wax still held.
+
+All three keys are optional, and so is the header. `title` is the name the chapter is
+shown under, so a chapter has a name whatever its slug drops; a file with no title is
+shown as its filename without the suffix. `status` is a free string — `outline`, `draft`,
+`revised` and `done` are the suggested vocabulary. A key this API does not know is kept
+as it is, so one added by hand survives a save.
+
+`/contents` is the prose under that header. A read leaves the header out, and a write
+keeps the header that is on disk, so the writer never sees YAML and no header reaches a
+model.
+
+Reading a header is deliberately forgiving: one that is unterminated, unparseable or not
+a mapping leaves the chapter with no metadata and all of its text as prose. A malformed
+first line must not take a chapter out of the tree. `inkspire ink check` is where those
+problems are reported instead:
+
+```bash
+poetry run inkspire ink check                    # every .ink file in both roots
+poetry run inkspire ink check stories/the_okiya  # or only what is named
+```
+
+It prints `path:line: level: message` and exits non-zero if any file carries an error,
+so it can gate a commit. A warning alone — an unknown key — exits 0.
+
+One story is one directory in the tree, and its chapters are that directory's files:
+
+| Route | |
+|---|---|
+| `GET /api/stories/tree` | every story. `files` is empty — a chapter belongs to a story |
+| `GET /api/stories/dir/{id}` | one story, and the chapters in it |
+| `POST /api/stories/dir` | create a story, with a `name` and an optional `summary` |
+| `PUT /api/stories/dir/{id}` | retitle a story, or rewrite its synopsis |
+| `DELETE /api/stories/dir/{id}` | delete a story and its chapters |
+| `POST /api/stories/file` | create a chapter, given a `name` and a `dir` |
+| `GET /api/stories/file/{id}` | one chapter: its name, status and summary |
+| `PUT /api/stories/file/{id}` | rename a chapter, or move it to another story |
+| `DELETE /api/stories/file/{id}` | delete a chapter |
+| `GET /api/stories/file/{id}/contents` | the chapter's prose, as `text/plain` |
+| `PUT /api/stories/file/{id}/contents` | replace that prose, keeping the header |
+
+Deleting a story is refused, with a 409, while its directory holds anything besides
+`story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
+this API's to remove.
+
+### Everything that is not a novel
+
+Notes, lists, a draft of nothing in particular. They are not novel content, so they are
+not in the story repository and are never committed: `INKSPIRE_FILES_ROOT` points at
+`var/files` by default, which `.gitignore` covers, and the directory is created when
+something is first written to it.
+
+    scratch.ink                  a file at the root
+    research/manifest.yaml       this folder's name and context
+    research/worldbuilding.ink
+
+A directory here is a directory and nothing more. It needs no manifest to exist, and one
+is written only when there is something to keep in it — a name its slug cannot spell, or
+a context. Directories do not nest: a folder holds files. Files are `.ink` files, the
+same format as a chapter, so a note is shown under the title in its own header.
+
+`/api/notes/...` answers exactly what `/api/stories/...` does — `tree`, `dir/{id}`,
+`file/{id}`, `file/{id}/contents` — with two differences, both because a file here may
+sit at the root:
+
+- `POST /api/notes/file` accepts `dir: null`, and the tree's `files` map is not always
+  empty.
+- `PUT /api/notes/file/{id}` tells an absent `dir` from one that is explicitly `null`:
+  leaving the field out leaves the file where it is, and `null` moves it to the root.
+
+Deleting a folder takes its files and its manifest, and is refused with a 409 while it
+holds anything else.
+
+Ids carry which root they came from, so an id from one space is a 404 in the other.
+
+Ids are `blake2b(space + path).hexdigest()[:16]`, derived from the path relative to the
+root it is in — `stories` or `notes`, so the same relative path in each is two files. A
+client never sends a path, so nothing it sends can point out of the repository, and every
+path the API does resolve is checked to land under the root with symlinks followed. Ids
+need no table and survive a restart. Renaming a chapter changes its id, because it is
+then a different path; the old id answers 404 and the client refetches.
+
+The scan is held in memory and rebuilt when the files or a manifest change. Saving a
+chapter does not rebuild it: content changes no name and no path.
+
+### Authentication
+
+`POST /auth` takes `{"username", "password"}` and answers `{"token"}`, setting three
+`SameSite=Strict` cookies: `jwt_token` (httpOnly, path `/`), `refresh_token`
+(httpOnly, path `/auth`, so it is not sent with ordinary API calls) and a readable
+`auth_status=1` that lets a browser client tell it has a session without reading the
+token. `POST /auth/refresh` issues a new JWT and rotates the refresh token;
+`POST /auth/logout` deletes it and clears all three cookies.
+
+A request to `/api` authenticates with either the `jwt_token` cookie or an
+`Authorization: Bearer` header. Tokens are signed HS256 with `INKSPIRE_JWT_SECRET`;
+nothing outside this application verifies one, so there is no keypair to manage.
+
+Errors are `{"code", "message"}` at every status.
+
+### Text generation
+
+Providers are configured in `config/providers.yaml`, which is not committed because it
+holds API keys:
+
+```yaml
+local-ollama:
+  url: http://127.0.0.1:11434
+  key: null
+  protocol: ollama
+
+hosted:
+  url: https://api.example.com/v1
+  key: sk-...
+```
+
+The provider name becomes the prefix of every model it offers, so models are addressed
+as `local-ollama/llama3`. `protocol` is `openai` by default, for any chat-completions
+endpoint. Use `ollama` for an Ollama instance: its compatibility layer accepts `think`
+and ignores it, so reasoning cannot be turned off through it, and sampling options
+cannot be set either.
+
+`GET /api/llm/models` lists every provider's models. A provider that cannot be reached
+contributes nothing instead of failing the list. Results are held for an hour per
+provider, in the serving process.
+
+`POST /api/llm/generate` takes `{"model", "prompt"}` and answers `text/event-stream`:
+
+| Event | Meaning |
+|---|---|
+| `{"delta": "..."}` | Text to append. |
+| `{"error": "..."}` | The provider failed after the stream had started. |
+| `[DONE]` | End of generation. |
+
+A failure *before* any text is an ordinary status code instead — 422 for an unknown
+model, 429 over the rate limit (20 generations per minute per account), 500 for an
+unreachable provider — so a client only has to handle an error event once it is already
+displaying text. The generated text is not written to disk: the client owns the chapter
+and saves it.
+
+Thinking is worth knowing about. A reasoning model produces its reasoning on a separate
+field, which is dropped and never appended to the chapter, but it still delays the
+first visible chunk by the whole reasoning pass. A model whose context window fills
+with reasoning can finish without writing anything at all; that answers as an error
+naming the cause rather than as an empty continuation. Set `INKSPIRE_LLM_THINK=false`
+to turn it off, or raise `INKSPIRE_LLM_NUM_CTX`.
+
+Run a generation from the shell to see all of this without a browser or an account.
+The text comes from standard input and the continuation goes to standard output, so it
+pipes and redirects:
+
+```bash
+poetry run inkspire llm models
+poetry run inkspire llm generate -m local-ollama/llama3 < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --no-think < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt < chapter.ink
+```
+
+It sends the same prompt the API sends, so a model that behaves badly here behaves
+badly in the editor. `--show-prompt` prints what would be sent and generates nothing.
+
+---
+
+## 🧪 Quality and testing
+
+This project uses **AI-assisted development** for rapid implementation, with human
+oversight and validation.
+
+```bash
+poetry run pytest                                    # the suite
+poetry run pytest --cov inkspire_api                 # with coverage
+poetry run pytest tests/test_files.py                # one file
+poetry run pytest -k "loose or symlink"              # by name
+
+poetry run pylint --rcfile=.github/workflows/pylintrc inkspire_api
+poetry run ty check
+```
+
+Tests build their own SQLite file and their own story repository under `tmp_path`, so
+there is nothing to set up and nothing shared between them. No provider is contacted:
+requests are answered by a transport constructed in the test.
+
+Both commands above run on every push, as the Pytest and Pylint workflows.
 
 ---
 
 ## 📜 License
 
-This project is released under the [MIT License](../inkspire-frontend/LICENSE).
+This project is released under the [PolyForm Noncommercial License 1.0.0](LICENSE). Any
+noncommercial purpose is permitted, which the licence spells out as including personal
+study, hobby projects and use by charities, schools, public research organisations and
+government bodies. It grants no licence for commercial use. The `LICENSE` file is the
+terms; this paragraph is not.
+
 It is provided *as is*, without warranty, but every effort is made to ensure code reliability and responsible use of AI-generated components.
 
 ---

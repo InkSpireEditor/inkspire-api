@@ -1,0 +1,41 @@
+name: Pylint
+
+on:
+  push:
+    branches: ["main", "python-port"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Configure Poetry in-project virtualenv
+        run: poetry config virtualenvs.in-project true
+
+      - name: Cache pip wheels
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: pip-wheels-${{ runner.os }}-3.14-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            pip-wheels-${{ runner.os }}-3.14-
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run pylint
+        run: poetry run pylint --rcfile=.github/workflows/pylintrc --fail-under=9.5 inkspire_api
+
+      - name: Run ty
+        run: poetry run ty check
