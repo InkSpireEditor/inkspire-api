@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """The scan: what counts as a story, what counts as a chapter, and the ids.
 
+Chapter names, statuses and summaries come from each file's own header, which
+`test_ink.py` covers on its own.
+
 These tests go straight to the Scanner, with no HTTP and no account. The routes over
 it are in test_files.py.
 """
@@ -13,16 +16,19 @@ from pathlib import Path, PurePosixPath
 import pytest
 import yaml
 
-from inkspire_api.storage import (
-    CHAPTER_SUFFIX,
+from inkspire_api.fs import (
     Conflict,
-    DataRootMissing,
     NotFound,
-    Scanner,
     StorageError,
     derive_id,
     free_path,
     slugify,
+)
+from inkspire_api.storage import (
+    CHAPTER_SUFFIX,
+    SPACE,
+    DataRootMissing,
+    Scanner,
 )
 
 from conftest import make_story
@@ -49,22 +55,27 @@ def only_story(scanner: Scanner):
 
 
 def test_an_id_is_sixteen_hex_characters() -> None:
-    story_id = derive_id("stories/example-story")
+    story_id = derive_id(SPACE, "stories/example-story")
     assert len(story_id) == 16
     assert set(story_id) <= set("0123456789abcdef")
 
 
 def test_the_same_path_always_derives_the_same_id() -> None:
-    assert derive_id("stories/example-story") == derive_id("stories/example-story")
+    assert derive_id(SPACE, "stories/a") == derive_id(SPACE, "stories/a")
 
 
 def test_different_paths_derive_different_ids() -> None:
-    assert derive_id("stories/example-story") != derive_id("stories/other-story")
+    assert derive_id(SPACE, "stories/a") != derive_id(SPACE, "stories/b")
+
+
+def test_the_same_path_in_another_space_derives_another_id() -> None:
+    """Two roots, so a relative path alone does not say which file is meant."""
+    assert derive_id(SPACE, "notes.ink") != derive_id("notes", "notes.ink")
 
 
 def test_a_chapter_id_is_not_its_story_id() -> None:
     story = "stories/example-story"
-    assert derive_id(story) != derive_id(f"{story}/chapters/first.ink")
+    assert derive_id(SPACE, story) != derive_id(SPACE, f"{story}/chapters/first.ink")
 
 
 def test_an_id_survives_a_new_scanner(root: Path) -> None:
@@ -103,14 +114,45 @@ def test_a_chapter_is_named_after_its_file(root: Path, scanner: Scanner) -> None
     assert [c.name for c in only_story(scanner).chapters] == ["first-chapter"]
 
 
-def test_a_chapter_the_manifest_titles_is_named_by_it(root: Path, scanner: Scanner) -> None:
+def test_a_chapter_its_header_titles_is_named_by_it(root: Path, scanner: Scanner) -> None:
     make_story(
         root,
         "example-story",
-        chapters={"first-chapter.ink": ""},
-        listed=[{"file": "first-chapter.ink", "title": "First Chapter"}],
+        chapters={"first-chapter.ink": "---\ntitle: First Chapter\n---\nOnce.\n"},
     )
     assert [c.name for c in only_story(scanner).chapters] == ["First Chapter"]
+
+
+def test_a_chapter_carries_the_status_and_summary_its_header_gives_it(
+    root: Path, scanner: Scanner
+) -> None:
+    make_story(
+        root,
+        "example-story",
+        chapters={
+            "first.ink": "---\nstatus: draft\nsummary: She opens it.\n---\nOnce.\n"
+        },
+    )
+    chapter = only_story(scanner).chapters[0]
+    assert (chapter.status, chapter.summary) == ("draft", "She opens it.")
+
+
+def test_a_chapter_with_no_header_has_no_status_or_summary(
+    root: Path, scanner: Scanner
+) -> None:
+    make_story(root, "example-story", chapters={"first.ink": "Once.\n"})
+    chapter = only_story(scanner).chapters[0]
+    assert (chapter.status, chapter.summary) == ("", "")
+
+
+def test_a_chapter_whose_header_is_broken_is_named_by_its_file(
+    root: Path, scanner: Scanner
+) -> None:
+    """A header nobody can parse must not take the chapter out of the tree."""
+    make_story(
+        root, "example-story", chapters={"first.ink": "---\ntitle: [oops\n---\nOnce.\n"}
+    )
+    assert [c.name for c in only_story(scanner).chapters] == ["first"]
 
 
 def test_only_ink_files_are_chapters(root: Path, scanner: Scanner) -> None:
@@ -244,8 +286,18 @@ def test_a_retitled_manifest_is_picked_up(root: Path, scanner: Scanner) -> None:
     assert only_story(scanner).name == "After"
 
 
+def test_a_retitled_chapter_is_picked_up(root: Path, scanner: Scanner) -> None:
+    story_dir = make_story(root, "example-story", chapters={"first.ink": "Once.\n"})
+    assert [c.name for c in only_story(scanner).chapters] == ["first"]
+
+    chapter = story_dir / "chapters" / "first.ink"
+    chapter.write_text("---\ntitle: The Letter\n---\nOnce.\n", encoding="utf-8")
+    os.utime(chapter, ns=(0, 1))
+    assert [c.name for c in only_story(scanner).chapters] == ["The Letter"]
+
+
 def test_writing_a_chapter_leaves_the_held_scan_alone(root: Path, scanner: Scanner) -> None:
-    """Content changes no name and no path, so nothing has to be rescanned."""
+    """Prose changes no name and no path, so nothing has to be rescanned."""
     make_story(root, "example-story", chapters={"first.ink": ""})
     before = scanner.tree()
 
@@ -362,40 +414,42 @@ def test_retitling_a_story_keeps_the_rest_of_its_manifest(scanner: Scanner, root
     assert document == {"title": "After", "chapters": [{"file": "a.ink", "status": "draft"}]}
 
 
-def test_a_created_chapter_is_an_empty_file(scanner: Scanner, root: Path) -> None:
+def test_a_created_chapter_is_a_header_and_no_prose(scanner: Scanner, root: Path) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "First Chapter")
 
     path = root / "stories" / "example-story" / "chapters" / "first-chapter.ink"
-    assert path.read_text(encoding="utf-8") == ""
+    assert path.read_text(encoding="utf-8") == "---\ntitle: First Chapter\n---\n"
     assert chapter.name == "First Chapter"
     assert chapter.story_id == story.id
 
 
-def test_a_created_chapter_is_titled_where_its_filename_cannot_say_its_name(
+def test_a_created_chapter_takes_a_place_in_the_order(
     scanner: Scanner, root: Path
 ) -> None:
+    """The manifest says what order the chapters are read in, and nothing more."""
     story = scanner.create_story("Example Story")
     scanner.create_chapter(story.id, "First Chapter")
+    scanner.create_chapter(story.id, "Second Chapter")
 
     document = yaml.safe_load(
         (root / "stories" / "example-story" / "story.yaml").read_text(encoding="utf-8")
     )
     assert document["chapters"] == [
-        {"file": "first-chapter.ink", "title": "First Chapter"}
+        {"file": "first-chapter.ink"},
+        {"file": "second-chapter.ink"},
     ]
 
 
-def test_a_chapter_named_like_its_filename_adds_nothing_to_the_manifest(
+def test_a_chapter_named_like_its_filename_gets_no_header(
     scanner: Scanner, root: Path
 ) -> None:
+    """The filename already says the name, so a title would only repeat it."""
     story = scanner.create_story("Example Story")
     scanner.create_chapter(story.id, "first-chapter")
 
-    document = yaml.safe_load(
-        (root / "stories" / "example-story" / "story.yaml").read_text(encoding="utf-8")
-    )
-    assert document["chapters"] == []
+    path = root / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    assert path.read_text(encoding="utf-8") == ""
 
 
 def test_two_chapters_may_share_a_name(scanner: Scanner) -> None:
@@ -432,8 +486,8 @@ def test_renaming_a_chapter_keeps_its_place_in_the_order(scanner: Scanner, root:
     manifest = root / "stories" / "example-story" / "story.yaml"
     document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     document["chapters"] = [
-        {"file": "one.ink", "title": "One", "status": "draft"},
-        {"file": "two.ink", "title": "Two"},
+        {"file": "one.ink", "status": "draft"},
+        {"file": "two.ink"},
     ]
     manifest.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     scanner.invalidate()
@@ -441,8 +495,8 @@ def test_renaming_a_chapter_keeps_its_place_in_the_order(scanner: Scanner, root:
     scanner.update_chapter(first.id, name="One, Revised")
 
     assert yaml.safe_load(manifest.read_text(encoding="utf-8"))["chapters"] == [
-        {"file": "one-revised.ink", "title": "One, Revised", "status": "draft"},
-        {"file": "two.ink", "title": "Two"},
+        {"file": "one-revised.ink", "status": "draft"},
+        {"file": "two.ink"},
     ]
 
 
@@ -456,6 +510,48 @@ def test_a_rename_that_leaves_the_filename_alone_still_renames(scanner: Scanner,
     assert renamed.id == chapter.id
     assert renamed.filename == "first-chapter.ink"
     assert renamed.name == "First Chapter"
+
+
+def test_renaming_a_chapter_writes_the_name_into_its_header(
+    scanner: Scanner, root: Path
+) -> None:
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "One")
+    scanner.write_chapter(chapter.id, "Once.\n")
+
+    renamed = scanner.update_chapter(chapter.id, name="One, Revised")
+
+    path = root / "stories" / "example-story" / "chapters" / renamed.filename
+    assert path.read_text(encoding="utf-8") == (
+        "---\ntitle: One, Revised\n---\nOnce.\n"
+    )
+
+
+def test_renaming_a_chapter_to_its_own_filename_drops_the_title(
+    scanner: Scanner, root: Path
+) -> None:
+    """Nothing is left to record, so the file is left without a header at all."""
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "One, Revised")
+    scanner.write_chapter(chapter.id, "Once.\n")
+
+    renamed = scanner.update_chapter(chapter.id, name="one-revised")
+
+    path = root / "stories" / "example-story" / "chapters" / renamed.filename
+    assert path.read_text(encoding="utf-8") == "Once.\n"
+    assert renamed.name == "one-revised"
+
+
+def test_moving_a_chapter_leaves_its_header_alone(scanner: Scanner, root: Path) -> None:
+    source = scanner.create_story("Source")
+    target = scanner.create_story("Target")
+    chapter = scanner.create_chapter(source.id, "First Chapter")
+
+    moved = scanner.update_chapter(chapter.id, story_id=target.id)
+
+    path = root / "stories" / "target" / "chapters" / moved.filename
+    assert path.read_text(encoding="utf-8") == "---\ntitle: First Chapter\n---\n"
+    assert moved.name == "First Chapter"
 
 
 def test_moving_a_chapter_moves_its_file(scanner: Scanner, root: Path) -> None:
@@ -485,7 +581,7 @@ def test_moving_a_chapter_takes_its_manifest_entry_with_it(scanner: Scanner, roo
         return yaml.safe_load(path.read_text(encoding="utf-8"))["chapters"]
 
     assert listed("source") == []
-    assert listed("target") == [{"file": "first-chapter.ink", "title": "First Chapter"}]
+    assert listed("target") == [{"file": "first-chapter.ink"}]
 
 
 def test_a_chapter_moved_onto_a_taken_filename_is_numbered(scanner: Scanner) -> None:
@@ -542,6 +638,47 @@ def test_a_chapter_reads_back_what_was_written(scanner: Scanner) -> None:
 
     scanner.write_chapter(chapter.id, "Once, on a cold morning.\n")
     assert scanner.read_chapter(chapter.id) == "Once, on a cold morning.\n"
+
+
+def test_reading_a_chapter_leaves_out_its_header(root: Path, scanner: Scanner) -> None:
+    make_story(
+        root,
+        "example-story",
+        chapters={"first.ink": "---\ntitle: The Letter\n---\nOnce.\n"},
+    )
+    chapter = only_story(scanner).chapters[0]
+    assert scanner.read_chapter(chapter.id) == "Once.\n"
+
+
+def test_writing_a_chapter_keeps_the_header_on_disk(
+    root: Path, scanner: Scanner
+) -> None:
+    """A client sends prose and nothing else, so the header has to survive the save."""
+    story_dir = make_story(
+        root,
+        "example-story",
+        chapters={
+            "first.ink": "---\ntitle: The Letter\nstatus: draft\n---\nOnce.\n"
+        },
+    )
+    chapter = only_story(scanner).chapters[0]
+
+    scanner.write_chapter(chapter.id, "Twice.\n")
+
+    assert (story_dir / "chapters" / "first.ink").read_text(encoding="utf-8") == (
+        "---\ntitle: The Letter\nstatus: draft\n---\nTwice.\n"
+    )
+
+
+def test_writing_a_chapter_that_has_no_header_adds_none(
+    root: Path, scanner: Scanner
+) -> None:
+    story_dir = make_story(root, "example-story", chapters={"first.ink": "Once.\n"})
+    chapter = only_story(scanner).chapters[0]
+
+    scanner.write_chapter(chapter.id, "Twice.\n")
+
+    assert (story_dir / "chapters" / "first.ink").read_text(encoding="utf-8") == "Twice.\n"
 
 
 def test_a_chapter_keeps_accents_and_quotes(scanner: Scanner) -> None:

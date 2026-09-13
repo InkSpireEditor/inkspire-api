@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from . import auth, files, llm
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
-from .storage import Conflict, NotFound, StorageError
+from .fs import Conflict, NotFound, StorageError
 from .throttle import LoginThrottle, RateLimiter
 
 #: How a failure to read or change the stories on disk is answered.
@@ -47,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.llm_limiter = RateLimiter(settings.llm_limit, settings.llm_interval)
     application.state.llm_service = None
     application.state.scanner = None
+    application.state.notes_scanner = None
 
     # The frontend is served from a different port, so every request to this API is
     # cross-origin. allow_credentials is what lets the browser attach the auth
@@ -105,7 +106,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The account the request is authenticated as."""
         return {"email": user.email, "roles": user.all_roles()}
 
-    api.include_router(files.router)
+    api.include_router(files.stories_router)
+    api.include_router(files.notes_router)
     api.include_router(llm.router)
     application.include_router(api)
     return application

@@ -17,6 +17,12 @@ no account and no HTTP in the way:
     inkspire llm models
     inkspire llm generate -m local-ollama/llama3 < chapter.ink
 
+The `.ink` files themselves, since the API is forgiving about a header it cannot read
+and will show such a file under its filename rather than hide it:
+
+    inkspire ink check
+    inkspire ink check stories/the_okiya
+
 And the server itself:
 
     inkspire run
@@ -30,18 +36,20 @@ import re
 import secrets
 import sys
 import time
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, cast
 
 import typer
 from sqlalchemy import CursorResult, delete, func, select
-from typing import cast
 from sqlalchemy.exc import IntegrityError
 
+from . import ink
 from .db import get_sessionmaker
 from .llm import LLMError, LLMService, UnknownModel, render_prompt
 from .models import MAX_EMAIL_LENGTH, RefreshToken, User, utcnow
 from .security import hash_password
 from .settings import SecretNotConfigured, get_settings
+from .storage import CHAPTER_SUFFIX
 
 #: Bytes of randomness behind a generated password. Hex-encoded, so 24 characters.
 GENERATED_PASSWORD_BYTES = 12
@@ -56,8 +64,10 @@ EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 app = typer.Typer(help="InkSpire administration.", no_args_is_help=True)
 user_app = typer.Typer(help="Account administration.", no_args_is_help=True)
 llm_app = typer.Typer(help="Text generation.", no_args_is_help=True)
+ink_app = typer.Typer(help="The .ink files themselves.", no_args_is_help=True)
 app.add_typer(user_app, name="user")
 app.add_typer(llm_app, name="llm")
+app.add_typer(ink_app, name="ink")
 
 EmailArgument = Annotated[str, typer.Argument(help="Email address of the account")]
 PasswordOption = Annotated[
@@ -391,4 +401,102 @@ async def _stream(model: str, text: str, think: bool | None) -> None:
         f"{time.monotonic() - started:.1f}s total",
         fg=typer.colors.BLUE,
         err=True,
+    )
+
+
+# --- the .ink files ---------------------------------------------------------
+
+
+def plural(number: int, thing: str) -> str:
+    """`1 file`, `2 files`."""
+    return f"{number} {thing}" if number == 1 else f"{number} {thing}s"
+
+
+def shown(path: Path) -> str:
+    """The path as a reader can retype it: relative to where they are, if it is."""
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
+def ink_files(targets: list[Path]) -> list[Path]:
+    """Every `.ink` file in `targets`, which may name files or directories."""
+    found: list[Path] = []
+    for target in targets:
+        if target.is_dir():
+            found.extend(
+                path
+                for path in target.rglob(f"*{CHAPTER_SUFFIX}")
+                if path.is_file() and not path.is_symlink()
+            )
+        elif target.exists():
+            found.append(target)
+        else:
+            fail(f"{target} is not there.")
+    return sorted(set(found))
+
+
+def problems_in(path: Path) -> list[ink.Problem]:
+    """What is wrong with one file, a file that cannot be read at all included."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return [ink.Problem(1, ink.ERROR, f"it cannot be read as text: {error}")]
+    return ink.check(text)
+
+
+@ink_app.command("check")
+def check(
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Files or directories to check. Omit for both roots."),
+    ] = None,
+) -> None:
+    """Report what is wrong with the header of each `.ink` file.
+
+    An error is something the application cannot read, and a file carrying one is
+    shown under its filename with its header left as prose. A warning is something it
+    reads and does not understand, such as a key it has no meaning for. Exits non-zero
+    if there was an error, so this can gate a commit.
+
+    With no argument this covers both roots: the stories, and the files that are not a
+    novel. A root that is not there holds no files and is not an error.
+    """
+    settings = get_settings()
+    # A root nobody has written to yet simply holds no files. A path named on the
+    # command line and not there is a mistake worth reporting.
+    roots = [
+        root
+        for root in (settings.data_root, settings.files_root)
+        if root.is_dir()
+    ]
+    files = ink_files(list(paths) if paths else roots)
+    if not files:
+        typer.secho("No .ink files to check.", fg=typer.colors.YELLOW, err=True)
+        return
+
+    errors = 0
+    warnings = 0
+    for path in files:
+        for problem in problems_in(path):
+            colour = typer.colors.RED if problem.level == ink.ERROR else typer.colors.YELLOW
+            typer.secho(
+                f"{shown(path)}:{problem.line}: {problem.level}: {problem.message}",
+                fg=colour,
+            )
+            if problem.level == ink.ERROR:
+                errors += 1
+            else:
+                warnings += 1
+
+    summary = (
+        f"{plural(len(files), 'file')} checked, "
+        f"{plural(errors, 'error')}, {plural(warnings, 'warning')}."
+    )
+    if errors:
+        typer.secho(summary, fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    typer.secho(
+        summary, fg=typer.colors.YELLOW if warnings else typer.colors.GREEN, err=True
     )

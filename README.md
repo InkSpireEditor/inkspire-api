@@ -84,8 +84,8 @@ pipe cleanly. A session is a refresh token that has not expired.
 
 `INKSPIRE_DATA_ROOT` points at the story repository, a git working tree of its own:
 
-    stories/<story-slug>/story.yaml            title and synopsis, written by the API
-    stories/<story-slug>/chapters/<slug>.ink   prose, written by the API
+    stories/<story-slug>/story.yaml            title, synopsis and order, written by the API
+    stories/<story-slug>/chapters/<slug>.ink   a header and prose, written by the API
     stories/<story-slug>/lorebook/             read by the lorebook tool, never written here
     stories/<story-slug>/timeline.yaml         read by the timeline tool, never written here
 
@@ -93,33 +93,94 @@ A directory is a story if and only if it holds a `story.yaml`. The filesystem de
 what exists: a chapter dropped in by `git pull` or by an editor appears in the API, and a
 chapter the manifest does not list is shown after the ones it does.
 
+### The `.ink` file
+
+A chapter may open with front matter — a YAML mapping between two `---` lines — and the
+rest of the file is the prose:
+
+    ---
+    title: The Letter in the Study
+    status: draft
+    summary: |
+      She finally opens it, and it is not what she was told it was.
+    ---
+    She had not opened it. Three years of not opening it, and the wax still held.
+
+All three keys are optional, and so is the header. `title` is the name the chapter is
+shown under, so a chapter has a name whatever its slug drops; a file with no title is
+shown as its filename without the suffix. `status` is a free string — `outline`, `draft`,
+`revised` and `done` are the suggested vocabulary. A key this API does not know is kept
+as it is, so one added by hand survives a save.
+
+`/contents` is the prose under that header. A read leaves the header out, and a write
+keeps the header that is on disk, so the writer never sees YAML and no header reaches a
+model.
+
+Reading a header is deliberately forgiving: one that is unterminated, unparseable or not
+a mapping leaves the chapter with no metadata and all of its text as prose. A malformed
+first line must not take a chapter out of the tree. `inkspire ink check` is where those
+problems are reported instead:
+
+```bash
+poetry run inkspire ink check                    # every .ink file in both roots
+poetry run inkspire ink check stories/the_okiya  # or only what is named
+```
+
+It prints `path:line: level: message` and exits non-zero if any file carries an error,
+so it can gate a commit. A warning alone — an unknown key — exits 0.
+
 One story is one directory in the tree, and its chapters are that directory's files:
 
 | Route | |
 |---|---|
-| `GET /api/tree` | every story. `files` is empty — a chapter belongs to a story |
-| `GET /api/dir/{id}` | one story, and the chapters in it |
-| `POST /api/dir` | create a story, with a `name` and an optional `summary` |
-| `PUT /api/dir/{id}` | retitle a story, or rewrite its synopsis |
-| `DELETE /api/dir/{id}` | delete a story and its chapters |
-| `POST /api/file` | create a chapter, given a `name` and a `dir` |
-| `GET /api/file/{id}` | one chapter's id and name |
-| `PUT /api/file/{id}` | rename a chapter, or move it to another story |
-| `DELETE /api/file/{id}` | delete a chapter |
-| `GET /api/file/{id}/contents` | the chapter, as `text/plain` |
-| `PUT /api/file/{id}/contents` | replace the chapter with the request body |
+| `GET /api/stories/tree` | every story. `files` is empty — a chapter belongs to a story |
+| `GET /api/stories/dir/{id}` | one story, and the chapters in it |
+| `POST /api/stories/dir` | create a story, with a `name` and an optional `summary` |
+| `PUT /api/stories/dir/{id}` | retitle a story, or rewrite its synopsis |
+| `DELETE /api/stories/dir/{id}` | delete a story and its chapters |
+| `POST /api/stories/file` | create a chapter, given a `name` and a `dir` |
+| `GET /api/stories/file/{id}` | one chapter: its name, status and summary |
+| `PUT /api/stories/file/{id}` | rename a chapter, or move it to another story |
+| `DELETE /api/stories/file/{id}` | delete a chapter |
+| `GET /api/stories/file/{id}/contents` | the chapter's prose, as `text/plain` |
+| `PUT /api/stories/file/{id}/contents` | replace that prose, keeping the header |
 
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
 this API's to remove.
 
-**Known limitation.** A directory here is a story and a file is a chapter, so there is
-nowhere to put a file that belongs to no story: `POST /api/file` with `dir: null`
-answers 422, `GET /api/tree` always returns an empty `files` map, and every directory
-created is a story. The umbrella repository's `ARCHITECTURE.md` records what has to be
-decided to lift that.
+### Everything that is not a novel
 
-Ids are `blake2b(path).hexdigest()[:16]`, derived from the repository-relative path. A
+Notes, lists, a draft of nothing in particular. They are not novel content, so they are
+not in the story repository and are never committed: `INKSPIRE_FILES_ROOT` points at
+`var/files` by default, which `.gitignore` covers, and the directory is created when
+something is first written to it.
+
+    scratch.ink                  a file at the root
+    research/manifest.yaml       this folder's name and context
+    research/worldbuilding.ink
+
+A directory here is a directory and nothing more. It needs no manifest to exist, and one
+is written only when there is something to keep in it — a name its slug cannot spell, or
+a context. Directories do not nest: a folder holds files. Files are `.ink` files, the
+same format as a chapter, so a note is shown under the title in its own header.
+
+`/api/notes/...` answers exactly what `/api/stories/...` does — `tree`, `dir/{id}`,
+`file/{id}`, `file/{id}/contents` — with two differences, both because a file here may
+sit at the root:
+
+- `POST /api/notes/file` accepts `dir: null`, and the tree's `files` map is not always
+  empty.
+- `PUT /api/notes/file/{id}` tells an absent `dir` from one that is explicitly `null`:
+  leaving the field out leaves the file where it is, and `null` moves it to the root.
+
+Deleting a folder takes its files and its manifest, and is refused with a 409 while it
+holds anything else.
+
+Ids carry which root they came from, so an id from one space is a 404 in the other.
+
+Ids are `blake2b(space + path).hexdigest()[:16]`, derived from the path relative to the
+root it is in — `stories` or `notes`, so the same relative path in each is two files. A
 client never sends a path, so nothing it sends can point out of the repository, and every
 path the API does resolve is checked to land under the root with symlinks followed. Ids
 need no table and survive a restart. Renaming a chapter changes its id, because it is

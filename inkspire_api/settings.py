@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     #: inside this project, so the path is per-machine and belongs in `.env.local`.
     data_root: Path = Path("var/novel-data")
 
+    #: Everything that is not a novel: notes, drafts of nothing in particular, a file
+    #: someone wanted a place for. Inside this project and not committed, so the
+    #: default is where it belongs and it is created when it is first needed.
+    files_root: Path = Path("var/files")
+
     # No default, and checked at use time rather than declared required: a committed
     # default would sign real tokens on any machine that forgot to set one.
     jwt_secret: str | None = None
@@ -79,7 +84,7 @@ class Settings(BaseSettings):
     llm_limit: int = 20
     llm_interval: int = 60
 
-    @field_validator("data_root", "llm_providers_file")
+    @field_validator("data_root", "files_root", "llm_providers_file")
     @classmethod
     def _expand_user(cls, value: Path) -> Path:
         """`~` in a path is expanded, since these are paths a person types."""

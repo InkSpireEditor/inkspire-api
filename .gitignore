@@ -4,7 +4,7 @@
 # Holds API keys.
 /config/providers.yaml
 
-# var/ holds the SQLite databases.
+# var/ holds the SQLite databases, and the files that are not a novel.
 /var/
 
 __pycache__/
