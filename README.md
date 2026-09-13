@@ -86,14 +86,16 @@ This branch carries a rewrite of the API in Python — FastAPI, SQLAlchemy and A
 finished and is not on `main`. The Symfony application above is still the released
 one, and both run from this working tree in the meantime.
 
-Working so far: authentication, access control on `/api`, text generation, and account
-management from the shell. Not yet written: the file and directory routes.
+Working so far: authentication, access control on `/api`, text generation, the file and
+directory routes over the story repository, and account management from the shell.
 
 ```bash
 poetry install
 
 # A signing secret is required and has no default.
 echo "INKSPIRE_JWT_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))')" >> .env.local
+# Where the stories are. See "Stories on disk" below.
+echo "INKSPIRE_DATA_ROOT=~/Documents/novel-data" >> .env.local
 
 poetry run alembic upgrade head      # creates `user` and `refresh_token`
 poetry run inkspire user create you@example.com
@@ -103,10 +105,10 @@ poetry run inkspire run --reload --host 0.0.0.0 --port 8001
 poetry run pytest
 ```
 
-`run` serves one process. The model cache and both rate limiters are held in the
-serving process, so running several would multiply the effective generation limit by
-the number of them. It refuses to start without a signing secret, and warns when no
-provider file is present.
+`run` serves one process. The model cache, both rate limiters and the scan of the
+stories are held in the serving process, so running several would multiply the
+effective generation limit by the number of them. It refuses to start without a signing
+secret, and warns when the stories or the provider file are not where it expects them.
 
 The default database is `var/data_dev.db`. A database that already holds `user` and
 `refresh_token` tables satisfies the first revision as it stands, so record it as
@@ -130,6 +132,48 @@ poetry run inkspire user reset-password alice@example.com --keep-sessions
 
 `list` writes its header to standard error and the rows to standard output, so the rows
 pipe cleanly. A session is a refresh token that has not expired.
+
+### Stories on disk
+
+`INKSPIRE_DATA_ROOT` points at the story repository, a git working tree of its own:
+
+    stories/<story-slug>/story.yaml            title and synopsis, written by the API
+    stories/<story-slug>/chapters/<slug>.ink   prose, written by the API
+    stories/<story-slug>/lorebook/             read by the lorebook tool, never written here
+    stories/<story-slug>/timeline.yaml         read by the timeline tool, never written here
+
+A directory is a story if and only if it holds a `story.yaml`. The filesystem determines
+what exists: a chapter dropped in by `git pull` or by an editor appears in the API, and a
+chapter the manifest does not list is shown after the ones it does.
+
+One story is one directory in the tree, and its chapters are that directory's files:
+
+| Route | |
+|---|---|
+| `GET /api/tree` | every story. `files` is empty — a chapter belongs to a story |
+| `GET /api/dir/{id}` | one story, and the chapters in it |
+| `POST /api/dir` | create a story, with a `name` and an optional `summary` |
+| `PUT /api/dir/{id}` | retitle a story, or rewrite its synopsis |
+| `DELETE /api/dir/{id}` | delete a story and its chapters |
+| `POST /api/file` | create a chapter, given a `name` and a `dir` |
+| `GET /api/file/{id}` | one chapter's id and name |
+| `PUT /api/file/{id}` | rename a chapter, or move it to another story |
+| `DELETE /api/file/{id}` | delete a chapter |
+| `GET /api/file/{id}/contents` | the chapter, as `text/plain` |
+| `PUT /api/file/{id}/contents` | replace the chapter with the request body |
+
+Deleting a story is refused, with a 409, while its directory holds anything besides
+`story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
+this API's to remove.
+
+Ids are `blake2b(path).hexdigest()[:16]`, derived from the repository-relative path. A
+client never sends a path, so nothing it sends can point out of the repository, and every
+path the API does resolve is checked to land under the root with symlinks followed. Ids
+need no table and survive a restart. Renaming a chapter changes its id, because it is
+then a different path; the old id answers 404 and the client refetches.
+
+The scan is held in memory and rebuilt when the files or a manifest change. Saving a
+chapter does not rebuild it: content changes no name and no path.
 
 ### Authentication
 

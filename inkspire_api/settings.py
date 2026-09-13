@@ -11,6 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,10 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "sqlite:///var/data_dev.db"
+
+    #: The story repository: a git working tree holding `stories/<slug>/`. It is not
+    #: inside this project, so the path is per-machine and belongs in `.env.local`.
+    data_root: Path = Path("var/novel-data")
 
     # No default, and checked at use time rather than declared required: a committed
     # default would sign real tokens on any machine that forgot to set one.
@@ -71,6 +76,12 @@ class Settings(BaseSettings):
     # Generation requests per authenticated account. Zero disables the limit.
     llm_limit: int = 20
     llm_interval: int = 60
+
+    @field_validator("data_root", "llm_providers_file")
+    @classmethod
+    def _expand_user(cls, value: Path) -> Path:
+        """`~` in a path is expanded, since these are paths a person types."""
+        return value.expanduser()
 
     def jwt_secret_or_raise(self) -> str:
         if not self.jwt_secret:
