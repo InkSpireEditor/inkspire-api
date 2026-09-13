@@ -41,6 +41,7 @@ def settings(tmp_path) -> Settings:
     return Settings(
         database_url=f"sqlite:///{tmp_path / 'data_test.db'}",
         data_root=tmp_path / "novel-data",
+        files_root=tmp_path / "files",
         # At least 32 bytes, or PyJWT warns that the HMAC key is short for SHA-256.
         jwt_secret="test-only-signing-secret-padded-to-32-bytes",
         bcrypt_rounds=4,
@@ -53,6 +54,13 @@ def data_root(settings: Settings) -> Path:
     """An empty story repository, where the test settings expect one."""
     (settings.data_root / "stories").mkdir(parents=True)
     return settings.data_root
+
+
+@pytest.fixture
+def files_root(settings: Settings) -> Path:
+    """An empty root for the files that are not a novel."""
+    settings.files_root.mkdir(parents=True)
+    return settings.files_root
 
 
 def make_story(
@@ -89,6 +97,37 @@ def make_story(
             encoding="utf-8",
         )
     return story_dir
+
+
+def make_folder(
+    root: Path, slug: str, *, title: str | None = None, context: str | None = None
+) -> Path:
+    """Writes `<slug>/` in the files root, with a manifest only where one is asked for.
+
+    A folder needs no `manifest.yaml` to exist, so the default writes none — which is
+    what most tests want to start from.
+    """
+    directory = root / slug
+    directory.mkdir(parents=True)
+
+    document: dict = {}
+    if title is not None:
+        document["title"] = title
+    if context is not None:
+        document["context"] = context
+    if document:
+        (directory / "manifest.yaml").write_text(
+            yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    return directory
+
+
+def make_note(directory: Path, filename: str, text: str = "") -> Path:
+    """Writes one `.ink` file, in whichever directory it is given."""
+    path = directory / filename
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 @pytest.fixture

@@ -8,9 +8,10 @@ directory of `.ink` files:
     stories/<story-slug>/chapters/<chapter-slug>.ink
 
 A directory is a story if and only if it holds a `story.yaml`. That file gives the
-story its title and synopsis; the filesystem determines which chapters exist. Anything
-else in a story directory — a `lorebook/`, a `timeline.yaml` — is not a chapter and is
-not listed.
+story its title and synopsis, and the order its chapters are read in. The filesystem
+determines which chapters exist, and each chapter's own header gives it its title,
+status and summary. Anything else in a story directory — a `lorebook/`, a
+`timeline.yaml` — is not a chapter and is not listed.
 
 A client names a story or a chapter by an id derived from its path, never by the path,
 so no request can point at a location on disk. Ids need no table and survive a restart.
@@ -20,89 +21,47 @@ Renaming a chapter changes its id, because it is then a different path.
 from __future__ import annotations
 
 import copy
-import hashlib
-import logging
-import os
-import re
 import shutil
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-import yaml
+from . import ink
+from .fs import (
+    Conflict,
+    HeldScan,
+    NotFound,
+    StorageError,
+    derive_id,
+    directories,
+    dump_yaml,
+    files_with_suffix,
+    free_path,
+    mtime,
+    read_text,
+    read_yaml_file,
+    resolve_within,
+    slugify,
+    write_atomically,
+)
 
-logger = logging.getLogger(__name__)
+#: Which root an id belongs to. The same relative path in the other root is a
+#: different file and derives a different id.
+SPACE = "stories"
 
 STORIES = "stories"
 CHAPTERS = "chapters"
 MANIFEST = "story.yaml"
-CHAPTER_SUFFIX = ".ink"
-
-#: Hex characters kept from the digest, so 64 bits of it.
-ID_LENGTH = 16
-
-#: Longest accepted story title or chapter name.
-MAX_NAME_LENGTH = 255
-
-#: Longest accepted synopsis.
-MAX_SUMMARY_LENGTH = 2000
-
-#: Largest chapter accepted from a client. Prose reaches nowhere near this; the cap is
-#: here so a runaway request cannot be read into memory whole.
-MAX_CHAPTER_BYTES = 4 * 1024 * 1024
+CHAPTER_SUFFIX = ink.SUFFIX
 
 #: Placed in a chapters directory that has none yet, because git stores no empty
 #: directory and the story would arrive at a clone without one.
 KEEP = ".gitkeep"
 
 
-class StorageError(RuntimeError):
-    """Something on disk is not as the API needs it."""
-
-
 class DataRootMissing(StorageError):
     """The story repository is not present where it is configured to be."""
-
-
-class NotFound(StorageError):
-    """No story or chapter has that id."""
-
-
-class Conflict(StorageError):
-    """The operation would destroy or overwrite something."""
-
-
-def derive_id(relpath: str) -> str:
-    """The id of a repository-relative path."""
-    return hashlib.blake2b(relpath.encode("utf-8")).hexdigest()[:ID_LENGTH]
-
-
-def slugify(name: str, fallback: str) -> str:
-    """Turns a title into the filename it is stored under.
-
-    Letters and digits are kept, spaces and underscores become single dashes, and
-    everything else is dropped. A title made entirely of dropped characters yields
-    `fallback`, since a file still needs a name.
-    """
-    slug = re.sub(r"[^\w\s-]", "", name.lower())
-    slug = re.sub(r"[\s_]+", "-", slug)
-    slug = re.sub(r"-+", "-", slug).strip("-")
-    return slug or fallback
-
-
-def free_path(directory: Path, stem: str, suffix: str = "") -> Path:
-    """A path in `directory` that nothing occupies, numbering from `-2` if needed.
-
-    Two stories may share a title and two chapters a name; they cannot share a path.
-    """
-    candidate = directory / f"{stem}{suffix}"
-    counter = 2
-    while candidate.exists():
-        candidate = directory / f"{stem}-{counter}{suffix}"
-        counter += 1
-    return candidate
 
 
 @dataclass(frozen=True)
@@ -112,7 +71,10 @@ class Chapter:
     id: str
     #: Relative to the repository root.
     relpath: PurePosixPath
+    #: The header's title, or the filename without its suffix.
     name: str
+    status: str
+    summary: str
     story_id: str
 
     @property
@@ -144,73 +106,21 @@ class Tree:
 def read_manifest(path: Path) -> dict:
     """The parsed `story.yaml`, or an empty mapping if it cannot be read.
 
-    A file that has been hand-edited into something unparseable must not hide the
-    chapters beside it, so the story keeps its slug as a name and stays reachable.
+    A manifest hand-edited into something unparseable must not hide the chapters beside
+    it, so the story keeps its slug as a name and stays reachable.
     """
-    try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
-        logger.warning("%s could not be read: %s", path, error)
-        return {}
-    return document if isinstance(document, dict) else {}
-
-
-class _Dumper(yaml.SafeDumper):
-    """Writes a synopsis of several lines as a block, so it stays readable."""
-
-
-def _represent_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
-    style = "|" if "\n" in data else None
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
-
-
-_Dumper.add_representer(str, _represent_str)
+    return read_yaml_file(path)
 
 
 def write_manifest(path: Path, document: dict) -> None:
-    """Replaces `story.yaml` with `document`, keys in the order they were inserted.
-
-    The file is rewritten from the parsed document, so anything YAML does not carry
-    into that — comments, blank lines, quoting style — is not preserved.
-    """
-    text = yaml.dump(
-        document,
-        Dumper=_Dumper,
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-    )
-    write_atomically(path, text)
-
-
-def write_atomically(path: Path, text: str) -> None:
-    """Writes `text` to `path` through a temporary file in the same directory.
-
-    A write interrupted part way leaves the previous content in place instead of a
-    truncated file, which for a chapter is the difference between a lost save and a
-    lost afternoon.
-    """
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    """Replaces `story.yaml` with `document`, keys in the order they were inserted."""
+    write_atomically(path, dump_yaml(document))
 
 
 def chapter_list(document: dict) -> list:
     """The manifest's chapter entries. An absent or malformed list reads as empty."""
     listed = document.get(CHAPTERS)
     return listed if isinstance(listed, list) else []
-
-
-def manifest_titles(document: dict) -> dict[str, str]:
-    """Maps a chapter filename to the title `story.yaml` gives it, where it gives one."""
-    return {
-        str(entry["file"]): str(entry["title"])
-        for entry in chapter_list(document)
-        if isinstance(entry, dict) and entry.get("file") and entry.get("title")
-    }
 
 
 def entry_for(listed: list, filename: str) -> dict | None:
@@ -227,23 +137,15 @@ def _remove_entry(listed: list, filename: str) -> None:
         listed.remove(entry)
 
 
-def record_chapter(listed: list, filename: str, name: str) -> None:
-    """Makes the manifest show `filename` under `name`.
+def ensure_entry(listed: list, filename: str) -> None:
+    """Gives `filename` a place in the order, last, if the manifest does not list it.
 
-    A title is recorded only where the filename does not already say it, so a chapter
-    called after its own slug adds nothing to the file. An entry is appended when none
-    names the file yet, which also places the chapter last in the order.
+    A chapter this API creates or moves takes a place as it arrives. One that arrives
+    another way — a `git pull`, an editor — is listed by nothing, and is shown after
+    the chapters that are listed.
     """
-    entry = entry_for(listed, filename)
-    titled = name != filename.removesuffix(CHAPTER_SUFFIX)
-
-    if entry is None:
-        if titled:
-            listed.append({"file": filename, "title": name})
-    elif titled:
-        entry["title"] = name
-    else:
-        entry.pop("title", None)
+    if entry_for(listed, filename) is None:
+        listed.append({"file": filename})
 
 
 class Scanner:
@@ -257,11 +159,7 @@ class Scanner:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        # Sync endpoints run in a thread pool, so two requests can reach the cache at
-        # once. The lock covers reading the stamp and rebuilding as one step.
-        self._lock = threading.Lock()
-        self._stamp: tuple | None = None
-        self._tree: Tree | None = None
+        self._held = HeldScan(self._scan, self._current_stamp)
 
     # --- reading -----------------------------------------------------------
 
@@ -272,18 +170,11 @@ class Scanner:
 
     def tree(self) -> Tree:
         """The current scan, rebuilt first if the repository has changed."""
-        with self._lock:
-            stamp = self._current_stamp()
-            if self._tree is None or stamp != self._stamp:
-                self._tree = self._scan()
-                self._stamp = stamp
-            return self._tree
+        return self._held.get()
 
     def invalidate(self) -> None:
         """Drops the held scan, after a change this process made."""
-        with self._lock:
-            self._tree = None
-            self._stamp = None
+        self._held.drop()
 
     def story(self, story_id: str) -> Story:
         """The story with that id, or `NotFound`."""
@@ -300,52 +191,36 @@ class Scanner:
         return chapter
 
     def path(self, relpath: PurePosixPath) -> Path:
-        """The absolute path of something in the repository.
-
-        Resolving follows symlinks, so a link out of the repository is caught here as
-        well as by the scan that refuses to list one.
-        """
-        resolved = (self.root / relpath).resolve()
-        if not resolved.is_relative_to(self.root.resolve()):
-            raise StorageError(f'"{relpath}" resolves outside the story repository.')
-        return resolved
+        """The absolute path of something in the repository."""
+        return resolve_within(self.root, relpath, "story repository")
 
     def _story_dirs(self) -> list[Path]:
         """The story directories, in name order. A symlinked directory is not one."""
-        try:
-            entries = list(self.stories_dir.iterdir())
-        except FileNotFoundError:
-            return []
-        return sorted(
-            (entry for entry in entries if entry.is_dir() and not entry.is_symlink()),
-            key=lambda entry: entry.name,
-        )
-
-    @staticmethod
-    def _mtime(path: Path) -> int | None:
-        try:
-            return path.stat().st_mtime_ns
-        except OSError:
-            return None
+        return directories(self.stories_dir)
 
     def _current_stamp(self) -> tuple:
         """What the held scan is checked against: which files exist, and when each
-        manifest last changed.
+        file that the scan reads last changed.
 
         Listing the directories rather than trusting their mtimes is deliberate. A
         filesystem timestamp advances in ticks of about a millisecond, so a chapter
         written within one tick of the previous scan would leave the mtime it was
         scanned at and never be noticed.
 
-        A manifest is compared by mtime, since reading each one is the work the held
-        scan exists to avoid. Rewriting one within a tick of a scan is therefore
-        missed; a change made through this class invalidates the scan outright.
+        The manifests and the chapters are compared by mtime, since reading them is
+        the work the held scan exists to avoid, and a chapter retitled in its own
+        header changes no name and no path. Rewriting one within a tick of a scan is
+        therefore missed; a change made through this class invalidates the scan
+        outright.
         """
         return tuple(
             (
                 story_dir.name,
-                self._mtime(story_dir / MANIFEST),
-                tuple(file.name for file in self._chapter_files(story_dir / CHAPTERS)),
+                mtime(story_dir / MANIFEST),
+                tuple(
+                    (file.name, mtime(file))
+                    for file in self._chapter_files(story_dir / CHAPTERS)
+                ),
             )
             for story_dir in self._story_dirs()
         )
@@ -361,17 +236,19 @@ class Scanner:
 
             slug = story_dir.name
             relpath = PurePosixPath(STORIES) / slug
-            story_id = derive_id(str(relpath))
+            story_id = derive_id(SPACE, str(relpath))
             document = read_manifest(manifest)
-            titles = manifest_titles(document)
 
             own: list[Chapter] = []
             for file in self._chapter_files(story_dir / CHAPTERS):
                 chapter_relpath = relpath / CHAPTERS / file.name
+                header = ink.read_header(file)
                 chapter = Chapter(
-                    id=derive_id(str(chapter_relpath)),
+                    id=derive_id(SPACE, str(chapter_relpath)),
                     relpath=chapter_relpath,
-                    name=titles.get(file.name, file.stem),
+                    name=ink.display_name(header, file.stem),
+                    status=str(header.get("status") or ""),
+                    summary=str(header.get("summary") or ""),
                     story_id=story_id,
                 )
                 own.append(chapter)
@@ -391,20 +268,8 @@ class Scanner:
 
     @staticmethod
     def _chapter_files(chapters_dir: Path) -> list[Path]:
-        try:
-            entries = list(chapters_dir.iterdir())
-        except OSError:
-            return []
-        return sorted(
-            (
-                entry
-                for entry in entries
-                if entry.suffix == CHAPTER_SUFFIX
-                and entry.is_file()
-                and not entry.is_symlink()
-            ),
-            key=lambda entry: entry.name,
-        )
+        """The chapters in a story, in filename order."""
+        return files_with_suffix(chapters_dir, CHAPTER_SUFFIX)
 
     # --- writing -----------------------------------------------------------
 
@@ -430,7 +295,7 @@ class Scanner:
         )
 
         self.invalidate()
-        return self.story(derive_id(f"{STORIES}/{story_dir.name}"))
+        return self.story(derive_id(SPACE, f"{STORIES}/{story_dir.name}"))
 
     def update_story(
         self, story_id: str, *, name: str | None = None, summary: str | None = None
@@ -477,33 +342,37 @@ class Scanner:
         self.invalidate()
 
     def create_chapter(self, story_id: str, name: str) -> Chapter:
-        """Creates an empty `.ink` file in a story's chapters directory.
+        """Creates an `.ink` file with no prose in a story's chapters directory.
 
         The file is named after a slug of `name`. Where the slug does not spell the
-        name back — capitals, punctuation, accents — the manifest records the name as
-        the chapter's title, so the writer sees what they typed.
+        name back — capitals, punctuation, accents — the file's header records the name
+        as its title, so the writer sees what they typed. A name already shaped like
+        its own filename produces a file with no header at all.
         """
         story = self.story(story_id)
         chapters_dir = self.path(story.relpath / CHAPTERS)
         chapters_dir.mkdir(parents=True, exist_ok=True)
 
         file = free_path(chapters_dir, slugify(name, "chapter"), CHAPTER_SUFFIX)
-        file.touch()
+        header = {"title": name} if name != file.stem else {}
+        write_atomically(file, ink.render(header, ""))
         with self._chapter_list(story) as listed:
-            record_chapter(listed, file.name, name)
+            ensure_entry(listed, file.name)
 
         self.invalidate()
-        return self.chapter(derive_id(f"{story.relpath}/{CHAPTERS}/{file.name}"))
+        return self.chapter(
+            derive_id(SPACE, f"{story.relpath}/{CHAPTERS}/{file.name}")
+        )
 
     def update_chapter(
         self, chapter_id: str, *, name: str | None = None, story_id: str | None = None
     ) -> Chapter:
         """Renames a chapter, moves it to another story, or both.
 
-        The file takes a slug of the new name, and the manifest entry naming the old
-        file is pointed at the new one, so a chapter that has a place in the order
-        keeps it. Moving a chapter to another story leaves it unordered there, shown
-        after the chapters that story lists.
+        The file takes a slug of the new name and its header takes the name itself, so
+        what the writer typed is kept whatever the slug drops. The manifest entry
+        naming the old file is pointed at the new one, so a chapter that has a place in
+        the order keeps it. A chapter moved to another story is listed last there.
 
         The chapter's id changes whenever its path does, which a rename or a move both
         do. The caller reads the returned chapter for the new one.
@@ -526,22 +395,29 @@ class Scanner:
             target = free_path(target_dir, stem, CHAPTER_SUFFIX)
             source.rename(target)
 
+        target_relpath = target_story.relpath / CHAPTERS / target.name
+        if name is not None:
+            self._retitle(target_relpath, display)
+
         if target_story.id == source_story.id:
             with self._chapter_list(source_story) as listed:
                 entry = entry_for(listed, chapter.filename)
                 if entry is not None:
                     entry["file"] = target.name
-                record_chapter(listed, target.name, display)
         else:
             with self._chapter_list(source_story) as listed:
                 _remove_entry(listed, chapter.filename)
             with self._chapter_list(target_story) as listed:
-                record_chapter(listed, target.name, display)
+                ensure_entry(listed, target.name)
 
         self.invalidate()
-        return self.chapter(
-            derive_id(f"{target_story.relpath}/{CHAPTERS}/{target.name}")
-        )
+        return self.chapter(derive_id(SPACE, str(target_relpath)))
+
+    def _retitle(self, relpath: PurePosixPath, name: str) -> None:
+        """Writes `name` into a chapter's header as its title."""
+        text = ink.with_title(ink.parse(self._text(relpath)), name, relpath.stem)
+        if text is not None:
+            write_atomically(self.path(relpath), text)
 
     def delete_chapter(self, chapter_id: str) -> None:
         """Deletes a chapter file, and the manifest entry naming it."""
@@ -573,22 +449,27 @@ class Scanner:
 
     # --- content -----------------------------------------------------------
 
-    def read_chapter(self, chapter_id: str) -> str:
-        """A chapter's text."""
-        chapter = self.chapter(chapter_id)
-        try:
-            return self.path(chapter.relpath).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            raise NotFound(f'"{chapter.relpath}" is no longer on disk.') from None
-        except UnicodeDecodeError as error:
-            raise StorageError(
-                f'"{chapter.relpath}" is not UTF-8 text: {error.reason}.'
-            ) from error
+    def _text(self, relpath: PurePosixPath) -> str:
+        """A chapter's text as it is on disk, header and all."""
+        return read_text(self.path(relpath), relpath)
 
-    def write_chapter(self, chapter_id: str, text: str) -> None:
-        """Replaces a chapter's text, leaving the previous text if the write fails."""
+    def read_chapter(self, chapter_id: str) -> str:
+        """A chapter's prose, without the header above it."""
+        chapter = self.chapter(chapter_id)
+        return ink.parse(self._text(chapter.relpath)).body
+
+    def write_chapter(self, chapter_id: str, body: str) -> None:
+        """Replaces a chapter's prose, keeping the header the file has.
+
+        The header is read from disk at the moment of the write, not taken from
+        anything the client sent, so a title or a status changed by hand since the
+        client loaded the file survives the save.
+        """
         chapter = self.chapter(chapter_id)
         path = self.path(chapter.relpath)
         if not path.is_file():
             raise NotFound(f'"{chapter.relpath}" is no longer on disk.')
-        write_atomically(path, text)
+
+        document = ink.parse(self._text(chapter.relpath))
+        write_atomically(path, ink.render(document.metadata, body))
+        self._held.restamp()

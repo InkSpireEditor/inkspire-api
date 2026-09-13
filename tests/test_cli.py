@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""The commands: `inkspire user …` and `inkspire llm …`.
+"""The commands: `inkspire user …`, `inkspire llm …` and `inkspire ink check`.
 
 Several account tests end at the login endpoint rather than at the hasher: what
 matters about those commands is that the account they write can actually be used, and
@@ -7,12 +7,16 @@ that a reset actually invalidates what came before.
 
 The generation tests check what reaches the provider and where output goes, since the
 command exists to exercise the same prompt and providers the API serves.
+
+The checker is tested through its exit code as much as its output: it is meant to gate
+a commit, so an error has to be the difference between 0 and 1.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -550,3 +554,124 @@ def test_a_provider_that_writes_nothing_is_an_error(ask) -> None:
     )
     assert result.exit_code == 1
     assert "no text" in result.output
+
+
+# --- ink check -------------------------------------------------------------
+
+
+@pytest.fixture
+def check(monkeypatch, tmp_path):
+    """Runs `inkspire ink check`, with both roots where the test put them."""
+    data_root = tmp_path / "novel-data"
+    (data_root / "stories").mkdir(parents=True)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(
+            data_root=data_root, files_root=tmp_path / "files", jwt_secret="s" * 32
+        ),
+    )
+
+    def run(*args: str):
+        return runner.invoke(cli.app, ["ink", "check", *args])
+
+    return run
+
+
+def write_chapter(root: Path, name: str, text: str) -> Path:
+    """One `.ink` file in a story, which is all the checker looks at."""
+    chapters = root / "novel-data" / "stories" / "example-story" / "chapters"
+    chapters.mkdir(parents=True, exist_ok=True)
+    path = chapters / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_repository_of_good_files_passes(check, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    write_chapter(tmp_path, "two.ink", "Prose with no header.\n")
+
+    result = check()
+
+    assert result.exit_code == 0
+    assert "2 files checked, 0 errors, 0 warnings." in result.output
+
+
+def test_an_unreadable_header_fails_and_says_where(check, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", "---\ntitle: One\nOnce.\n")
+
+    result = check()
+
+    assert result.exit_code == 1
+    assert "one.ink:1: error:" in result.output
+    assert "1 file checked, 1 error, 0 warnings." in result.output
+
+
+def test_a_warning_alone_passes(check, tmp_path) -> None:
+    """A key nothing reads is worth saying, and is not worth failing over."""
+    write_chapter(tmp_path, "one.ink", "---\ntitle: One\npov: Jane Doe\n---\nOnce.\n")
+
+    result = check()
+
+    assert result.exit_code == 0
+    assert 'the key "pov" means nothing here' in result.output
+    assert "1 file checked, 0 errors, 1 warning." in result.output
+
+
+def test_a_file_that_is_not_utf8_is_an_error(check, tmp_path) -> None:
+    chapters = tmp_path / "novel-data" / "stories" / "example-story" / "chapters"
+    chapters.mkdir(parents=True)
+    (chapters / "one.ink").write_bytes(b"---\ntitle: \xff\xfe\n---\n")
+
+    result = check()
+
+    assert result.exit_code == 1
+    assert "cannot be read as text" in result.output
+
+
+def test_one_named_file_is_checked_on_its_own(check, tmp_path) -> None:
+    good = write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    write_chapter(tmp_path, "two.ink", "---\ntitle: Two\nOnce.\n")
+
+    result = check(str(good))
+
+    assert result.exit_code == 0
+    assert "1 file checked" in result.output
+
+
+def test_an_empty_repository_has_nothing_to_check(check) -> None:
+    result = check()
+
+    assert result.exit_code == 0
+    assert "No .ink files to check." in result.output
+
+
+def test_a_path_that_is_not_there_is_refused(check, tmp_path) -> None:
+    result = check(str(tmp_path / "gone.ink"))
+
+    assert result.exit_code == 1
+    assert "is not there" in result.output
+
+
+def test_both_roots_are_checked(check, tmp_path) -> None:
+    """A note is the same kind of file as a chapter, and is checked with them."""
+    write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    (tmp_path / "files").mkdir()
+    (tmp_path / "files" / "scratch.ink").write_text(
+        "---\ntitle: Scratch\nOnce.\n", encoding="utf-8"
+    )
+
+    result = check()
+
+    assert result.exit_code == 1
+    assert "scratch.ink:1: error:" in result.output
+    assert "2 files checked, 1 error, 0 warnings." in result.output
+
+
+def test_a_root_that_is_not_there_is_not_an_error(check, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", "Once.\n")
+
+    result = check()
+
+    assert result.exit_code == 0
+    assert "1 file checked" in result.output
