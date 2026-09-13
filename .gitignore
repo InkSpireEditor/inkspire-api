@@ -1,31 +1,17 @@
-
-###> symfony/framework-bundle ###
 /.env.local
-/.env.local.php
 /.env.*.local
-/config/secrets/prod/prod.decrypt.private.php
-/public/bundles/
+
+# Holds API keys.
+/config/providers.yaml
+
+# var/ holds the SQLite databases, and the files that are not a novel.
 /var/
-/vendor/
-###< symfony/framework-bundle ###
 
-###> phpunit/phpunit ###
-/phpunit.xml
-/.phpunit.cache/
-###< phpunit/phpunit ###
-
-###> symfony/asset-mapper ###
-/public/assets/
-/assets/vendor/
-###< symfony/asset-mapper ###
-
-###> lexik/jwt-authentication-bundle ###
-/config/jwt/*.pem
-###< lexik/jwt-authentication-bundle ###
-
-/config/llm_providers.yaml
+__pycache__/
+*.py[cod]
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+/.coverage
 
 .idea/*
-.php-version
-.php-cs-fixer.cache
-.php-cs-fixer.dist.php

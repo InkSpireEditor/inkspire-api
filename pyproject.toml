@@ -1,0 +1,45 @@
+[project]
+name = "inkspire-api"
+version = "0.1.0"
+description = "InkSpire REST API"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<4.0.0"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "alembic",
+    "pydantic-settings",
+    "pyjwt",
+    "bcrypt",
+    "typer",
+    "httpx (>=0.28.1,<0.29.0)",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "jinja2 (>=3.1.6,<4.0.0)",
+]
+
+[project.scripts]
+inkspire = "inkspire_api.cli:app"
+
+[tool.poetry]
+requires-poetry = ">=2.0"
+packages = [{ include = "inkspire_api" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+httpx = "*"
+pytest-asyncio = "^1.4.0"
+anyio = "^4.15.1"
+pylint = "^4.0.8"
+ty = "^0.0.80"
+pytest-cov = "^7.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"
