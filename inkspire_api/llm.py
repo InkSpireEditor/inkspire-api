@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, NamedTuple
@@ -29,7 +29,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .deps import CurrentUser, SettingsDep
-from .settings import Settings, get_settings
+from .settings import Settings
 
 #: Upper bound on a model identifier, across every provider.
 MAX_MODEL_LENGTH = 255
@@ -213,7 +213,7 @@ class LLMService:
             if isinstance(entry, dict) and entry.get(field)
         ]
 
-    async def stream(self, model: str, prompt: str) -> AsyncIterator[str]:
+    async def stream(self, model: str, prompt: str) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
 
         Raises `LLMError` if the provider cannot be reached or rejects the request.
@@ -382,7 +382,7 @@ class GenerateRequest(BaseModel):
 
 
 @router.get("/models")
-async def list_models(user: CurrentUser, service: ServiceDep) -> list[dict[str, str]]:
+async def list_models(service: ServiceDep) -> list[dict[str, str]]:
     try:
         return await service.models()
     except ValueError as error:  # a provider file that cannot be read

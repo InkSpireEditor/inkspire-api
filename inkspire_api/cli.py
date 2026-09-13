@@ -33,7 +33,8 @@ import time
 from typing import Annotated
 
 import typer
-from sqlalchemy import delete, func, select
+from sqlalchemy import CursorResult, delete, func, select
+from typing import cast
 from sqlalchemy.exc import IntegrityError
 
 from .db import get_sessionmaker
@@ -74,6 +75,7 @@ def fail(message: str) -> None:
 
 
 def generate_password() -> str:
+    """A random password, shown once and stored only as a hash."""
     return secrets.token_hex(GENERATED_PASSWORD_BYTES)
 
 
@@ -90,6 +92,7 @@ def check_password(password: str) -> None:
 
 
 def normalise_roles(roles: list[str]) -> list[str]:
+    """Upper-cases roles, refuses one not starting with ROLE_, and drops duplicates."""
     checked = []
     for role in roles:
         role = role.strip().upper()
@@ -138,7 +141,7 @@ def run(
         )
 
     # Imported here so the account commands do not pay for the server's import.
-    import uvicorn
+    import uvicorn  # pylint: disable=import-outside-toplevel
 
     uvicorn.run("inkspire_api.main:app", host=host, port=port, reload=reload)
 
@@ -162,10 +165,12 @@ def list_users() -> None:
 
         live = dict(
             session.execute(
-                select(RefreshToken.user_id, func.count())
+                select(RefreshToken.user_id, func.count())  # pylint: disable=not-callable
                 .where(RefreshToken.expires_at > utcnow())
                 .group_by(RefreshToken.user_id)
-            ).all()
+            )
+            .tuples()
+            .all()
         )
 
         # Padded to the longest address so the columns line up, and separated by two
@@ -261,9 +266,14 @@ def reset_password(
         # would keep minting JWTs for the rest of its lifetime.
         revoked = 0
         if not keep_sessions:
-            revoked = session.execute(
-                delete(RefreshToken).where(RefreshToken.user_id == account.id)
-            ).rowcount
+            # A DELETE answers with a cursor, which is what carries the row count.
+            deleted = cast(
+                CursorResult,
+                session.execute(
+                    delete(RefreshToken).where(RefreshToken.user_id == account.id)
+                ),
+            )
+            revoked = deleted.rowcount
         session.commit()
 
         typer.secho(f"[OK] Password updated for {email}.", fg=typer.colors.GREEN)

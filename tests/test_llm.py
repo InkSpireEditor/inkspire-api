@@ -31,6 +31,12 @@ from inkspire_api.llm import (
 )
 from inkspire_api.settings import Settings
 
+#: The prompt sent for a set of inputs, recorded so a change to the template shows up
+#: as a failure here rather than as a change in what the models are asked.
+PROMPTS: dict[str, dict[str, str]] = json.loads(
+    (Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8")
+)
+
 # --- the prompt ------------------------------------------------------------
 
 
@@ -45,6 +51,20 @@ def test_the_writers_text_is_not_html_escaped() -> None:
 def test_the_prompt_ends_on_the_writers_last_character() -> None:
     """A trailing newline would tell the model the sentence had ended."""
     assert render_prompt("the house was").endswith("the house was")
+
+
+@pytest.mark.parametrize("case", sorted(PROMPTS))
+def test_the_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
+    """Pins the whole prompt, character for character, for ten kinds of input.
+
+    `tests/data/prompts.json` holds the text sent to the model for each of them:
+    quotes and ampersands that escaping would mangle, accented characters, CJK,
+    Markdown, template delimiters typed by the writer, and text ending mid-word, on a
+    space or on a blank line. Editing the template changes what every model is asked
+    to do, so it fails here until the recorded prompt is updated with it.
+    """
+    recorded = PROMPTS[case]
+    assert render_prompt(recorded["text"]) == recorded["prompt"]
 
 
 def test_markdown_is_preserved_verbatim() -> None:
@@ -135,7 +155,7 @@ def test_a_chat_completions_event_carries_its_delta() -> None:
 def test_a_chat_completions_reasoning_chunk_contributes_no_text() -> None:
     """A thinking model emits reasoning on its own field; it is not part of the story."""
     line = 'data: {"choices":[{"delta":{"content":"","reasoning":"hmm"}}]}'
-    assert sse_event(line).content == ""
+    assert sse_event(line) == llm.Event("", None)
 
 
 def test_the_terminator_and_keep_alives_decode_to_nothing() -> None:
@@ -147,7 +167,7 @@ def test_the_terminator_and_keep_alives_decode_to_nothing() -> None:
 
 def test_a_finish_reason_is_carried_out_of_the_event() -> None:
     line = 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}'
-    assert sse_event(line).done_reason == "length"
+    assert sse_event(line) == llm.Event("", "length")
 
 
 def test_a_native_event_carries_its_message_content() -> None:
@@ -157,12 +177,12 @@ def test_a_native_event_carries_its_message_content() -> None:
 
 def test_native_thinking_contributes_no_text() -> None:
     line = '{"message":{"content":"","thinking":"working on it"},"done":false}'
-    assert native_event(line).content == ""
+    assert native_event(line) == llm.Event("", None)
 
 
 def test_a_native_done_reason_is_carried_out_of_the_event() -> None:
     line = '{"message":{"content":""},"done":true,"done_reason":"length"}'
-    assert native_event(line).done_reason == "length"
+    assert native_event(line) == llm.Event("", "length")
 
 
 def test_a_malformed_native_line_decodes_to_nothing() -> None:

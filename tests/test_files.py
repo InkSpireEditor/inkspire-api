@@ -15,6 +15,9 @@ from fastapi.testclient import TestClient
 
 from conftest import EMAIL, make_story
 
+from inkspire_api.models import User
+from inkspire_api.security import hash_password
+
 CONTENT_TYPE = {"Content-Type": "text/plain"}
 
 
@@ -299,6 +302,14 @@ def test_moving_a_chapter_to_another_story(logged_in: TestClient, repository: Pa
     assert listing[moved["id"]] == {"name": "first-chapter"}
 
 
+def test_moving_a_chapter_to_an_unknown_story_is_not_found(logged_in: TestClient, repository: Path) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    response = logged_in.put(f"/api/file/{chapter}", json={"dir": "0" * 16})
+
+    assert response.status_code == 404
+    assert logged_in.get(f"/api/file/{chapter}").status_code == 200
+
+
 def test_a_chapter_with_no_change_asked_for_stays_as_it_is(logged_in: TestClient, repository: Path) -> None:
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     response = logged_in.put(f"/api/file/{chapter}", json={})
@@ -421,6 +432,61 @@ def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
         ).status_code
         == 401
     )
+
+
+# --- who can see what ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/tree"),
+        ("get", f"/api/dir/{'0' * 16}"),
+        ("post", "/api/dir"),
+        ("put", f"/api/dir/{'0' * 16}"),
+        ("delete", f"/api/dir/{'0' * 16}"),
+        ("post", "/api/file"),
+        ("get", f"/api/file/{'0' * 16}"),
+        ("put", f"/api/file/{'0' * 16}"),
+        ("delete", f"/api/file/{'0' * 16}"),
+        ("get", f"/api/file/{'0' * 16}/contents"),
+        ("put", f"/api/file/{'0' * 16}/contents"),
+    ],
+)
+def test_every_route_refuses_a_request_with_no_token(
+    client: TestClient, repository: Path, method: str, path: str
+) -> None:
+    """Authentication is declared on the router, so this holds for a route added later too."""
+    response = getattr(client, method)(path)
+    assert response.status_code == 401, f"{method.upper()} {path}"
+
+
+def test_two_accounts_see_the_same_stories(
+    logged_in: TestClient, repository: Path, session_factory, settings
+) -> None:
+    """The stories belong to the repository, not to an account.
+
+    One person writes here and the repository is a single working tree, so there is no
+    per-account ownership to enforce: a second account sees the same stories.
+    """
+    with session_factory() as session:
+        session.add(
+            User(
+                email="second@example.com",
+                roles=[],
+                password=hash_password("password", settings.bcrypt_rounds),
+            )
+        )
+        session.commit()
+
+    first = logged_in.get("/api/tree").json()
+    logged_in.post(
+        "/auth", json={"username": "second@example.com", "password": "password"}
+    )
+    second = logged_in.get("/api/tree").json()
+
+    assert second["user"] == "second@example.com"
+    assert second["dirs"] == first["dirs"]
 
 
 # --- what a writer does in one sitting -------------------------------------

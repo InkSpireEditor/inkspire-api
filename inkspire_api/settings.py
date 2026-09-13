@@ -20,6 +20,8 @@ class SecretNotConfigured(RuntimeError):
 
 
 class Settings(BaseSettings):
+    """Everything the application reads from its environment."""
+
     model_config = SettingsConfigDict(
         env_prefix="INKSPIRE_",
         # Layered, last one winning: `.env` is committed and holds defaults, `.env.local`
@@ -84,6 +86,7 @@ class Settings(BaseSettings):
         return value.expanduser()
 
     def jwt_secret_or_raise(self) -> str:
+        """The signing secret, or `SecretNotConfigured` naming where to put one."""
         if not self.jwt_secret:
             raise SecretNotConfigured(
                 "No JWT signing secret configured. Set INKSPIRE_JWT_SECRET in the "
