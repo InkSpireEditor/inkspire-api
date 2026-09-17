@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from conftest import EMAIL, PASSWORD, add_refresh_token, bearer, set_cookies
+from tests.conftest import EMAIL, PASSWORD, add_refresh_token, bearer, set_cookies
 
 from inkspire_api.db import get_session
 from inkspire_api.main import create_app

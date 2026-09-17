@@ -470,6 +470,18 @@ files = [
 ]
 
 [[package]]
+name = "html5rdf"
+version = "1.2.1"
+description = "HTML parser based on the WHATWG HTML specification"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "html5rdf-1.2.1-py2.py3-none-any.whl", hash = "sha256:1f519121bc366af3e485310dc8041d2e86e5173c1a320fac3dc9d2604069b83e"},
+    {file = "html5rdf-1.2.1.tar.gz", hash = "sha256:ace9b420ce52995bb4f05e7425eedf19e433c981dfe7a831ab391e2fa2e1a195"},
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 description = "A minimal low-level HTTP client."
@@ -854,12 +866,47 @@ files = [
 ]
 
 [[package]]
+name = "owlrl"
+version = "7.6.2"
+description = "A simple implementation of the OWL2 RL Profile, as well as a basic RDFS inference, on top of RDFLib. Based mechanical forward chaining."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "owlrl-7.6.2-py3-none-any.whl", hash = "sha256:83347bf7f133979e87b2b18695d51d25510b99cec3f6919b5df05d4fbf058ae0"},
+    {file = "owlrl-7.6.2.tar.gz", hash = "sha256:c743f35c2d908396e77823852bb1ebbce88340cd49961493983bec42c93283a8"},
+]
+
+[package.dependencies]
+rdflib = ">=7.6.0"
+
+[package.extras]
+oxigraph = ["pyoxigraph (>=0.5.6)"]
+
+[[package]]
+name = "oxrdflib"
+version = "0.4.0"
+description = "rdflib stores based on pyoxigraph"
+optional = true
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "extra == \"oxigraph\""
+files = [
+    {file = "oxrdflib-0.4.0-py3-none-any.whl", hash = "sha256:c6203636b05817e21fbe7c469154b2e312593d0801cdaa14058c2d99dcfc12a6"},
+    {file = "oxrdflib-0.4.0.tar.gz", hash = "sha256:37d4c025d4e39c5e5472527c393998bfd10e5ac185a30e080b5b510f6dd7da86"},
+]
+
+[package.dependencies]
+pyoxigraph = ">=0.4.2,<0.5.0"
+rdflib = ">=6.3,<8.0"
+
+[[package]]
 name = "packaging"
 version = "26.3"
 description = "Core utilities for Python packages"
 optional = false
 python-versions = ">=3.9"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "packaging-26.3-py3-none-any.whl", hash = "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"},
     {file = "packaging-26.3.tar.gz", hash = "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79"},
@@ -892,6 +939,24 @@ files = [
 [package.extras]
 dev = ["pre-commit", "tox"]
 testing = ["coverage", "pytest", "pytest-benchmark"]
+
+[[package]]
+name = "prettytable"
+version = "3.18.0"
+description = "A simple Python library for easily displaying tabular data in a visually appealing ASCII table format"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "prettytable-3.18.0-py3-none-any.whl", hash = "sha256:b3346e0e6f79180833aebaac088ae926340586cf6d7d991b9eb125b65f72313a"},
+    {file = "prettytable-3.18.0.tar.gz", hash = "sha256:439217116152244369caf3d9f1caf2f9fe29b03bd79e88d2928c8e718c95d680"},
+]
+
+[package.dependencies]
+wcwidth = ">=0.3.5"
+
+[package.extras]
+tests = ["pytest (>=9)", "pytest-cov", "pytest-lazy-fixtures"]
 
 [[package]]
 name = "pydantic"
@@ -1128,6 +1193,100 @@ spelling = ["pyenchant (>=3.2,<4.0)"]
 testutils = ["gitpython (>3)"]
 
 [[package]]
+name = "pyoxigraph"
+version = "0.4.11"
+description = "Python bindings of Oxigraph, a SPARQL database and RDF toolkit"
+optional = true
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "extra == \"oxigraph\""
+files = [
+    {file = "pyoxigraph-0.4.11-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:008dd50b7dcab025d9a64df7de178220d197d684cdff3da53442ae759d8d700c"},
+    {file = "pyoxigraph-0.4.11-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:91e74596d0d9dc234ca77873369bb047672e38be11dfcde8b2db0fa0d0f3bd34"},
+    {file = "pyoxigraph-0.4.11-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:cd86f7f04624a23ccb821716ad34943d301524d266b9ac415e5f9cb4f4f339e6"},
+    {file = "pyoxigraph-0.4.11-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:7a0a3d84c887820473f1218e2e9633c2322eafed5e785b22a955ee0caaff882d"},
+    {file = "pyoxigraph-0.4.11-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1ff9c48ebb0faa48c17691d56d0dab88fa15fadef70e494153bb1511d3fc17ab"},
+    {file = "pyoxigraph-0.4.11-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9dcba1517a42a7d1a9f96b8d248579a8773e9256e35762f353207a486bdbf25b"},
+    {file = "pyoxigraph-0.4.11-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:6ae5f76d69498862fde26aa84ddf8d10a30478cf7f3be1fa8c82380e2f57af78"},
+    {file = "pyoxigraph-0.4.11-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:1e58de7bd2b1b6df2aa8a7bb95ce898c78c1309f9fb0d0658c51be38bf630620"},
+    {file = "pyoxigraph-0.4.11-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:cc89ed499f0816119bad6955e41db51d7ee3b79f1f78bdb32bc3b7792a21ab51"},
+    {file = "pyoxigraph-0.4.11-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ec1f74e92c1ccb108e7b79bd1395cf12c1c6f9d4a3d9d2c2ddc7955e2a527c6d"},
+    {file = "pyoxigraph-0.4.11-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:720e15d44a33fd153f8985e242e4e428ee913087ad9582d008adf84b55e57e0f"},
+    {file = "pyoxigraph-0.4.11-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:63ed10e9b398718350e08b08ffa5086c1c4123c45a1440818a130bf80d9b4a50"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6b6c280f474df35480ebcf644f5500e3ac835a8469c74ee150f3eab63c096b3b"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b51b40fbb69ccb77875f98c48bb73338f7488c59fe7470557d2dc954f81cf0ab"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:3249aca824cf641262d7a3083281cae4bef99b5eb21149e468ca59cb2c483b4b"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:033cd1e517c218958e621845192770d6214c433e63eff5eff8b189a359b11594"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313-win_amd64.whl", hash = "sha256:429b0d709197b766c08f6b48d59158e878fce350a229848823781d614ad8a73e"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:13388877324e66dfa65461800505598fb5805a625f23e14b879df4fd52444b24"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ae090cb684331623f7b2460620d85b20cd3a312e0a1c172ad8a6cfd3a260cfdc"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:3dba53ac72f922607bb9db49e0f49824f74729839873b7a0d1ccf8f518cc80da"},
+    {file = "pyoxigraph-0.4.11-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:5965d40cb90852225eb3957a310e359a1f024a9ab21851f0a4555bc9666edc95"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-macosx_10_14_x86_64.whl", hash = "sha256:d6725d754893e81d5f397f3c6c29664b17eb52c99c9b705d4b800cc4416a53f4"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:b5757598733e38e3fee70513cfb38a2d10191dbbe1522af0329c70801a1f715e"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2eaf4f7421ba2815cf9f60c7bc2379344a03afe0ef6e749df9689a2d0c970b8a"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0826ed60ec53f3c539cdf4f2b9977089302478d02927293a09da49dedc604660"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:9322083f3854b26324f4f2aa23b0823c87802e404eb3e19d490f5d40f82a28bd"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e035770fa70ba818073ea20de1989dc24e111f5ad93e52f44b5bd84c77d3057b"},
+    {file = "pyoxigraph-0.4.11-cp38-abi3-win_amd64.whl", hash = "sha256:26d862905a378ac922dda56ff6e36b047aea106203a2b5503a6dfc5feda55273"},
+    {file = "pyoxigraph-0.4.11-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:86acdd2e72f42a89778d8b5837e477c8609f0c4d87f8453cb3eeb014217ba268"},
+    {file = "pyoxigraph-0.4.11-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bd162020913e44088c94b566b51600d58d76ac8e7983d3001bc5e5fac667d34f"},
+    {file = "pyoxigraph-0.4.11-cp38-cp38-musllinux_1_2_aarch64.whl", hash = "sha256:1d9a6fdfeb06b895767353b9837d4d822d28fcf3ecf9580eca4b38669aff4e90"},
+    {file = "pyoxigraph-0.4.11-cp38-cp38-musllinux_1_2_x86_64.whl", hash = "sha256:97ab378c23e14b1465d7ad0bc4ce64ebce51cbf953ec9b9afe180fe93d1069d6"},
+    {file = "pyoxigraph-0.4.11-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8abfb7ee202d7f5a7694415e3e4c782d4b376097db08d2cbc92707fd3097b1da"},
+    {file = "pyoxigraph-0.4.11-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ae8b8f6fdf6613aa5d0e092e33e07279757d3b846dcf11d5c05a6aaad9d9cd06"},
+    {file = "pyoxigraph-0.4.11-cp39-cp39-musllinux_1_2_aarch64.whl", hash = "sha256:cf5075d9e17ecc63ea744fc3777fbdce5c02dd66f3085202507174fff90cedcc"},
+    {file = "pyoxigraph-0.4.11-cp39-cp39-musllinux_1_2_x86_64.whl", hash = "sha256:c1b5cb7ddd4434be0b835192451eb6ed3222bd2255f06c59d9f9861f60ffeb87"},
+    {file = "pyoxigraph-0.4.11-pp310-pypy310_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:aed2ee7b60daaf096e3c652ecb4ccdd36ec4e507194a9002b63456b25c0af5c6"},
+    {file = "pyoxigraph-0.4.11-pp310-pypy310_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c8afe83fd73f9f071302f451d987991a280a9703d19508a6dbcd63e9d5222e77"},
+    {file = "pyoxigraph-0.4.11-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2dbb7dd027645ca74dfa588740e9beb8f148a19c70350eeb307448fbfd566ce5"},
+    {file = "pyoxigraph-0.4.11-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9c6c3024541bd3dd03a5c838ce2feaedbf19463232417bdbf396291c4d9d2add"},
+    {file = "pyoxigraph-0.4.11-pp39-pypy39_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0ebe04cb782cc359d8c782b1c8843accf5b8568ff942bc5cf204e9e395522c65"},
+    {file = "pyoxigraph-0.4.11-pp39-pypy39_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ac504982b5e6d19a51a303db9ad4913889b08b2dcd2276cc832b2f0054124f50"},
+    {file = "pyoxigraph-0.4.11.tar.gz", hash = "sha256:19da535c5026eacb11140ee03e2055d8757eb0e9800e722476f52fa46fe96658"},
+]
+
+[[package]]
+name = "pyparsing"
+version = "3.3.2"
+description = "pyparsing - Classes and methods to define and execute parsing grammars"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "pyparsing-3.3.2-py3-none-any.whl", hash = "sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d"},
+    {file = "pyparsing-3.3.2.tar.gz", hash = "sha256:c777f4d763f140633dcb6d8a3eda953bf7a214dc4eff598413c070bcdc117cbc"},
+]
+
+[package.extras]
+diagrams = ["jinja2", "railroad-diagrams"]
+
+[[package]]
+name = "pyshacl"
+version = "0.30.1"
+description = "Python SHACL Validator"
+optional = false
+python-versions = "<4,>=3.9"
+groups = ["main"]
+files = [
+    {file = "pyshacl-0.30.1-py3-none-any.whl", hash = "sha256:d7e0c21b25e948bb643dbc5db6258da64a90a8ac89055c1fe562b469031072aa"},
+    {file = "pyshacl-0.30.1.tar.gz", hash = "sha256:df712ac961b1ee7bcf0b27fa71ecab7785a135b2af69783ce30cb05fe41bcaf5"},
+]
+
+[package.dependencies]
+owlrl = ">=7.1.2,<8"
+packaging = ">=21.3"
+prettytable = {version = ">=3.7.0", markers = "python_version >= \"3.12\""}
+rdflib = {version = ">=7.1.1,<7.1.2 || >7.1.2,<8.0", extras = ["html"]}
+
+[package.extras]
+dev-coverage = ["coverage (>6.1,!=6.1.1,<7)", "platformdirs", "pytest-cov (>=2.8.1,<3)"]
+dev-lint = ["platformdirs", "ruff (>=0.9.3,<0.10)"]
+dev-type-checking = ["mypy (>=1.13.0)", "platformdirs", "types-setuptools"]
+http = ["sanic (>=22.12,<23)", "sanic-cors (==2.2.0)", "sanic-ext (>=23.3,<23.6)"]
+js = ["pyduktape2 (>=0.4.6,<1)"]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 description = "pytest: simple powerful testing with Python"
@@ -1286,6 +1445,31 @@ files = [
     {file = "pyyaml-6.0.3-cp39-cp39-win_amd64.whl", hash = "sha256:2e71d11abed7344e42a8849600193d15b6def118602c4c176f748e4583246007"},
     {file = "pyyaml-6.0.3.tar.gz", hash = "sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"},
 ]
+
+[[package]]
+name = "rdflib"
+version = "7.6.0"
+description = "RDFLib is a Python library for working with RDF, a simple yet powerful language for representing information."
+optional = false
+python-versions = ">=3.8.1"
+groups = ["main"]
+files = [
+    {file = "rdflib-7.6.0-py3-none-any.whl", hash = "sha256:30c0a3ebf4c0e09215f066be7246794b6492e054e782d7ac2a34c9f70a15e0dd"},
+    {file = "rdflib-7.6.0.tar.gz", hash = "sha256:6c831288d5e4a5a7ece85d0ccde9877d512a3d0f02d7c06455d00d6d0ea379df"},
+]
+
+[package.dependencies]
+html5rdf = {version = ">=1.2,<2", optional = true, markers = "extra == \"html\""}
+pyparsing = ">=2.1.0,<4"
+
+[package.extras]
+berkeleydb = ["berkeleydb (>=18.1.0,<19.0.0)"]
+graphdb = ["httpx (>=0.28.1,<0.29.0)"]
+html = ["html5rdf (>=1.2,<2)"]
+lxml = ["lxml (>=4.3,<6.0)"]
+networkx = ["networkx (>=2,<4)"]
+orjson = ["orjson (>=3.9.14,<4)"]
+rdf4j = ["httpx (>=0.28.1,<0.29.0)"]
 
 [[package]]
 name = "rich"
@@ -1725,6 +1909,18 @@ files = [
 anyio = ">=3.0.0"
 
 [[package]]
+name = "wcwidth"
+version = "0.8.3"
+description = "Measures the displayed width of unicode strings in a terminal"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "wcwidth-0.8.3-py3-none-any.whl", hash = "sha256:d5b73dba6158a595ec9370350e7f2637bcac8d6c5e4fde34f30fcffb6103a5e4"},
+    {file = "wcwidth-0.8.3.tar.gz", hash = "sha256:d128512515fbf4612e0ff21fd6380399210318b7b54a9af59dff8454cf9730eb"},
+]
+
+[[package]]
 name = "websockets"
 version = "17.1"
 description = "An implementation of the WebSocket Protocol (RFC 6455 & 7692)"
@@ -1882,7 +2078,10 @@ files = [
     {file = "websockets-17.1.tar.gz", hash = "sha256:acfea4c20bf54384883ea33b1240fc1db4f52e190823a4e2b334bc3e8bfca96a"},
 ]
 
+[extras]
+oxigraph = ["oxrdflib", "pyoxigraph"]
+
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0.0"
-content-hash = "8b49749a5b9e78bcbae535221f9ab4ddc16d875a42d87bceebe3c35eb5b84fd7"
+content-hash = "fb2b501c8472f82de31ee64d4e1f3507b418e200f2e25d9de750c5385a0eb148"

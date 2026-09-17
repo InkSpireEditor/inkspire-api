@@ -1,0 +1,290 @@
+/*
+  Typst Timeline Generator Template
+  This file uses the Cetz library to draw a timeline based on data
+  injected by a Python script via Jinja2 templating.
+*/
+
+// Import the Cetz library for drawing shapes.
+#import "@preview/cetz:0.4.2"
+
+// Set the page dimensions to automatically fit the content.
+#set page(
+    width: auto,
+    height: auto,
+)
+
+// ==============================================================================
+// Configuration
+// ==============================================================================
+// These values are injected from the Python script.
+
+// `widthstep`: Horizontal spacing between consecutive events.
+#let widthstep = {{ widthstep }}
+// `archeight`: Vertical position for drawing arcs.
+#let archeight = 1.5
+
+
+// ==============================================================================
+// Color Management
+// ==============================================================================
+
+// A map of common color names to Typst color objects.
+#let color-map = (
+  "red": red,
+  "blue": blue,
+  "green": green,
+  "yellow": yellow,
+  "black": black,
+  "white": white,
+  "gray": gray,
+  "aqua": aqua,
+  "lime": lime,
+  "navy": navy,
+  "fuchsia": fuchsia,
+  "maroon": maroon,
+  "purple": purple,
+  "silver": silver,
+  "teal": teal,
+  "olive": olive,
+)
+
+/*
+  Parses a color from a string.
+  - If the string starts with '#', it's treated as a hex code.
+  - Otherwise, it's looked up in the `color-map`.
+  - If the input is already a color object, it's returned directly.
+  - Falls back to black for unknown names or invalid types.
+
+  @param color-name-or-hex (str, color): The color string or object.
+  @return (color): The parsed Typst color.
+*/
+#let get-color(color-name-or-hex) = {
+  if type(color-name-or-hex) == str {
+    if color-name-or-hex.starts-with("#") {
+      return rgb(color-name-or-hex)
+    } else {
+      // Fallback for unknown named colors
+      return color-map.at(color-name-or-hex, default: black)
+    }
+  } else if type(color-name-or-hex) == color {
+    return color-name-or-hex
+  } else {
+    // Fallback for invalid input type
+    return black
+  }
+}
+
+
+// ==============================================================================
+// Drawing Functions
+// ==============================================================================
+
+/*
+  Draws a line between two points. Used to connect events for a character.
+
+  @param from (cetz-point): The starting point name (e.g., event key).
+  @param to (cetz-point): The ending point name.
+  @param color (color): The color of the arrow.
+*/
+#let draw-arrow(from, to, color: black) = {
+  cetz.draw.line(from, to, stroke: (paint: color, thickness: 1.5pt, cap: "round"))
+}
+
+/*
+  Draws a rectangle for an event.
+  It includes a gradient background, a border, and text for the date and description.
+  If an `href` is provided, the description becomes a hyperlink.
+
+  @param key (str): A unique key to name the Cetz element.
+  @param p1 (point): The top-left coordinate of the rectangle.
+  @param p2 (point): The bottom-right coordinate of the rectangle.
+  @param date (str): The event date string.
+  @param description (str): The event description text.
+  @param href (str, none): An optional URL to link the description to.
+*/
+#let draw-rect(key, p1, p2, date, description, href: none) = {
+  import cetz: draw
+
+  let w = p2.x - p1.x
+  let h = p2.y - p1.y
+
+  // Main rectangle with a linear gradient and a border.
+  draw.rect(
+    (p1.x, p1.y),
+    (p2.x, p2.y),
+    fill: gradient.linear(white, rgb("#f8f9fa"), angle: 90deg),
+    stroke: (paint: rgb("#d0d0d0"), thickness: 2pt),
+    name: key,
+  )
+
+  // Date text, centered horizontally in the top third.
+  draw.content(
+    (p1.x + w/2, p1.y + h/3),
+    text(size: 10pt, fill: rgb("#666"), weight: "bold", date)
+  )
+
+  // Main description text, centered horizontally in the bottom two-thirds.
+  if href != none {
+    // If a link is provided, wrap the description in a link.
+    draw.content(
+      (p1.x + w/2, p1.y + 2*h/3),
+      text(size: 12pt, fill: rgb("#2563eb"), link(href)[#description])
+    )
+  } else {
+    draw.content(
+      (p1.x + w/2, p1.y + 2*h/3),
+      text(size: 12pt, fill: rgb("#222"))[#description]
+    )
+  }
+}
+
+/*
+  Draws a labeled arc spanning a range of events.
+  It consists of two dashed vertical lines and a bezier curve.
+
+  @param xa (float): The starting x-coordinate of the arc's span.
+  @param xb (float): The ending x-coordinate of the arc's span.
+  @param y (float): The y-coordinate where the vertical lines start.
+  @param arc-text (str): The label for the arc.
+*/
+#let draw-arc(xa, xb, y, arc-text) = {
+  import cetz: draw
+
+  let xpadding = widthstep / 2
+  let ypadding = 1
+  let x1 = xa - xpadding
+  let x2 = xb + xpadding
+
+   // Dashed vertical lines from the event level down to the arc level.
+   draw.line(
+     (x1, y),
+     (x1, ypadding),
+     stroke: (paint: rgb("#999"), thickness: 1.5pt, dash: "dashed")
+   )
+   draw.line(
+     (x2, y),
+     (x2, ypadding),
+     stroke: (paint: rgb("#999"), thickness: 1.5pt, dash: "dashed")
+   )
+
+   // The main bezier curve for the arc.
+   let xc = (x1 + x2) / 2
+   let d = 5
+
+   draw.bezier(
+    (x1, ypadding),
+    (x2, ypadding),
+    (xc, d),
+    stroke: (paint: rgb("#999"), thickness: 1.5pt)
+  )
+
+  // Arc label, centered on the curve.
+  let text-y = d / 2.5
+  draw.content(
+    (xc, text-y),
+    text(size: 11pt, fill: rgb("#2d3748"), weight: "bold")[#arc-text]
+  )
+}
+
+
+// ==============================================================================
+// Main Timeline Generation
+// ==============================================================================
+
+/*
+  The main function that orchestrates the drawing of the entire timeline.
+  It iterates through events, characters, and arcs to draw each component.
+
+  @param events (dict): A dictionary of event data.
+  @param arcs (array): An array of arc data.
+  @param characters (dict): A dictionary of character data, including their events.
+*/
+#let generate-timeline(events, arcs, characters) = {
+  cetz.canvas(length: 1cm, {
+    import cetz: draw
+
+    // 1. Draw all event rectangles.
+    draw.on-layer(1, {
+      for (key, event) in events {
+        draw-rect(
+          key,
+          event.p1,
+          event.p2,
+          event.date,
+          event.description,
+          href: event.at("href", default: none)
+        )
+      }
+    })
+
+    // 2. Draw arrows connecting events for each character.
+    for character in characters.values() {
+      let char-name = character.at("name")
+      let char-color = character.at("color")
+      let arrows = character.at("arrows")
+      for arrow in arrows {
+        let from = arrow.at("from")
+        let to = arrow.at("to")
+        draw-arrow(
+          from,
+          to,
+          color: char-color
+        )
+      }
+    }
+
+    // 3. Draw all arcs.
+    for arc in arcs {
+      draw-arc(
+        arc.firstEvent,
+        arc.lastEvent,
+        -{{ maxHeight }} + 1,
+        arc.name
+      )
+    }
+  })
+}
+
+
+// ==============================================================================
+// Data Injection via Jinja2
+// ==============================================================================
+// The following blocks are populated by the Python script.
+
+// `events`: A Typst dictionary mapping event keys to their data.
+// Each event has two points (p1, p2), date, description, and an optional href.
+#let events = (
+  {% for event in events %}
+    "{{ event.key }}": (p1: (x: {{ event.x1 }}, y: -{{ event.y1 }}), p2: (x: {{ event.x2 }}, y: -{{ event.y2 }}), date: "{{ event. date }}", description: "{{ event.description }}", {% if event.href %} href: "{{ event.href }}" {% endif %}),
+  {% endfor %}
+)
+
+// `arcs`: A Typst array of dictionaries, each defining an arc's span and name.
+#let arcs = (
+  {% for arc in arcs %}
+    (firstEvent: {{ arc.firstEvent.x1 }}, lastEvent: {{ arc.lastEvent.x2 }}, name: "{{ arc.name }}"),
+  {% endfor %}
+)
+
+// `characters`: A Typst dictionary mapping character keys to their data.
+// Each character has a name, a color, and a list of event pairs (`arrows`) to connect.
+#let characters = (
+  {% for character in characters.values() %}
+      "{{ character.key }}": (
+        name: "{{ character.name }}",
+        color: get-color("{{ character.color }}"),
+        arrows: (
+    {% for i in range(character.events | length - 1) %}
+          (from: "{{ character.events[i].key }}", to: "{{ character.events[i + 1].key }}"),
+    {% endfor %}
+        ),
+      ),
+  {% endfor %}
+)
+
+
+// ==============================================================================
+// Generate the Final Output
+// ==============================================================================
+// Call the main function with the prepared data to render the timeline.
+#generate-timeline(events, arcs, characters)

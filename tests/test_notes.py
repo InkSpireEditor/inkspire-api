@@ -16,7 +16,7 @@ import yaml
 from inkspire_api.fs import Conflict, NotFound, StorageError, derive_id
 from inkspire_api.notes import SPACE, NotesScanner
 
-from conftest import make_folder, make_note
+from tests.conftest import make_folder, make_note
 
 
 @pytest.fixture

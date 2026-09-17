@@ -1,0 +1,11 @@
+id: Cora
+type: Character
+name: Cora
+status: alive
+
+studentOf: [Alden]
+hasSkill: [Frostcraft]
+
+sections:
+  personality: >
+    Quiet and precise, patient as winter.

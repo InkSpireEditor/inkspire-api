@@ -1,0 +1,110 @@
+# A made-up timeline exercising every field the renderer reads.
+# Placeholder names only -- this file is an example, not story content.
+
+title: "Example Timeline"
+
+characters:
+  alice:
+    name: "Alice"
+    color: "blue"
+
+  bob:
+    name: "Bob"
+    color: "purple"
+
+  carol:
+    name: "Carol"
+    color: "pink"
+
+# Every distinct character combination appearing under `events` needs a position here,
+# or process() raises KeyError.
+positions:
+  alice:
+    characters: ["alice"]
+    position: 0
+
+  bob:
+    characters: ["bob"]
+    position: 2
+
+  carol:
+    characters: ["carol"]
+    position: 3
+
+  aliceBob:
+    characters: ["alice", "bob"]
+    position: 1
+
+  bobCarol:
+    characters: ["bob", "carol"]
+    position: 4
+
+  aliceBobCarol:
+    characters: ["alice", "bob", "carol"]
+    position: 5
+
+events:
+  aliceArrives:
+    date: "1990-02-01"
+    description: "Alice arrives"
+    characters: ["alice"]
+    href: "https://example.com/"
+
+  bobArrives:
+    date: "1992-12-08"
+    description: "Bob arrives"
+    characters: ["bob"]
+
+  carolArrives:
+    date: "1998-01-29"
+    description: "Carol arrives"
+    characters: ["carol"]
+
+    # dateStyle hides the day when only the month matters.
+  aliceDeparts:
+    date: "2010-09-30"
+    description: "Alice departs"
+    characters: ["alice"]
+    dateStyle: "%Y-%m"
+
+  aliceMeetsBob:
+    date: "2014-10-15"
+    description: "Alice meets Bob"
+    characters: ["alice", "bob"]
+    dateStyle: "%Y-%m"
+
+  aliceReturns:
+    date: "2015-03-05"
+    description: "Alice returns"
+    characters: ["alice"]
+
+  aliceAndBobPart:
+    date: "2015-03-26"
+    description: "Alice and Bob part"
+    characters: ["alice", "bob"]
+
+  aliceTravels:
+    date: "2015-04-15"
+    description: "Alice travels"
+    characters: ["alice"]
+
+  allThreeMeet:
+    date: "2017-04-16"
+    description: "All three meet"
+    characters: ["alice", "bob", "carol"]
+
+  bobMeetsCarol:
+    date: "2017-05-16"
+    description: "Bob meets Carol"
+    characters: ["bob", "carol"]
+
+arcs:
+  firstArc:
+    firstEvent: "carolArrives"
+    lastEvent: "allThreeMeet"
+    name: "First arc"
+
+  secondArc:
+    firstEvent: "aliceDeparts"
+    lastEvent: "aliceReturns"
+    name: "Second arc"

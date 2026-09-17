@@ -14,7 +14,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from conftest import EMAIL, make_folder, make_note
+from tests.conftest import EMAIL, make_folder, make_note
 
 CONTENT_TYPE = {"Content-Type": "text/plain"}
 

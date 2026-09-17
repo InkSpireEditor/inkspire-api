@@ -1,0 +1,43 @@
+{#- Regenerates the 11-section character sheet from graph data. -#}
+# {{ name }}{% if aka %} ({{ aka | join(", ") }}){% endif %}
+
+_Generated from the lorebook knowledge graph — do not edit by hand._
+
+{% if rank %}- **Rank:** {{ rank }}
+{% endif %}{% if hasRank %}- **Rank:** {{ hasRank | join(", ") }}
+{% endif %}{% if gender %}- **Gender:** {{ gender }}
+{% endif %}{% if species %}- **Species:** {{ species }}
+{% endif %}{% if age %}- **Age:** {{ age }}
+{% endif %}{% if height or weight %}- **Height / Weight:** {{ height or "?" }} / {{ weight or "?" }}
+{% endif %}{% if occupation %}- **Occupation:** {{ occupation }}
+{% endif %}{% if hasStageRole %}- **Stage Role:** {{ hasStageRole | join(", ") }}
+{% endif %}{% if troupeRole %}- **Troupe Role:** {{ troupeRole }}
+{% endif %}{% if status %}- **Status:** {{ status }}
+{% endif %}{% if originatesFrom %}- **Origin:** {{ originatesFrom | join(", ") }}
+{% endif %}{% if childOf %}- **Parents:** {{ childOf | join(", ") }}
+{% endif %}{% if hasBloodline %}- **Bloodline:** {{ hasBloodline | join(", ") }}
+{% endif %}{% if memberOf %}- **Affiliations:** {{ memberOf | join(", ") }}
+{% endif %}{% if leaderOf %}- **Leads:** {{ leaderOf | join(", ") }}
+{% endif %}{% if patronOf %}- **Patron of:** {{ patronOf | join(", ") }}
+{% endif %}{% if wrote %}- **Wrote:** {{ wrote | join(", ") }}
+{% endif %}{% if portrays %}- **Portrays:** {{ portrays | join(", ") }}
+{% endif %}{% if alliedWith %}- **Allies:** {{ alliedWith | join(", ") }}
+{% endif %}{% if mentorOf %}- **Mentor of:** {{ mentorOf | join(", ") }}
+{% endif %}{% if studentOf %}- **Student of:** {{ studentOf | join(", ") }}
+{% endif %}{% if teammateOf %}- **Teammates:** {{ teammateOf | join(", ") }}
+{% endif %}{% if wields %}- **Wields:** {{ wields | join(", ") }}
+{% endif %}{% if summons %}- **Summons:** {{ summons | join(", ") }}
+{% endif %}{% if romanticWith %}- **Romantic:** {{ romanticWith | join(", ") }}
+{% endif %}{% if enemyOf %}- **Enemies:** {{ enemyOf | join(", ") }}
+{% endif %}{% if rivalOf %}- **Rivals:** {{ rivalOf | join(", ") }}
+{% endif %}{% if spiritSight %}- **Spirit Sight:** {{ spiritSight }}
+{% endif %}{% if encountered %}- **Encountered:** {{ encountered | join(", ") }}
+{% endif %}{% if cursedBy %}- **Cursed by:** {{ cursedBy | join(", ") }}
+{% endif %}
+{% if description %}> {{ description }}
+{% endif %}
+{% for heading, key in section_order %}{% if sections.get(key) %}
+## {{ heading }}
+
+{{ sections[key] }}
+{% endif %}{% endfor %}

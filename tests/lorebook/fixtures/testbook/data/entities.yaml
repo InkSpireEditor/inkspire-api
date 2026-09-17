@@ -1,0 +1,6 @@
+# Typed stub nodes referenced by the characters.
+IronGuild:  {type: [Organization, Guild], name: "Iron Guild"}
+Northgate:  {type: Location, name: "Northgate"}
+Emberstone: {type: Relic, name: "Emberstone"}
+Firecraft:  {type: Skill, name: "Firecraft"}
+Frostcraft: {type: Skill, name: "Frostcraft"}

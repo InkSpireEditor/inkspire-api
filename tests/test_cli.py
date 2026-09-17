@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from typer.testing import CliRunner
 
-from conftest import (
+from tests.conftest import (
     EMAIL,
     PASSWORD,
     add_refresh_token,
