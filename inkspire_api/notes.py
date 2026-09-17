@@ -10,7 +10,8 @@ one level deep:
 
 A directory here is a directory and nothing more. Unlike a story, it needs no manifest
 to exist, and `manifest.yaml` is written only when there is something to keep in it —
-a name a slug cannot spell, or a context. A folder inside a folder is not listed.
+a name a slug cannot spell, or a context. A folder inside a folder is not listed: one
+level is the intended depth, a folder being the context a set of notes shares.
 
 A file is a file if it ends in `.ink`, so the format is the one `ink.py` describes and
 the name a note is shown under comes from its own header, wherever it sits.
