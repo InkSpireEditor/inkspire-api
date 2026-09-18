@@ -17,21 +17,33 @@ import yaml
 
 from .model import DEFAULT_TEMPLATE, Timeline
 
-app = typer.Typer(add_completion=False, help="Render a story timeline from a TOML file.")
+app = typer.Typer(add_completion=False, help="Render a story timeline from a YAML file.")
 
 
-@app.command()
+# One command, so Typer collapses it into the app and `no_args_is_help` belongs here
+# rather than on the Typer above, where it would apply to a group that does not exist.
+@app.command("render", no_args_is_help=True)
 def render(
     input: Path = typer.Option(  # noqa: A002 - the flag has always been -i/--input
-        ..., "--input", "-i", exists=True, dir_okay=False, readable=True,
+        ...,
+        "--input",
+        "-i",
+        exists=True,
+        dir_okay=False,
+        readable=True,
         help="YAML timeline to read.",
     ),
     output: Optional[Path] = typer.Option(
-        None, "--output", "-o", dir_okay=False,
+        None,
+        "--output",
+        "-o",
+        dir_okay=False,
         help="Where to write the rendered source. Defaults to stdout.",
     ),
     template: str = typer.Option(
-        DEFAULT_TEMPLATE, "--template", "-t",
+        DEFAULT_TEMPLATE,
+        "--template",
+        "-t",
         help="Template shipped in timeline/templates, or a path to one on disk.",
     ),
 ) -> None:

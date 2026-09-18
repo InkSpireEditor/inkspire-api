@@ -27,15 +27,18 @@ from .ontology import Vocabulary, load_vocabulary
 from .querying import NotBuilt, graph_path, load_union, prologue, to_json
 from .validation import validate as validate_graph
 
-app = typer.Typer(add_completion=False, help="RDF lorebook pipeline.")
+app = typer.Typer(add_completion=False, help="RDF lorebook pipeline.", no_args_is_help=True)
 
 LorebookOption = typer.Option(
-    None, "--lorebook", "-l",
+    None,
+    "--lorebook",
+    "-l",
     help="Lorebook under the root (auto-selected when there is only one).",
 )
 
 RootOption = typer.Option(
-    None, "--root",
+    None,
+    "--root",
     help="Directory holding the lorebooks. Defaults to LOREBOOK_ROOT (environment or .env).",
 )
 
@@ -75,7 +78,7 @@ def _load(name: Optional[str], override: Optional[Path]) -> tuple[Path, Vocabula
     return directory, load_vocabulary(directory)
 
 
-@app.command()
+@app.command("build")
 def build(
     lorebook: Optional[str] = LorebookOption,
     root: Optional[Path] = RootOption,
@@ -87,7 +90,7 @@ def build(
     typer.echo(f"Built {len(graph)} triples -> {out}")
 
 
-@app.command()
+@app.command("validate")
 def validate(
     lorebook: Optional[str] = LorebookOption,
     root: Optional[Path] = RootOption,
@@ -102,7 +105,7 @@ def validate(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command("export")
 def export(
     lorebook: Optional[str] = LorebookOption,
     root: Optional[Path] = RootOption,
@@ -116,22 +119,16 @@ def export(
 
 def _not_built(exc: NotBuilt) -> typer.BadParameter:
     """Turn a missing graph into a usage error naming the command that fixes it."""
-    return typer.BadParameter(
-        f"{exc.name!r} is not built yet; run: lorebook build --lorebook {exc.name}"
-    )
+    return typer.BadParameter(f"{exc.name!r} is not built yet; run: lorebook build --lorebook {exc.name}")
 
 
-@app.command()
+@app.command("query")
 def query(
     sparql: str,
     lorebook: Optional[str] = LorebookOption,
     root: Optional[Path] = RootOption,
-    all_lorebooks: bool = typer.Option(
-        False, "--all", "-a", help="Query the union of every lorebook at once."
-    ),
-    as_json: bool = typer.Option(
-        False, "--json", help="Emit SPARQL 1.1 Query Results JSON instead of TSV rows."
-    ),
+    all_lorebooks: bool = typer.Option(False, "--all", "-a", help="Query the union of every lorebook at once."),
+    as_json: bool = typer.Option(False, "--json", help="Emit SPARQL 1.1 Query Results JSON instead of TSV rows."),
 ) -> None:
     """Run an ad-hoc SPARQL query with the relevant prefixes pre-bound.
 
@@ -173,13 +170,11 @@ def query(
         typer.echo("\t".join(str(v) for v in row))
 
 
-@app.command()
+@app.command("view")
 def view(
     lorebook: Optional[str] = LorebookOption,
     root: Optional[Path] = RootOption,
-    open_browser: bool = typer.Option(
-        True, "--open/--no-open", help="Open the generated page in a browser."
-    ),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the generated page in a browser."),
 ) -> None:
     """Render the graph as a self-contained interactive HTML page.
 
@@ -194,7 +189,7 @@ def view(
         webbrowser.open(path.resolve().as_uri())
 
 
-@app.command()
+@app.command("all")
 def all(  # noqa: A001 - a natural command name
     lorebook: Optional[str] = LorebookOption,
     root: Optional[Path] = RootOption,
