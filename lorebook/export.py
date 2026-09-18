@@ -109,6 +109,22 @@ def character_context(graph: Graph, subject: URIRef, vocab: Vocabulary) -> dict:
     return node_context(graph, subject, vocab, SECTION_ORDER)
 
 
+def section_order_for(graph: Graph, subject: URIRef, vocab: Vocabulary) -> list[tuple[str, str]]:
+    """The section layout ``subject`` is written under, empty if it has none.
+
+    Which one applies is decided by ``rdf:type``, and subclass types are materialised
+    by :mod:`lorebook.authoring`, so a ``SecondaryCharacter`` carries ``Character`` too
+    and matches the character layout without any inference. A subject that is neither a
+    character nor a location gets no sections, which is why :func:`export_all` writes it
+    no sheet.
+    """
+    types = set(graph.objects(subject, RDF.type))
+    for kind in _KINDS:
+        if getattr(vocab, kind.class_of) in types:
+            return kind.section_order
+    return []
+
+
 def export_all(graph: Graph, out_dir: str | Path, vocab: Vocabulary) -> list[Path]:
     """Render every Character/Location to ``<out_dir>/<id>.md``; return the paths."""
     out = Path(out_dir)

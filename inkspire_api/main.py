@@ -14,16 +14,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import auth, files, llm
+from . import auth, files, llm, lore, timelines
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
-from .fs import Conflict, NotFound, StorageError
+from .fs import Conflict, Malformed, NotFound, StorageError
 from .throttle import LoginThrottle, RateLimiter
 
-#: How a failure to read or change the stories on disk is answered.
+#: How a failure to read or change the stories on disk is answered. `Malformed` is a
+#: 422 because the file is there and a person has to fix it: nothing the client sent
+#: would have made the request work.
 STORAGE_STATUS = {
     NotFound: status.HTTP_404_NOT_FOUND,
     Conflict: status.HTTP_409_CONFLICT,
+    Malformed: status.HTTP_422_UNPROCESSABLE_CONTENT,
 }
 
 
@@ -48,6 +51,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.llm_service = None
     application.state.scanner = None
     application.state.notes_scanner = None
+    application.state.timelines = None
+    application.state.lorebooks = None
 
     # The frontend is served from a different port, so every request to this API is
     # cross-origin. allow_credentials is what lets the browser attach the auth
@@ -108,6 +113,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     api.include_router(files.stories_router)
     api.include_router(files.notes_router)
+    # Both hang off a story, so their paths sit under the stories router's prefix
+    # without being part of it: what they serve is authored by hand and read-only.
+    api.include_router(timelines.router)
+    api.include_router(lore.router)
     api.include_router(llm.router)
     application.include_router(api)
     return application

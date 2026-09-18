@@ -254,6 +254,9 @@ class Timeline(object):
         self._arcs = {} if arcs is None else arcs
         self._positions = {} if positions is None else positions
         self._processed = False
+        # Set by `process()`, and declared here so reading the height before laying the
+        # timeline out answers None rather than raising.
+        self._maxHeight = None
 
     def __repr__(self):
         return (
@@ -262,6 +265,44 @@ class Timeline(object):
             f"events_count={len(self._events)}, "
             f"arcs_count={len(self._arcs)})"
         )
+
+    @property
+    def title(self):
+        """Returns the title of the timeline."""
+        return self._title
+
+    @property
+    def characters(self):
+        """Returns the characters, keyed as they were authored."""
+        return self._characters
+
+    @property
+    def arcs(self):
+        """Returns the arcs, keyed as they were authored.
+
+        After `process()` an arc's ends are the events themselves rather than the keys
+        they were written as.
+        """
+        return self._arcs
+
+    @property
+    def events(self):
+        """Returns the events in date order.
+
+        The order is the one everything else assumes: `process()` places them along x
+        in it, and a character's own event list is in it too.
+        """
+        return tuple(sorted(self._events.values(), key=lambda e: e._date))
+
+    @property
+    def maxHeight(self):
+        """Returns the height the drawing needs. Set by `process()`."""
+        return self._maxHeight
+
+    @property
+    def widthStep(self):
+        """Returns the horizontal gap left between two consecutive events."""
+        return self._widthStep
 
     def process(self):
         """Returns (x,y) positions for each event to draw.
@@ -324,13 +365,12 @@ class Timeline(object):
         """
         self.process()
         return jinja2.Template(template_source(template)).render(
-            title=self._title,
-            events=sorted(self._events.values(),
-                          key=lambda e: e._date),
-            maxHeight=self._maxHeight,
-            characters=self._characters,
-            widthstep=self._widthStep,
-            arcs=self._arcs.values(),
+            title=self.title,
+            events=self.events,
+            maxHeight=self.maxHeight,
+            characters=self.characters,
+            widthstep=self.widthStep,
+            arcs=self.arcs.values(),
         )
 
     @classmethod

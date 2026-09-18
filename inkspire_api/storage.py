@@ -55,6 +55,13 @@ CHAPTERS = "chapters"
 MANIFEST = "story.yaml"
 CHAPTER_SUFFIX = ink.SUFFIX
 
+#: Authored by hand, read by the `timeline` and `lorebook` commands and by the routes
+#: in `timelines.py` and `lore.py`, and never written here. Their presence is what says
+#: which of the two views a story can offer.
+TIMELINE = "timeline.yaml"
+LOREBOOK = "lorebook"
+LOREBOOK_MANIFEST = "lorebook.yaml"
+
 #: Placed in a chapters directory that has none yet, because git stores no empty
 #: directory and the story would arrive at a clone without one.
 KEEP = ".gitkeep"
@@ -93,6 +100,10 @@ class Story:
     name: str
     summary: str
     chapters: tuple[Chapter, ...]
+    #: Whether `timeline.yaml` and `lorebook/lorebook.yaml` are here. Neither is read
+    #: by the scan; a client asks for them on their own routes.
+    has_timeline: bool = False
+    has_lorebook: bool = False
 
 
 @dataclass(frozen=True)
@@ -212,11 +223,18 @@ class Scanner:
         header changes no name and no path. Rewriting one within a tick of a scan is
         therefore missed; a change made through this class invalidates the scan
         outright.
+
+        The timeline and the lorebook are here by presence rather than by mtime: the
+        scan records only whether each exists, and editing one does not change that.
+        Writing a story its first `timeline.yaml` has to show up, though, so a scan
+        taken before it cannot be kept.
         """
         return tuple(
             (
                 story_dir.name,
                 mtime(story_dir / MANIFEST),
+                (story_dir / TIMELINE).is_file(),
+                (story_dir / LOREBOOK / LOREBOOK_MANIFEST).is_file(),
                 tuple(
                     (file.name, mtime(file))
                     for file in self._chapter_files(story_dir / CHAPTERS)
@@ -262,6 +280,8 @@ class Scanner:
                 name=str(document.get("title") or slug),
                 summary=str(document.get("synopsis") or ""),
                 chapters=tuple(own),
+                has_timeline=(story_dir / TIMELINE).is_file(),
+                has_lorebook=(story_dir / LOREBOOK / LOREBOOK_MANIFEST).is_file(),
             )
 
         return Tree(stories=stories, chapters=chapters)

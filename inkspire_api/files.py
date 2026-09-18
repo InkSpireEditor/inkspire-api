@@ -130,12 +130,18 @@ def tree(user: CurrentUser, scanner: ScannerDep) -> dict:
 
 @stories_router.get("/dir/{dir_id}")
 def dir_info(dir_id: str, scanner: ScannerDep) -> dict:
-    """One story, and the chapters in it."""
+    """One story, the chapters in it, and which of the two other views it can offer.
+
+    `timeline` and `lorebook` say whether the files those views read are there, so a
+    client knows which to offer without fetching either. Neither is read here.
+    """
     story = scanner.story(dir_id)
     return {
         "id": story.id,
         "name": story.name,
         "summary": story.summary,
+        "timeline": story.has_timeline,
+        "lorebook": story.has_lorebook,
         "files": {chapter.id: {"name": chapter.name} for chapter in story.chapters},
     }
 

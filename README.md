@@ -138,7 +138,7 @@ One story is one directory in the tree, and its chapters are that directory's fi
 | Route | |
 |---|---|
 | `GET /api/stories/tree` | every story. `files` is empty — a chapter belongs to a story |
-| `GET /api/stories/dir/{id}` | one story, and the chapters in it |
+| `GET /api/stories/dir/{id}` | one story, the chapters in it, and which other views it has |
 | `POST /api/stories/dir` | create a story, with a `name` and an optional `summary` |
 | `PUT /api/stories/dir/{id}` | retitle a story, or rewrite its synopsis |
 | `DELETE /api/stories/dir/{id}` | delete a story and its chapters |
@@ -152,6 +152,46 @@ One story is one directory in the tree, and its chapters are that directory's fi
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
 this API's to remove, even though the commands that read them ship here.
+
+### A story's timeline and lorebook
+
+Read-only, and read straight from the YAML the writer authored:
+
+| Route | |
+|---|---|
+| `GET /api/stories/dir/{id}/timeline` | the events laid out: coordinates, characters, arcs |
+| `GET /api/stories/dir/{id}/lore/graph` | the lorebook as nodes and links |
+| `GET /api/stories/dir/{id}/lore/entity/{local}` | one entity, its relations and its prose |
+
+`GET /api/stories/dir/{id}` carries a `timeline` and a `lorebook` boolean, from whether the
+files those views read are there, so a client knows which to offer without asking for either.
+Most stories have one and not the other.
+
+The timeline answers what `process()` computed — an `x1/y1/x2/y2` box per event, each
+character's events as keys in date order, and the arcs. A client draws those coordinates and
+lays nothing out itself, which is also what the Typst render does, so the two cannot drift.
+An event's `date` is already formatted through its own `dateStyle`, so it is a display string;
+the order of the `events` array is what says when things happened.
+
+The graph answers `{nodes, links}`. A node carries its most specific class as `type`, which is
+what a legend colours and filters by, along with `types`, `attrs` and `degree`. It carries no
+prose: the section blocks are too bulky for a tooltip, which is why an entity can be asked for
+on its own. That one answers what the Markdown sheet is rendered from — scalars, nicknames,
+relations resolved to labels, and the prose sections in template order.
+
+**Neither writes anything.** The graph is built in memory from `lorebook/data/*.yaml` on each
+cache miss, so `build/lorebook.ttl` is not read and no `build/` or `export/` appears because
+someone opened a view. Those stay artifacts of the shell, and what the browser shows follows
+the authored YAML rather than whatever `lorebook build` last wrote. SHACL does not run here
+either — `lorebook validate` is where an authoring check belongs.
+
+Each build is held per story, against the mtimes of the files it was built from, so editing a
+character in vim shows up on the next request and an unchanged lorebook is not rebuilt.
+
+A story with no `timeline.yaml`, or no `lorebook/lorebook.yaml`, answers 404. A file that is
+there and cannot be read as what it claims to be answers **422** with the reason: a timeline
+missing a `positions` entry for a character combination, a date written as a bare year, an
+entity typed with a class the vocabulary does not declare. Those are the writer's to fix.
 
 ### Everything that is not a novel
 

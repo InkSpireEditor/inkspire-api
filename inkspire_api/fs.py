@@ -47,6 +47,14 @@ class Conflict(StorageError):
     """The operation would destroy or overwrite something."""
 
 
+class Malformed(StorageError):
+    """An authored file is there and cannot be read as what it claims to be.
+
+    Not a client error and not a bug: a person wrote the file and has to fix it, so
+    the message says what is wrong with it rather than being swallowed.
+    """
+
+
 def derive_id(space: str, relpath: str) -> str:
     """The id of a path, relative to the root of the space it is in.
 
@@ -253,3 +261,32 @@ class HeldScan[T]:
         with self._lock:
             if self._held is not None:
                 self._stamp = self._stamp_now()
+
+
+class HeldPerKey[T]:
+    """A `HeldScan` per key, made the first time that key is asked for.
+
+    What `build` produces from one story is expensive enough to keep and small enough
+    to hold: a parsed timeline, or a graph of a few hundred triples. Each key gets its
+    own held value and its own stamp, so one story's edit rebuilds only that story.
+
+    Nothing is evicted. A key is only ever added by a request naming a story that
+    exists, so the number of them is the number of stories.
+    """
+
+    def __init__(
+        self, build: Callable[[str], T], stamp: Callable[[str], tuple]
+    ) -> None:
+        self._build = build
+        self._stamp = stamp
+        self._lock = threading.Lock()
+        self._held: dict[str, HeldScan[T]] = {}
+
+    def get(self, key: str) -> T:
+        """The value for `key`, rebuilt first if what it was built from has changed."""
+        with self._lock:
+            held = self._held.get(key)
+            if held is None:
+                held = HeldScan(lambda: self._build(key), lambda: self._stamp(key))
+                self._held[key] = held
+        return held.get()
