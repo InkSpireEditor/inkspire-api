@@ -1,0 +1,18 @@
+# Self-contained lorebook used ONLY by the test suite. It exercises every engine
+# feature (core + extension classes, object properties with single and multiple
+# ranges, a non-Character domain, a range union on memberOf, scalars, aka,
+# sections) with stable, made-up content so tests never depend on real lorebooks.
+#
+# Deliberately uses NON-default prefix labels (tb/tbx) so any test that hardcodes
+# `lore:`/`ex:` would fail -- keeping queries prefix-agnostic.
+title: "Test Book"
+
+namespaces:
+  onto:   https://testbook.example/onto#
+  entity: https://testbook.example/entity#
+
+prefixes:
+  onto:   tb
+  entity: tbx
+
+extension: extension.yaml

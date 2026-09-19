@@ -14,7 +14,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import EMAIL, PASSWORD, delta, llm_service, sse_body
+from tests.conftest import EMAIL, PASSWORD, delta, llm_service, sse_body
 
 from inkspire_api import llm
 from inkspire_api.llm import (

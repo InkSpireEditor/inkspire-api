@@ -18,7 +18,7 @@ from inkspire_api.fs import MAX_FILE_BYTES
 from inkspire_api.models import User
 from inkspire_api.security import hash_password
 
-from conftest import EMAIL, make_story
+from tests.conftest import EMAIL, make_story
 
 CONTENT_TYPE = {"Content-Type": "text/plain"}
 

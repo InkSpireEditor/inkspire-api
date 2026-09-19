@@ -1,0 +1,12 @@
+# Test-only ontology extension. Mirrors the shape of a real one without any
+# real-world content.
+classes: [Guild, Skill, Relic]
+
+object_properties:
+  hasSkill: {domain: Character, range: Skill}
+  wields:   {domain: Character, range: [Relic, Skill]}   # multiple ranges -> sh:or
+  binds:    {domain: Skill, range: Relic}                # non-Character domain
+  memberOf: {range: Guild}                               # unions Guild onto core Organization
+
+scalar_properties:
+  rank: {datatype: string}

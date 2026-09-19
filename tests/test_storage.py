@@ -31,7 +31,7 @@ from inkspire_api.storage import (
     Scanner,
 )
 
-from conftest import make_story
+from tests.conftest import make_story
 
 
 @pytest.fixture

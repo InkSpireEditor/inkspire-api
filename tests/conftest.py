@@ -130,6 +130,133 @@ def make_note(directory: Path, filename: str, text: str = "") -> Path:
     return path
 
 
+#: A whole timeline, small enough to assert on in full. Two characters with one event
+#: each and one they share, so there is a crossing and an arrow per character, and one
+#: arc spanning the lot. Placeholder names throughout.
+#:
+#: Typed as a bare `dict` because it is a YAML document: a test that breaks one field to
+#: see what the route answers is copying this and assigning a value of another type.
+TIMELINE: dict = {
+    "title": "Example Timeline",
+    "characters": {
+        "alpha": {"name": "Jane Doe", "color": "blue"},
+        "beta": {"name": "John Smith", "color": "red"},
+    },
+    "positions": {
+        "alpha": {"characters": ["alpha"], "position": 0},
+        "beta": {"characters": ["beta"], "position": 1},
+        "both": {"characters": ["alpha", "beta"], "position": 2},
+    },
+    "events": {
+        "first": {
+            "date": "2001-01-01",
+            "description": "First event",
+            "characters": ["alpha"],
+        },
+        "second": {
+            "date": "2001-02-01",
+            "description": "Second event",
+            "characters": ["alpha", "beta"],
+            "dateStyle": "%Y-%m",
+            "href": "https://example.com/",
+        },
+        "third": {
+            "date": "2001-03-01",
+            "description": "Third event",
+            "characters": ["beta"],
+        },
+    },
+    "arcs": {"opening": {"firstEvent": "first", "lastEvent": "third", "name": "Opening"}},
+}
+
+
+def make_timeline(story_dir: Path, document: dict | None = None) -> Path:
+    """Writes a story's `timeline.yaml`. Pass `document` to write a broken one."""
+    path = story_dir / "timeline.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            TIMELINE if document is None else document,
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def make_lorebook(
+    story_dir: Path,
+    *,
+    title: str = "Example Lorebook",
+    characters: dict[str, dict] | None = None,
+    entities: dict[str, dict] | None = None,
+) -> Path:
+    """Writes a story's `lorebook/`: a manifest, an extension and the authored data.
+
+    The defaults are one character with prose and one organisation she belongs to, which
+    is enough for a graph with a node of each kind and an edge between them. The
+    extension is minimal on purpose: `tests/lorebook/` is where the vocabulary itself is
+    exercised, and these tests are about the routes.
+    """
+    directory = story_dir / "lorebook"
+    (directory / "data" / "characters").mkdir(parents=True)
+
+    (directory / "lorebook.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "title": title,
+                "namespaces": {
+                    "onto": "https://example.test/onto#",
+                    "entity": "https://example.test/entity#",
+                },
+                "extension": "extension.yaml",
+            },
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    (directory / "extension.yaml").write_text(
+        yaml.safe_dump(
+            {"classes": ["Guild"], "object_properties": {"memberOf": {"range": "Guild"}}},
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    (directory / "data" / "entities.yaml").write_text(
+        yaml.safe_dump(
+            entities
+            if entities is not None
+            else {"ExampleGuild": {"type": ["Organization", "Guild"], "name": "Example Guild"}},
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+
+    authored = (
+        characters
+        if characters is not None
+        else {
+            "Doe": {
+                "id": "Doe",
+                "type": "Character",
+                "name": "Jane Doe",
+                "memberOf": ["ExampleGuild"],
+                "description": "A member of the Example Guild.",
+                "sections": {"personality": "Steady.", "backstory": "From elsewhere."},
+            }
+        }
+    )
+    for local, record in authored.items():
+        (directory / "data" / "characters" / f"{local.lower()}.yaml").write_text(
+            yaml.safe_dump(record, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    return directory
+
+
 @pytest.fixture
 def engine(settings: Settings) -> Iterator[Engine]:
     engine = create_engine(settings.database_url, future=True)

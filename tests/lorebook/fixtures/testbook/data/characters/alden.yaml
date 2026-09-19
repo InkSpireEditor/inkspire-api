@@ -1,0 +1,20 @@
+id: Alden
+type: Character
+name: Alden
+aka: [Al]
+rank: Master
+status: alive
+
+originatesFrom: [Northgate]
+memberOf: [IronGuild]
+hasSkill: [Firecraft, Frostcraft]
+wields: [Emberstone]
+mentorOf: [Bryn, Cora]
+
+description: "A steady master of the Iron Guild."
+
+sections:
+  personality: >
+    Steady and protective, measured in word; warm with the few he trusts.
+  backstory: >
+    Forged in Northgate and raised to the Iron Guild's craft.

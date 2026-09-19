@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} — graph view</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1b1f24; --panel: #f5f6f8; --panel-border: #d9dce1;
+    --muted: #6b7280; --shadow: rgba(0,0,0,.12);
+  }
+  body.dark {
+    --bg: #0b1020; --fg: #e6e9ef; --panel: #151b2e; --panel-border: #26304a;
+    --muted: #9aa4b8; --shadow: rgba(0,0,0,.5);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #graph { position: fixed; inset: 0; }
+  .panel {
+    position: fixed; z-index: 10; background: var(--panel);
+    border: 1px solid var(--panel-border); border-radius: 10px;
+    box-shadow: 0 4px 18px var(--shadow); padding: 12px 14px;
+  }
+  #controls { top: 14px; left: 14px; width: 260px; }
+  #controls h1 { margin: 0 0 2px; font-size: 16px; }
+  #controls .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  #search {
+    width: 100%; padding: 7px 9px; border-radius: 7px; font-size: 13px;
+    border: 1px solid var(--panel-border); background: var(--bg); color: var(--fg);
+  }
+  #search:focus { outline: 2px solid #6aa4ff; outline-offset: 0; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  button {
+    font: inherit; cursor: pointer; padding: 6px 10px; border-radius: 7px;
+    border: 1px solid var(--panel-border); background: var(--bg); color: var(--fg);
+  }
+  button:hover { border-color: #6aa4ff; }
+  #legend { top: 14px; right: 14px; max-width: 230px; max-height: 70vh; overflow: auto; }
+  #legend h2 { margin: 0 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); cursor: pointer; }
+  #legend h2:hover { color: var(--fg); }
+  #legend .hint { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+  .legend-item {
+    display: flex; align-items: center; gap: 8px; padding: 2px 4px;
+    border-radius: 6px; cursor: pointer; user-select: none;
+  }
+  .legend-item:hover { background: var(--bg); }
+  .legend-item:focus-visible { outline: 2px solid #6aa4ff; outline-offset: 0; }
+  .legend-item.hidden { opacity: .4; }
+  .legend-item.hidden .legend-name { text-decoration: line-through; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+  .legend-count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ctl-label { flex: 0 0 auto; color: var(--muted); }
+  #spacing { flex: 1; }
+  #empty { position: fixed; inset: 0; display: none; place-items: center; color: var(--muted); }
+</style>
+</head>
+<body>
+  <div id="graph"></div>
+  <div id="empty">This graph has no entities to display.</div>
+
+  <div id="controls" class="panel">
+    <h1>{{ title }}</h1>
+    <div class="sub">{{ node_count }} nodes · {{ link_count }} links</div>
+    <input id="search" type="search" placeholder="Search name or type…" autocomplete="off" spellcheck="false">
+    <div class="row">
+      <button id="fit" type="button">Fit</button>
+      <button id="theme" type="button">Toggle theme</button>
+    </div>
+    <div class="row">
+      <label for="spacing" class="ctl-label">Spacing</label>
+      <input id="spacing" type="range" min="0.5" max="4" step="0.1" value="1.6">
+    </div>
+  </div>
+
+  <div id="legend" class="panel">
+    <h2 id="legend-title" title="Show all types">Types</h2>
+    <div class="hint">click a type to show / hide</div>
+    <div id="legend-items"></div>
+  </div>
+
+  <!-- Graph data: delimiter-escaped JSON, parsed (never eval'd). -->
+  <script id="graph-data" type="application/json">{{ data_json | safe }}</script>
+
+  <!-- Vendored force-graph 1.51.4 (UMD, bundles d3-force). Pinned + inlined: no network. -->
+  <script>{{ force_graph_js | safe }}</script>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var DATA = JSON.parse(document.getElementById("graph-data").textContent);
+
+    // HTML-escape everything graph-derived before it can reach innerHTML.
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    if (!DATA.nodes.length) {
+      document.getElementById("graph").style.display = "none";
+      document.getElementById("empty").style.display = "grid";
+      document.getElementById("legend").style.display = "none";
+      return;
+    }
+
+    // --- Deterministic colours by type / predicate ---------------------------
+    function palette(keys) {
+      var sorted = keys.slice().sort();
+      var map = {};
+      sorted.forEach(function (k, i) {
+        map[k] = "hsl(" + Math.round((360 * i) / sorted.length) + ", 62%, 55%)";
+      });
+      return map;
+    }
+    var typeCounts = {};
+    DATA.nodes.forEach(function (n) { typeCounts[n.type] = (typeCounts[n.type] || 0) + 1; });
+    var colorByType = palette(Object.keys(typeCounts));
+    var colorByPred = palette([...new Set(DATA.links.map(function (l) { return l.label; }))]);
+
+    var highlight = new Set();          // ids matching the current search
+    var hiddenTypes = new Set();        // primary types toggled off via the legend
+    function faded(hsl) { return hsl.replace("hsl(", "hsla(").replace(")", ", 0.12)"); }
+    function endpointId(e) { return typeof e === "object" ? e.id : e; }
+
+    // Nodes whose primary type is hidden (and the links touching them) are dropped
+    // from what force-graph renders. Reusing the same node objects preserves x/y.
+    function visibleData() {
+      var nodes = DATA.nodes.filter(function (n) { return !hiddenTypes.has(n.type); });
+      var ok = new Set(nodes.map(function (n) { return n.id; }));
+      var links = DATA.links.filter(function (l) {
+        return ok.has(endpointId(l.source)) && ok.has(endpointId(l.target));
+      });
+      return { nodes: nodes, links: links };
+    }
+    function applyFilter() { Graph.graphData(visibleData()); }
+
+    // --- Theme ---------------------------------------------------------------
+    var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+    // --- Tooltip (returned string is inserted as innerHTML by force-graph) ----
+    function tooltip(n) {
+      var lines = ["<b>" + esc(n.label) + "</b>",
+                   "<i>" + esc(n.types.join(", ") || "—") + "</i>"];
+      if (n.attrs && n.attrs.description) {
+        lines.push(esc(String(n.attrs.description[0]).slice(0, 160)));
+      }
+      lines.push("degree: " + n.degree);
+      return lines.join("<br>");
+    }
+
+    var elem = document.getElementById("graph");
+    var fittedOnce = false;
+
+    var Graph = ForceGraph()(elem)
+      .graphData(DATA)
+      .backgroundColor(dark ? "#0b1020" : "#ffffff")
+      .nodeId("id")
+      .nodeRelSize(5)
+      .nodeVal(function (n) { return 1 + n.degree; })
+      .nodeColor(function (n) {
+        var c = colorByType[n.type];
+        return highlight.size && !highlight.has(n.id) ? faded(c) : c;
+      })
+      .nodeLabel(tooltip)
+      .nodeCanvasObjectMode(function () { return "after"; })
+      .nodeCanvasObject(function (n, ctx, scale) {
+        // Canvas text is inherently inert (no HTML parsing) -> XSS-safe.
+        if (highlight.size && !highlight.has(n.id)) return;
+        var fontSize = 12 / scale;
+        if (fontSize < 3 && !highlight.has(n.id)) return; // declutter when zoomed out
+        ctx.font = fontSize + "px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillStyle = dark ? "#e6e9ef" : "#1b1f24";
+        var r = 5 * Math.sqrt(1 + n.degree);
+        ctx.fillText(n.label, n.x, n.y + r + 1);
+      })
+      .linkColor(function (l) { return colorByPred[l.label] || "#999"; })
+      .linkLabel(function (l) { return esc(l.label); })
+      .linkWidth(function (l) {
+        if (!highlight.size) return 1;
+        return highlight.has(endpointId(l.source)) && highlight.has(endpointId(l.target)) ? 2.5 : 0.4;
+      })
+      .linkDirectionalArrowLength(3.5)
+      .linkDirectionalArrowRelPos(1)
+      .onNodeClick(function (n) {
+        Graph.centerAt(n.x, n.y, 500);
+        Graph.zoom(4, 500);
+      })
+      .onEngineStop(function () {
+        if (!fittedOnce) { Graph.zoomToFit(400, 60); fittedOnce = true; }
+      });
+
+    function refresh() { Graph.nodeColor(Graph.nodeColor()); } // re-poke accessors -> redraw
+
+    // --- Search: plain substring (no RegExp -> no ReDoS, no throw) ------------
+    var search = document.getElementById("search");
+    search.addEventListener("input", function () {
+      var q = search.value.trim().toLowerCase();
+      highlight.clear();
+      if (q) {
+        DATA.nodes.forEach(function (n) {
+          if (n.label.toLowerCase().indexOf(q) > -1 ||
+              n.types.join(" ").toLowerCase().indexOf(q) > -1) {
+            highlight.add(n.id);
+          }
+        });
+      }
+      refresh();
+      if (highlight.size) {
+        Graph.zoomToFit(500, 60, function (n) { return highlight.has(n.id); });
+      }
+    });
+
+    // --- Legend: click a type to show/hide it (built with textContent -> XSS-safe) ---
+    var legend = document.getElementById("legend-items");
+    var allTypes = Object.keys(colorByType).sort();
+    var legendItems = {};
+
+    function setHidden(type, hidden) {
+      if (hidden) { hiddenTypes.add(type); } else { hiddenTypes.delete(type); }
+      var item = legendItems[type];
+      item.classList.toggle("hidden", hidden);
+      item.setAttribute("aria-pressed", hidden ? "true" : "false");
+    }
+
+    allTypes.forEach(function (type) {
+      var item = document.createElement("div");
+      item.className = "legend-item";
+      item.setAttribute("role", "button");
+      item.tabIndex = 0;
+      item.setAttribute("aria-pressed", "false");
+      item.title = "Show / hide " + type;
+      var sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = colorByType[type];
+      var name = document.createElement("span");
+      name.className = "legend-name";
+      name.textContent = type;
+      var count = document.createElement("span");
+      count.className = "legend-count";
+      count.textContent = typeCounts[type];
+      item.appendChild(sw); item.appendChild(name); item.appendChild(count);
+      legendItems[type] = item;
+
+      function toggle() { setHidden(type, !hiddenTypes.has(type)); applyFilter(); }
+      item.addEventListener("click", toggle);
+      item.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+      });
+      legend.appendChild(item);
+    });
+
+    // Clicking the "Types" header hides everything, then (next click) shows it all again.
+    document.getElementById("legend-title").addEventListener("click", function () {
+      var hideAll = hiddenTypes.size < allTypes.length;  // not all hidden yet -> hide all
+      allTypes.forEach(function (type) { setHidden(type, hideAll); });
+      applyFilter();
+    });
+
+    // --- Buttons -------------------------------------------------------------
+    document.getElementById("fit").addEventListener("click", function () {
+      Graph.zoomToFit(500, 60);
+    });
+    function applyTheme() {
+      document.body.classList.toggle("dark", dark);
+      Graph.backgroundColor(dark ? "#0b1020" : "#ffffff");
+      refresh();
+    }
+    document.getElementById("theme").addEventListener("click", function () {
+      dark = !dark; applyTheme();
+    });
+    applyTheme();
+
+    // --- Keep disconnected nodes near the cluster ----------------------------
+    // The charge force repels every node, but only the 'link' force pulls nodes
+    // back together -- so an entity with no edges feels only repulsion and drifts
+    // to the far edge (forceCenter merely recenters the whole centroid; it doesn't
+    // reel individuals in). A gentle pull toward the origin fixes that without
+    // noticeably compressing the connected core.
+    var GRAVITY = 0.05;
+    var gravity = (function () {
+      var nodes = [];
+      function force(alpha) {
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          n.vx -= n.x * GRAVITY * alpha;
+          n.vy -= n.y * GRAVITY * alpha;
+        }
+      }
+      force.initialize = function (ns) { nodes = ns; };
+      return force;
+    })();
+    Graph.d3Force("gravity", gravity);
+
+    // --- Layout spacing (d3-force tuning) ------------------------------------
+    // charge strength = how hard nodes repel (spacing); link distance = edge
+    // tension/length. A single multiplier scales both from a loose baseline.
+    var LINK_BASE = 34;      // px; d3 default is ~30 (tight)
+    var CHARGE_BASE = -55;   // d3 default is -30 (tight)
+    function applySpacing(mult) {
+      var link = Graph.d3Force("link");
+      var charge = Graph.d3Force("charge");
+      if (link) link.distance(LINK_BASE * mult);
+      if (charge) charge.strength(CHARGE_BASE * mult).distanceMax(800);
+      fittedOnce = false;              // re-fit once the layout re-settles
+      Graph.d3ReheatSimulation();
+    }
+    var spacing = document.getElementById("spacing");
+    spacing.addEventListener("input", function () {
+      applySpacing(parseFloat(spacing.value));
+    });
+    applySpacing(parseFloat(spacing.value));
+
+    // --- Responsive sizing ---------------------------------------------------
+    function resize() { Graph.width(window.innerWidth).height(window.innerHeight); }
+    window.addEventListener("resize", resize);
+    resize();
+  })();
+  </script>
+</body>
+</html>

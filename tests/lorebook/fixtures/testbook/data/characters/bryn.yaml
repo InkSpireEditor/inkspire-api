@@ -1,0 +1,13 @@
+id: Bryn
+type: Character
+name: Bryn
+rank: Journeyman
+status: alive
+
+studentOf: [Alden]
+memberOf: [IronGuild]
+hasSkill: [Firecraft]
+
+sections:
+  personality: >
+    Eager and headstrong, quick to the forge.

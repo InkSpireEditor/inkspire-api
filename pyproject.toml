@@ -1,7 +1,7 @@
 [project]
 name = "inkspire-api"
 version = "0.1.0"
-description = "InkSpire REST API"
+description = "InkSpire REST API, and the lorebook and timeline commands beside it"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<4.0.0"
@@ -17,14 +17,33 @@ dependencies = [
     "httpx (>=0.28.1,<0.29.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
     "jinja2 (>=3.1.6,<4.0.0)",
+    "rdflib (>=7.1.0,<8.0.0)",
+    "pyshacl (>=0.30.0,<0.31.0)",
 ]
+
+[project.optional-dependencies]
+# An on-disk triplestore for lorebook. rdflib's in-memory graph is what the CLI uses;
+# nothing requires this.
+oxigraph = ["pyoxigraph (>=0.4.0,<0.5.0)", "oxrdflib (>=0.4.0,<0.5.0)"]
 
 [project.scripts]
 inkspire = "inkspire_api.cli:app"
+lorebook = "lorebook.cli:app"
+timeline = "timeline.cli:app"
 
 [tool.poetry]
 requires-poetry = ">=2.0"
-packages = [{ include = "inkspire_api" }]
+packages = [
+    { include = "inkspire_api" },
+    { include = "lorebook" },
+    { include = "timeline" },
+]
+include = [
+    { path = "lorebook/core.ttl" },
+    { path = "lorebook/templates/*" },
+    { path = "lorebook/vendor/*" },
+    { path = "timeline/templates/*" },
+]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

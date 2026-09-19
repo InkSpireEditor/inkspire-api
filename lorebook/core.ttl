@@ -1,0 +1,90 @@
+@prefix core:   <https://lorebook.example/core#> .
+@prefix owl:    <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix schema: <https://schema.org/> .
+
+#
+# Core lorebook ontology: the universal vocabulary shared by every lorebook.
+# Individual lorebooks EXTEND this with their own classes/properties via their
+# extension.yaml (which mints terms in the lorebook's own `onto` namespace).
+#
+# Conventions read by the Vocabulary loader (lorebook/ontology.py):
+#   * a class is any `owl:Class`
+#   * an object property is any `owl:ObjectProperty`  (value is another node)
+#   * a scalar property is any `owl:DatatypeProperty`  (value is a literal)
+#   * the authoring FIELD NAME is the term's local name (e.g. core:mentorOf -> "mentorOf")
+#   * rdfs:domain / rdfs:range drive both authoring and generated SHACL validation
+#
+
+core:Entity a owl:Class ;
+    rdfs:label "Entity" ;
+    rdfs:comment "Root class for anything that can appear as a node." .
+
+core:Character a owl:Class ;
+    rdfs:subClassOf core:Entity ;
+    rdfs:label "Character" .
+
+# A character outside the main cast: someone the story collides with rather than
+# follows. Used INSTEAD OF core:Character (not alongside it) -- the loader
+# materializes the parent types, so a SecondaryCharacter is still a Character
+# everywhere it matters: it gets a sheet, it satisfies relation ranges, and it
+# answers `?c a core:Character`. Narrow with `?c a core:SecondaryCharacter` /
+# exclude with FILTER NOT EXISTS to get the main cast alone.
+core:SecondaryCharacter a owl:Class ;
+    rdfs:subClassOf core:Character ;
+    rdfs:label "SecondaryCharacter" .
+
+core:Location a owl:Class ;
+    rdfs:subClassOf core:Entity ;
+    rdfs:label "Location" .
+
+core:Organization a owl:Class ;
+    rdfs:subClassOf core:Entity ;
+    rdfs:label "Organization" .
+
+# --- Object properties (Character -> node) -----------------------------------
+
+core:mentorOf     a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:studentOf    a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:teammateOf   a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:parentOf     a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:childOf      a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:romanticWith a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:alliedWith   a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:enemyOf      a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+core:rivalOf      a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Character .
+
+core:memberOf       a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Organization .
+core:originatesFrom a owl:ObjectProperty ; rdfs:domain core:Character ; rdfs:range core:Location .
+
+# A place may sit inside another (a district within a city, a village within a
+# region) and may be governed by an Organization distinct from itself. A place
+# that governs itself is the degenerate case (dual-typed Location+Organization);
+# controlledBy exists for when the ruling power is a separate node.
+core:locatedIn   a owl:ObjectProperty ; rdfs:domain core:Location ; rdfs:range core:Location .
+core:controlledBy a owl:ObjectProperty ; rdfs:domain core:Location ; rdfs:range core:Organization .
+
+# --- Scalar (literal) properties ---------------------------------------------
+
+schema:name        a owl:DatatypeProperty .
+schema:description a owl:DatatypeProperty .
+core:status        a owl:DatatypeProperty .
+
+# Universal character bio facts (Basic Information). All optional; a lorebook
+# fills in whichever apply.
+core:age     a owl:DatatypeProperty ; rdfs:label "age" .
+core:occupation a owl:DatatypeProperty ; rdfs:label "occupation" .
+core:gender  a owl:DatatypeProperty ; rdfs:label "gender" .
+core:species a owl:DatatypeProperty ; rdfs:label "species" .
+core:height  a owl:DatatypeProperty ; rdfs:label "height" .
+core:weight  a owl:DatatypeProperty ; rdfs:label "weight" .
+
+# Universal place bio facts (Basic Information). schema:name/schema:description
+# double as a place's Name/Appearance blurb, same as they do for a Character.
+core:locationType a owl:DatatypeProperty ; rdfs:label "locationType" .
+core:size         a owl:DatatypeProperty ; rdfs:label "size" .
+
+# Repeatable nickname literal. Handled specially by the authoring layer (the
+# `aka:` list field), so it is tagged for discovery by its local name.
+core:aka a owl:DatatypeProperty ;
+    rdfs:label "aka" .

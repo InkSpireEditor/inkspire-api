@@ -1,0 +1,201 @@
+<!doctype html>
+
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>{{ title }} - Timeline</title>
+        <meta name="description" content="The HTML5 Herald">
+        <meta name="author" content="SitePoint">
+
+        <!--<link rel="stylesheet" href="css/styles.css?v=1.0">-->
+
+        <script type="text/javascript">
+            function drawArrow(ctx, fromx, fromy, tox, toy) {
+                var headlen = 10; // length of head in pixels
+                var dx = tox - fromx;
+                var dy = toy - fromy;
+                var angle = Math.atan2(dy, dx);
+                ctx.beginPath();
+                ctx.moveTo(fromx, fromy);
+                ctx.lineTo(tox, toy);
+                //ctx.lineTo(tox - headlen * Math.cos(angle - Math.PI / 6), toy - headlen * Math.sin(angle - Math.PI / 6));
+                //ctx.moveTo(tox, toy);
+                //ctx.lineTo(tox - headlen * Math.cos(angle + Math.PI / 6), toy - headlen * Math.sin(angle + Math.PI / 6));
+                ctx.stroke();
+                ctx.closePath();
+            }
+
+            function drawRect(canvas, ctx, x, y, date, text, href) {
+                ctx.strokeRect(x, y, {{ widthspan }}, {{ heightspan}});
+                ctx.fillStyle = "white";
+                ctx.fillRect(x+1, y+1, {{ widthspan }} - 2, {{ heightspan }} - 2);
+                ctx.fillStyle = "black";
+                if (date != "") {
+                    ctx.fillText(date, x + {{ widthspan }} / 2, y + 40);
+					if (href != "") {
+						drawLink(canvas, ctx, x + {{ widthspan }} / 2, y + 75, href, text);
+					} else  {
+						ctx.fillText(text, x + {{ widthspan }} / 2, y + 75);
+					}
+                } else {
+					if (href != "") {
+						drawLink(canvas, ctx, x + {{ widthspan }} / 2, y + 55, href, text);
+					} else  {
+						ctx.fillText(text, x + {{ widthspan }} / 2, y + 55);
+					}
+                }
+            }
+
+
+			// Links
+			var Links = new Array(); // Links information
+			var hoverLink = ""; // Href of the link which cursor points at
+
+			// Draw the link
+			function drawLink(canvas, ctx, x, y, href, title) {
+				ctx.fillStyle = "#0000ff"; // Default blue link color
+				ctx.font = "19px Courier New"; // Monospace font for links
+				var linkTitle = title,
+					linkX = x,
+					linkY = y,
+					linkWidth = ctx.measureText(linkTitle).width,
+					linkHeight = parseInt(ctx.font); // Get lineheight out of fontsize
+				
+
+				// Draw the link
+				ctx.fillText(linkTitle, linkX, linkY);
+				ctx.fillStyle = "#000000"; // Default black color
+				ctx.font = "24px serif";
+
+				// Add mouse listeners
+				canvas.addEventListener("mousemove", on_mousemove, false);
+				canvas.addEventListener("click", on_click, false);
+
+				// Add link params to array
+				Links.push(x + ";" + y + ";" + linkWidth + ";" + linkHeight + ";" + href);
+			}
+
+			// Link hover
+			function on_mousemove (ev) {
+				var x, y;
+
+				// Get the mouse position relative to the canvas element
+				if (ev.layerX || ev.layerX == 0) { // For Firefox
+					x = ev.layerX;
+					y = ev.layerY;
+				}
+
+				// Link hover
+				for (var i = Links.length - 1; i >= 0; i--) {
+					var params = new Array();
+
+					// Get link params back from array
+					params = Links[i].split(";");
+
+					var linkX = parseInt(params[0]),
+						linkY = parseInt(params[1]),
+						linkWidth = parseInt(params[2]),
+						linkHeight = parseInt(params[3]),
+						linkHref = params[4];
+
+					// Check if cursor is in the link area
+					if (x >= (linkX - linkWidth / 2) && x <= (linkX + linkWidth / 2) && y >= (linkY - linkHeight / 2) && y <= (linkY + linkHeight / 2)){
+						document.body.style.cursor = "pointer";
+						hoverLink = linkHref;
+						break;
+					}
+					else {
+						document.body.style.cursor = "";
+						hoverLink = "";
+					}
+				};
+			}
+
+			// Link click
+			function on_click(e) {
+				if (hoverLink){
+					window.open(hoverLink); // Use this to open in new tab
+					//window.location = hoverLink; // Use this to open in current window
+				}
+			}
+
+
+            function drawArc(ctx, xaa, xbb, yy, text) {
+                var xpadding = {{ widthstep }} / 2,
+                    ypadding = 10;
+                var d = {{ archeight }} - 5*ypadding,
+                    xa = xaa - xpadding,
+                    xb = xbb + xpadding,
+                    y = yy - ypadding,
+                    r = ((xb*xb - 2*xa*xb + xa*xa)/4 + d*d) / (2*d),
+                    xc = (xa + xb)/2,
+                    yc = y + r - d,
+                    alpha = Math.acos((r-d)/r);
+                
+                // Draws left vertical line.
+                ctx.beginPath();
+                ctx.moveTo(xa, y);
+                ctx.lineTo(xa, {{ maxHeight }});
+                ctx.setLineDash([10, 10]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.closePath();
+                
+                // Draws right vertical line.
+                ctx.beginPath();
+                ctx.moveTo(xb, y);
+                ctx.lineTo(xb, {{ maxHeight }});
+                ctx.setLineDash([10, 10]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.closePath();
+                
+                // Draws arch.
+                ctx.beginPath();
+                ctx.arc(xc, yc, r, 1.5*Math.PI - alpha, 1.5*Math.PI + alpha);
+                ctx.stroke();
+                ctx.closePath();
+                ctx.fillText(text, (xa+xb)/2, y - d/2);
+            }
+
+
+            function draw() {
+                var canvas = document.getElementById('timeline');
+                if (canvas.getContext) {
+                    var ctx = canvas.getContext('2d');
+                    ctx.canvas.width  = {{ maxWidth }};
+                    ctx.canvas.height = {{ maxHeight }};
+                    ctx.font = "24px serif";
+                    ctx.textAlign = "center";
+
+{% for character in eventsByCharacter.keys() %}
+    {% for event in eventsByCharacter[character] %}
+        {% if  loop.nextitem %}
+                    ctx.strokeStyle = "{{ characters[character].color }}";
+                    drawArrow(ctx, {{ event.x }}+{{ widthspan }}, {{ event.y }} + {{ heightspan }}/2 + {{ archeight }}, {{ loop.nextitem.x }},  {{ loop.nextitem.y }} + {{ heightspan }}/2 + {{ archeight }});
+                    ctx.strokeStyle = "black";
+        {% endif %}
+    {% endfor %}
+{% endfor %}
+
+{% for event in events %}
+                    drawRect(canvas, ctx, {{ event.x }}, {{ event.y }} + {{ archeight }}, "{{ event.date }}", "{{ event.description }}", "{{ event.href }}");
+{% endfor %}
+
+{% for arc in arcs %}
+                    drawArc(ctx, {{ arc.firstEvent.x }}, {{ arc.lastEvent.x }} + {{ widthspan }}, {{ archeight }}, "{{ arc.name }}");
+{% endfor %}
+                }
+            }
+        </script>
+        <style type="text/css">
+            canvas {
+                margin: 50px 50px 50px 50px;
+                //border: 1px solid black;
+            }
+        </style>
+    </head>
+    <body onload="draw();">
+        <canvas id="timeline" width="150" height="150"></canvas>
+    </body>
+</html>

@@ -35,7 +35,7 @@ jobs:
         run: poetry install
 
       - name: Run pylint
-        run: poetry run pylint --rcfile=.github/workflows/pylintrc --fail-under=9.5 inkspire_api
+        run: poetry run pylint --rcfile=.github/workflows/pylintrc --fail-under=9.5 inkspire_api lorebook timeline
 
       - name: Run ty
         run: poetry run ty check

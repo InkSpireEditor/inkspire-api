@@ -1,0 +1,18 @@
+\documentclass{standalone}
+
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows}
+
+\begin{document}
+
+\begin{tikzpicture}
+{% for key,event in events %}
+    \node[draw] ({{ key }}) at ({{ event.x }},{{ event.y}}) {{{ event.date }} - {{ event.description }}};
+{% endfor %}
+
+%% No arrows: this template draws the events and nothing between them. The four that
+%% used to be here named one timeline's events and applied to no other.
+\end{tikzpicture}
+
+\end{document}

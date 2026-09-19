@@ -26,6 +26,9 @@ and the continuations a language model streams back.
   chunk over server-sent events, from any of several providers.
 - **Authenticates with JWTs in cookies**, rotating a refresh token, with accounts made
   from the shell rather than by registration.
+- **Ships two more commands**, `lorebook` and `timeline`, which read a story's knowledge
+  graph and its events from the same repository. Neither is wired to the API yet. See
+  [The lorebook and the timeline](#the-lorebook-and-the-timeline).
 
 ---
 
@@ -33,7 +36,8 @@ and the continuations a language model streams back.
 
 - [FastAPI](https://fastapi.tiangolo.com/) on [Python](https://www.python.org/) 3.12 or later
 - [SQLAlchemy](https://www.sqlalchemy.org/) and [Alembic](https://alembic.sqlalchemy.org/), over SQLite
-- [Typer](https://typer.tiangolo.com/) for the `inkspire` command
+- [rdflib](https://rdflib.readthedocs.io/) and [pySHACL](https://github.com/RDFLib/pySHACL) for the lorebook graph
+- [Typer](https://typer.tiangolo.com/) for the `inkspire`, `lorebook` and `timeline` commands
 - [Poetry](https://python-poetry.org/) for dependencies
 
 ---
@@ -86,8 +90,8 @@ pipe cleanly. A session is a refresh token that has not expired.
 
     stories/<story-slug>/story.yaml            title, synopsis and order, written by the API
     stories/<story-slug>/chapters/<slug>.ink   a header and prose, written by the API
-    stories/<story-slug>/lorebook/             read by the lorebook tool, never written here
-    stories/<story-slug>/timeline.yaml         read by the timeline tool, never written here
+    stories/<story-slug>/lorebook/             read by the `lorebook` command, never by the API
+    stories/<story-slug>/timeline.yaml         read by the `timeline` command, never by the API
 
 A directory is a story if and only if it holds a `story.yaml`. The filesystem determines
 what exists: a chapter dropped in by `git pull` or by an editor appears in the API, and a
@@ -134,7 +138,7 @@ One story is one directory in the tree, and its chapters are that directory's fi
 | Route | |
 |---|---|
 | `GET /api/stories/tree` | every story. `files` is empty — a chapter belongs to a story |
-| `GET /api/stories/dir/{id}` | one story, and the chapters in it |
+| `GET /api/stories/dir/{id}` | one story, the chapters in it, and which other views it has |
 | `POST /api/stories/dir` | create a story, with a `name` and an optional `summary` |
 | `PUT /api/stories/dir/{id}` | retitle a story, or rewrite its synopsis |
 | `DELETE /api/stories/dir/{id}` | delete a story and its chapters |
@@ -147,7 +151,47 @@ One story is one directory in the tree, and its chapters are that directory's fi
 
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
-this API's to remove.
+this API's to remove, even though the commands that read them ship here.
+
+### A story's timeline and lorebook
+
+Read-only, and read straight from the YAML the writer authored:
+
+| Route | |
+|---|---|
+| `GET /api/stories/dir/{id}/timeline` | the events laid out: coordinates, characters, arcs |
+| `GET /api/stories/dir/{id}/lore/graph` | the lorebook as nodes and links |
+| `GET /api/stories/dir/{id}/lore/entity/{local}` | one entity, its relations and its prose |
+
+`GET /api/stories/dir/{id}` carries a `timeline` and a `lorebook` boolean, from whether the
+files those views read are there, so a client knows which to offer without asking for either.
+Most stories have one and not the other.
+
+The timeline answers what `process()` computed — an `x1/y1/x2/y2` box per event, each
+character's events as keys in date order, and the arcs. A client draws those coordinates and
+lays nothing out itself, which is also what the Typst render does, so the two cannot drift.
+An event's `date` is already formatted through its own `dateStyle`, so it is a display string;
+the order of the `events` array is what says when things happened.
+
+The graph answers `{nodes, links}`. A node carries its most specific class as `type`, which is
+what a legend colours and filters by, along with `types`, `attrs` and `degree`. It carries no
+prose: the section blocks are too bulky for a tooltip, which is why an entity can be asked for
+on its own. That one answers what the Markdown sheet is rendered from — scalars, nicknames,
+relations resolved to labels, and the prose sections in template order.
+
+**Neither writes anything.** The graph is built in memory from `lorebook/data/*.yaml` on each
+cache miss, so `build/lorebook.ttl` is not read and no `build/` or `export/` appears because
+someone opened a view. Those stay artifacts of the shell, and what the browser shows follows
+the authored YAML rather than whatever `lorebook build` last wrote. SHACL does not run here
+either — `lorebook validate` is where an authoring check belongs.
+
+Each build is held per story, against the mtimes of the files it was built from, so editing a
+character in vim shows up on the next request and an unchanged lorebook is not rebuilt.
+
+A story with no `timeline.yaml`, or no `lorebook/lorebook.yaml`, answers 404. A file that is
+there and cannot be read as what it claims to be answers **422** with the reason: a timeline
+missing a `positions` entry for a character combination, a date written as a bare year, an
+entity typed with a class the vocabulary does not declare. Those are the writer's to fix.
 
 ### Everything that is not a novel
 
@@ -267,24 +311,156 @@ badly in the editor. `--show-prompt` prints what would be sent and generates not
 
 ---
 
+## 📚 The lorebook and the timeline
+
+Two commands share this repository with the API: one dependency set, one `poetry install`,
+one virtualenv. **Neither is called by the API.** They are command-line tools that read the
+same story repository the API serves, and they are here so that the API can eventually call
+`lorebook` as a library — the long-term goal is generating text with the graph as retrieval
+context. Nothing is wired yet.
+
+### `lorebook` — a novel's lore as an RDF graph
+
+```
+core ontology (Turtle)  +  extension.yaml  ->  Vocabulary
+                                  |
+YAML entity files  ->  RDF graph (rdflib)  ->  lorebook.ttl (canon)
+                                  |                     |
+                    generated-SHACL validation   SPARQL + Jinja2
+                          (referential           -> Markdown export
+                           integrity)               (11-section files)
+```
+
+The graph is the canonical source; the Markdown sheets and the HTML viewer are generated
+read-views and are never hand-edited. Relations (`mentorOf`, `memberOf`, …) are real
+queryable edges; prose is stored beside them as literals, so an export loses nothing.
+
+The vocabulary is declarative and layered. `lorebook/core.ttl` defines the universal terms
+in the `core:` namespace, and each lorebook's `extension.yaml` declares only its own classes
+and fields in its own namespace. Adding a class or a field is a YAML edit, not a Python one,
+and `rdfs:range` declarations are what the SHACL shapes are generated from, so authoring and
+validation cannot drift apart.
+
+**The root.** The directory holding one lorebook per subdirectory is resolved in this order,
+first hit wins: `--root`, then `LOREBOOK_ROOT` in the environment, then `LOREBOOK_ROOT` in
+`.env` or `.env.local`. No path is hardcoded — with none of the three set every command fails
+rather than guessing. It is the story repository's `stories/` directory, so it is per-machine
+and belongs in `.env.local`:
+
+```bash
+echo "LOREBOOK_ROOT=~/Documents/novel-data/stories" >> .env.local
+```
+
+Two shapes are accepted under the root, so one root can hold either — a standalone
+`<root>/<name>/lorebook.yaml`, or a story's `<root>/<name>/lorebook/lorebook.yaml`. The
+directory holding the manifest is the lorebook directory: `data/`, `build/` and `export/`
+sit beside it.
+
+```bash
+poetry install -E oxigraph        # optional on-disk triplestore; the CLI does not need it
+
+poetry run lorebook build     -l <name>   # data/*.yaml -> <lorebook>/build/lorebook.ttl
+poetry run lorebook validate  -l <name>   # generated-SHACL check; exits 1 on failure
+poetry run lorebook export    -l <name>   # graph -> <lorebook>/export/<id>.md
+poetry run lorebook view      -l <name>   # graph -> build/lorebook-view.html, and opens it
+poetry run lorebook all       -l <name>   # build, validate, export
+```
+
+`--lorebook/-l` is auto-selected only when exactly one lorebook exists. `build/` and
+`export/` are generated and gitignored where they live.
+
+`lorebook query` runs ad-hoc SPARQL with the prefixes pre-bound: `core:` and `schema:` are
+shared, so a query written against them works for any lorebook, while `lore:`/`ex:` — whose
+labels each manifest configures — are one extension's own.
+
+```bash
+poetry run lorebook query "SELECT ?name WHERE { ?c a core:Character ; schema:name ?name }"
+poetry run lorebook query --all "SELECT ?name WHERE { ?c a core:Character ; schema:name ?name }"
+poetry run lorebook query --json "SELECT ?c ?b WHERE { ?c lore:hasBloodline ?b }"
+```
+
+`--all` merges every lorebook's built graph and fails unless all of them are built. `--json`
+emits SPARQL 1.1 Query Results JSON instead of TSV rows.
+
+| Path | Role |
+|---|---|
+| `lorebook/core.ttl` | the shared core ontology |
+| `lorebook/layout.py` | root resolution and lorebook discovery |
+| `lorebook/ontology.py` | the `Vocabulary`: core, extension and manifest, assembled at runtime |
+| `lorebook/authoring.py` | YAML → RDF triples |
+| `lorebook/store.py` | load and save the graph as Turtle |
+| `lorebook/validation.py` | pySHACL, over shapes generated from the vocabulary |
+| `lorebook/export.py` | SPARQL + Jinja2 → Markdown |
+| `lorebook/querying.py` | prefix union, prologue, the `--all` merge, JSON results |
+| `lorebook/view.py` | graph → a self-contained interactive HTML page |
+| `lorebook/vendor/` | the pinned force-graph build the page inlines |
+
+`scripts/filter_lorebook.py` is unrelated to the pipeline: it strips a `.lorebook` export
+from another tool down to text and display names.
+
+### `timeline` — a story's events, per character
+
+Reads a YAML timeline and renders it as Typst source. `-i` takes any path, so the input can
+be a story's `timeline.yaml` in the data repository.
+
+```bash
+poetry run timeline -i <input.yaml>                 # rendered source to stdout
+poetry run timeline -i <input.yaml> -o <output.typ> # or to a file
+poetry run timeline -i <input.yaml> -t <template>   # another template
+```
+
+`-t` takes the name of a template shipped in `timeline/templates/` (`typst.j2` is the
+default) or a path to one on disk; templates resolve through `importlib.resources`, so the
+command works from any directory. `examples/timeline.yaml` is a made-up timeline that
+exercises every field the renderer reads.
+
+An event's `date` is always a full date, written any of three ways — `2019-10-03` (which
+YAML reads as a date), `"2019-10-03"` and `2019-3-5` (both strings) all end up as the same
+`datetime`, because events are sorted against each other and comparing a date to a datetime
+raises. A bare `2019` is a number and `2019-10` is text, so neither is accepted. How much of
+the date is *shown* is separate, set per event by `dateStyle`, a `strftime` format:
+`"%Y-%m"` for the month, `"%Y"` for the year. Quote it — `%` cannot start a plain YAML
+scalar.
+
+As a library:
+
+```python
+from timeline import Timeline
+
+Timeline.fromYAML("timeline.yaml").render()  # -> str
+Timeline.fromDict(parsed_mapping).render()   # same, when the data is already parsed
+```
+
+`render()` lays the timeline out if the caller has not, returns the generated source and
+writes nothing. `process()` is idempotent, so calling it first is optional.
+
+---
+
 ## 🧪 Quality and testing
 
 This project uses **AI-assisted development** for rapid implementation, with human
 oversight and validation.
 
 ```bash
-poetry run pytest                                    # the suite
-poetry run pytest --cov inkspire_api                 # with coverage
+poetry run pytest                                    # all three suites
+poetry run pytest tests/lorebook                     # one of them
 poetry run pytest tests/test_files.py                # one file
 poetry run pytest -k "loose or symlink"              # by name
+poetry run pytest --cov inkspire_api --cov lorebook --cov timeline
 
-poetry run pylint --rcfile=.github/workflows/pylintrc inkspire_api
+poetry run pylint --rcfile=.github/workflows/pylintrc inkspire_api lorebook timeline
 poetry run ty check
 ```
 
-Tests build their own SQLite file and their own story repository under `tmp_path`, so
-there is nothing to set up and nothing shared between them. No provider is contacted:
-requests are answered by a transport constructed in the test.
+`tests/` holds the API's tests, with the other two packages' beside them in
+`tests/lorebook/` and `tests/timeline/`. All three directories are packages, because all
+three suites bring a `conftest.py` and a `test_cli.py` and the module names would
+otherwise collide.
+
+Tests build their own SQLite file, their own story repository and their own lorebook under
+`tmp_path`, so there is nothing to set up, nothing shared between them, and nothing that
+reads the authored content under `LOREBOOK_ROOT`. No provider is contacted: requests are
+answered by a transport constructed in the test.
 
 Both commands above run on every push, as the Pytest and Pylint workflows.
 

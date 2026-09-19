@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: poetry install
 
-      # No database or story repository to prepare: every test builds its own SQLite
-      # file and its own repository under tmp_path.
+      # No database, story repository or lorebook to prepare: every test builds its
+      # own SQLite file, its own repository and its own lorebook under tmp_path.
       - name: Run pytest
-        run: poetry run pytest --cov inkspire_api --cov-report=term-missing
+        run: poetry run pytest --cov inkspire_api --cov lorebook --cov timeline --cov-report=term-missing

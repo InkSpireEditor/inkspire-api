@@ -1,0 +1,18 @@
+{#- Regenerates the 11-section place sheet from graph data. -#}
+# {{ name }}{% if aka %} ({{ aka | join(", ") }}){% endif %}
+
+_Generated from the lorebook knowledge graph — do not edit by hand._
+
+{% if locationType %}- **Type:** {{ locationType }}
+{% endif %}{% if locatedIn %}- **Location:** {{ locatedIn | join(", ") }}
+{% endif %}{% if size %}- **Size:** {{ size }}
+{% endif %}{% if controlledBy %}- **Controlled by:** {{ controlledBy | join(", ") }}
+{% endif %}{% if status %}- **Status:** {{ status }}
+{% endif %}
+{% if description %}> {{ description }}
+{% endif %}
+{% for heading, key in section_order %}{% if sections.get(key) %}
+## {{ heading }}
+
+{{ sections[key] }}
+{% endif %}{% endfor %}
