@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -11,14 +12,20 @@ from timeline.cli import app
 
 runner = CliRunner()
 
+#: Colour and style sequences. Whether they are emitted depends on the environment rather
+#: than on the command, and they land mid-message, so they have to go before a message can
+#: be matched.
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
 
 def _text(result) -> str:
-    """Everything the command printed, as one line with the error box stripped."""
+    """Everything the command printed, as one line, with the error box and colour gone."""
     try:
         raw = result.output + result.stderr
     except ValueError:  # click keeps one combined stream
         raw = result.output
-    return " ".join(raw.translate(str.maketrans("", "", "│╭╮╰╯─")).split())
+    plain = ANSI.sub("", raw.translate(str.maketrans("", "", "│╭╮╰╯─")))
+    return " ".join(plain.split())
 
 
 def test_renders_to_stdout_by_default(yaml_file: Path) -> None:

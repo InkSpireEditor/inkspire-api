@@ -7,6 +7,7 @@ These tests always pass ``--root`` explicitly, so they never read the repository
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,18 +18,25 @@ from lorebook.cli import app
 
 runner = CliRunner()
 
+#: Colour and style sequences. Whether they are emitted depends on the environment rather
+#: than on the command, and they land mid-message: an option name comes back as `-`, an
+#: escape, then `-lorebook`. They have to go before a message can be matched.
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
 
 def _text(result) -> str:
     """Everything the command printed, as one line.
 
-    Typer draws errors in a box and wraps them to the terminal width, so the border
-    characters are dropped and whitespace collapsed before matching on a message.
+    Typer draws errors in a box, wraps them to the terminal width and colours parts of
+    them, so the border characters and the escape sequences are dropped and whitespace
+    collapsed before matching on a message.
     """
     try:
         raw = result.output + result.stderr
     except ValueError:  # click keeps one combined stream
         raw = result.output
-    return " ".join(raw.translate(str.maketrans("", "", "│╭╮╰╯─")).split())
+    plain = ANSI.sub("", raw.translate(str.maketrans("", "", "│╭╮╰╯─")))
+    return " ".join(plain.split())
 
 
 @pytest.fixture()
