@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import copy
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -31,6 +31,7 @@ from . import ink
 from .fs import (
     Conflict,
     HeldScan,
+    Malformed,
     NotFound,
     StorageError,
     derive_id,
@@ -146,6 +147,22 @@ def _remove_entry(listed: list, filename: str) -> None:
     entry = entry_for(listed, filename)
     if entry is not None:
         listed.remove(entry)
+
+
+def _position_in(document: dict) -> Callable[[Chapter], int]:
+    """Sorts chapters into the order `document` lists them in, unlisted ones last.
+
+    The manifest decides the order and the filesystem decides what exists, so a chapter
+    the manifest does not name still has a place: after every chapter it does. Ties are
+    left to the caller's sort being stable, which keeps unlisted chapters in the filename
+    order they were found in.
+    """
+    order = {
+        str(entry.get("file", "")): position
+        for position, entry in enumerate(chapter_list(document))
+        if isinstance(entry, dict)
+    }
+    return lambda chapter: order.get(chapter.filename, len(order))
 
 
 def ensure_entry(listed: list, filename: str) -> None:
@@ -272,7 +289,7 @@ class Scanner:
                 own.append(chapter)
                 chapters[chapter.id] = chapter
 
-            own.sort(key=lambda chapter: chapter.name)
+            own.sort(key=_position_in(document))
             stories[story_id] = Story(
                 id=story_id,
                 slug=slug,
@@ -385,14 +402,25 @@ class Scanner:
         )
 
     def update_chapter(
-        self, chapter_id: str, *, name: str | None = None, story_id: str | None = None
+        self,
+        chapter_id: str,
+        *,
+        name: str | None = None,
+        story_id: str | None = None,
+        status: str | None = None,
+        summary: str | None = None,
     ) -> Chapter:
-        """Renames a chapter, moves it to another story, or both.
+        """Renames a chapter, moves it to another story, rewrites what its header says
+        about it, or any combination of those.
 
         The file takes a slug of the new name and its header takes the name itself, so
         what the writer typed is kept whatever the slug drops. The manifest entry
         naming the old file is pointed at the new one, so a chapter that has a place in
         the order keeps it. A chapter moved to another story is listed last there.
+
+        `status` and `summary` are written into the header, and either given as an empty
+        string removes the key. Every field given is written in one pass, so a rename and
+        a status change in one request rewrite the file once.
 
         The chapter's id changes whenever its path does, which a rename or a move both
         do. The caller reads the returned chapter for the new one.
@@ -416,8 +444,13 @@ class Scanner:
             source.rename(target)
 
         target_relpath = target_story.relpath / CHAPTERS / target.name
-        if name is not None:
-            self._retitle(target_relpath, display)
+        fields = ink.header_fields(
+            title=display if name is not None else None,
+            status=status,
+            summary=summary,
+        )
+        if fields:
+            self._write_header(target_relpath, fields)
 
         if target_story.id == source_story.id:
             with self._chapter_list(source_story) as listed:
@@ -433,11 +466,49 @@ class Scanner:
         self.invalidate()
         return self.chapter(derive_id(SPACE, str(target_relpath)))
 
-    def _retitle(self, relpath: PurePosixPath, name: str) -> None:
-        """Writes `name` into a chapter's header as its title."""
-        text = ink.with_title(ink.parse(self._text(relpath)), name, relpath.stem)
+    def _write_header(self, relpath: PurePosixPath, fields: dict[str, str]) -> None:
+        """Applies `fields` to a chapter's header, leaving its prose as it is."""
+        text = ink.with_header(ink.parse(self._text(relpath)), relpath.stem, fields)
         if text is not None:
             write_atomically(self.path(relpath), text)
+
+    def reorder_chapters(self, story_id: str, order: list[str]) -> Story:
+        """Writes `order` into `story.yaml` as the order the story's chapters are read in.
+
+        `order` is chapter ids, and every one of them has to be a chapter of this story:
+        a chapter of another, a repeated id and an unknown id are each `Malformed`. A
+        chapter of the story that `order` leaves out keeps its place after the ones it
+        names, so a client working from a listing taken before someone else added a
+        chapter does not drop that chapter out of the manifest.
+
+        Only `story.yaml` is written. No chapter file is read or written.
+        """
+        story = self.story(story_id)
+        own = {chapter.id for chapter in story.chapters}
+
+        filenames: list[str] = []
+        for chapter_id in order:
+            if chapter_id not in own:
+                raise Malformed(
+                    f'"{chapter_id}" is not a chapter of "{story.name}".'
+                )
+            chapter = self.chapter(chapter_id)
+            if chapter.filename in filenames:
+                raise Malformed(f'"{chapter_id}" is named twice in the order.')
+            filenames.append(chapter.filename)
+
+        with self._chapter_list(story) as listed:
+            for filename in filenames:
+                ensure_entry(listed, filename)
+            named = [entry_for(listed, filename) for filename in filenames]
+            # By identity rather than by equality: two entries can be equal mappings,
+            # and dropping the wrong one would lose a chapter from the order.
+            chosen = {id(entry) for entry in named}
+            rest = [entry for entry in listed if id(entry) not in chosen]
+            listed[:] = [entry for entry in named if entry is not None] + rest
+
+        self.invalidate()
+        return self.story(story_id)
 
     def delete_chapter(self, chapter_id: str) -> None:
         """Deletes a chapter file, and the manifest entry naming it."""

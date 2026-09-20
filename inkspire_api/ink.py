@@ -132,18 +132,39 @@ def render(metadata: dict, body: str) -> str:
     return f"{FENCE}\n{dump_yaml(metadata)}{FENCE}\n{body}"
 
 
-def with_title(document: Document, name: str, stem: str) -> str | None:
-    """`document` written out under `name`, or `None` if it already says that.
+def header_fields(
+    *,
+    title: str | None = None,
+    status: str | None = None,
+    summary: str | None = None,
+) -> dict[str, str]:
+    """The header fields an update asks to change, leaving out the ones it does not.
 
-    The title is dropped instead where the filename says the name itself, so renaming a
-    file to what it is already called leaves it with no header rather than one
-    repeating its own name.
+    `None` means a field was not mentioned and is left alone; `""` means it was asked for
+    as empty, which `with_header` reads as a removal.
+    """
+    given = {"title": title, "status": status, "summary": summary}
+    return {key: value for key, value in given.items() if value is not None}
+
+
+def with_header(document: Document, stem: str, fields: dict) -> str | None:
+    """`document` written out with `fields` applied to its header, or `None` if that
+    would write back what is already there.
+
+    A field is removed rather than written where it has nothing to say: a `title` the
+    filename already spells, and any field given as an empty string. So renaming a file
+    to what it is already called leaves it with no header instead of one repeating its
+    own name, and clearing a status removes the key instead of recording `status: ''`.
+
+    Keys `fields` does not mention are left alone, which is what keeps a status that was
+    set by hand while a rename is saved.
     """
     metadata = dict(document.metadata)
-    if name != stem:
-        metadata["title"] = name
-    else:
-        metadata.pop("title", None)
+    for key, value in fields.items():
+        if value == "" or (key == "title" and value == stem):
+            metadata.pop(key, None)
+        else:
+            metadata[key] = value
 
     if metadata == document.metadata:
         return None

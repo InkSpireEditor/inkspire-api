@@ -18,6 +18,7 @@ import yaml
 
 from inkspire_api.fs import (
     Conflict,
+    Malformed,
     NotFound,
     StorageError,
     derive_id,
@@ -722,3 +723,226 @@ def test_a_chapter_that_is_not_utf8_says_so(scanner: Scanner, root: Path) -> Non
 
     with pytest.raises(StorageError, match="UTF-8"):
         scanner.read_chapter(chapter.id)
+
+
+# --- the order the chapters are read in --------------------------------------
+
+
+def test_the_manifest_decides_the_order(scanner: Scanner, root: Path) -> None:
+    """Not the filenames: `story.yaml` is the one place the order lives."""
+    make_story(
+        root,
+        "example-story",
+        title="Example Story",
+        chapters={"alpha.ink": "", "beta.ink": "", "gamma.ink": ""},
+        listed=[{"file": "gamma.ink"}, {"file": "alpha.ink"}, {"file": "beta.ink"}],
+    )
+
+    story = next(iter(scanner.tree().stories.values()))
+    assert [chapter.filename for chapter in story.chapters] == [
+        "gamma.ink",
+        "alpha.ink",
+        "beta.ink",
+    ]
+
+
+def test_a_chapter_the_manifest_does_not_list_comes_last(
+    scanner: Scanner, root: Path
+) -> None:
+    """A file arriving by `git pull` or from an editor shows up rather than disappearing."""
+    make_story(
+        root,
+        "example-story",
+        title="Example Story",
+        chapters={"alpha.ink": "", "beta.ink": "", "zeta.ink": ""},
+        listed=[{"file": "zeta.ink"}],
+    )
+
+    story = next(iter(scanner.tree().stories.values()))
+    assert [chapter.filename for chapter in story.chapters] == [
+        "zeta.ink",
+        "alpha.ink",
+        "beta.ink",
+    ]
+
+
+def test_a_manifest_naming_a_file_that_is_gone_still_scans(
+    scanner: Scanner, root: Path
+) -> None:
+    """The filesystem decides what exists, so an entry pointing nowhere lists nothing."""
+    make_story(
+        root,
+        "example-story",
+        title="Example Story",
+        chapters={"alpha.ink": ""},
+        listed=[{"file": "deleted.ink"}, {"file": "alpha.ink"}],
+    )
+
+    story = next(iter(scanner.tree().stories.values()))
+    assert [chapter.filename for chapter in story.chapters] == ["alpha.ink"]
+
+
+def test_reordering_writes_the_manifest(scanner: Scanner, root: Path) -> None:
+    story = scanner.create_story("Example Story")
+    first = scanner.create_chapter(story.id, "One")
+    second = scanner.create_chapter(story.id, "Two")
+
+    reordered = scanner.reorder_chapters(story.id, [second.id, first.id])
+
+    assert [chapter.filename for chapter in reordered.chapters] == ["two.ink", "one.ink"]
+    manifest = root / "stories" / "example-story" / "story.yaml"
+    assert yaml.safe_load(manifest.read_text(encoding="utf-8"))["chapters"] == [
+        {"file": "two.ink"},
+        {"file": "one.ink"},
+    ]
+
+
+def test_reordering_keeps_what_a_manifest_entry_carries(
+    scanner: Scanner, root: Path
+) -> None:
+    """An entry is edited in place, so a key written by hand survives being moved."""
+    story = scanner.create_story("Example Story")
+    first = scanner.create_chapter(story.id, "One")
+    second = scanner.create_chapter(story.id, "Two")
+
+    manifest = root / "stories" / "example-story" / "story.yaml"
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    document["chapters"] = [{"file": "one.ink", "note": "kept"}, {"file": "two.ink"}]
+    manifest.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    scanner.invalidate()
+
+    scanner.reorder_chapters(story.id, [second.id, first.id])
+
+    assert yaml.safe_load(manifest.read_text(encoding="utf-8"))["chapters"] == [
+        {"file": "two.ink"},
+        {"file": "one.ink", "note": "kept"},
+    ]
+
+
+def test_a_chapter_left_out_of_an_order_keeps_a_place(
+    scanner: Scanner, root: Path
+) -> None:
+    """A client working from a listing taken before a third chapter arrived must not
+    drop it out of the manifest."""
+    story = scanner.create_story("Example Story")
+    first = scanner.create_chapter(story.id, "One")
+    second = scanner.create_chapter(story.id, "Two")
+    third = scanner.create_chapter(story.id, "Three")
+
+    reordered = scanner.reorder_chapters(story.id, [second.id, first.id])
+
+    assert [chapter.filename for chapter in reordered.chapters] == [
+        "two.ink",
+        "one.ink",
+        "three.ink",
+    ]
+    assert third.id in {chapter.id for chapter in reordered.chapters}
+
+
+def test_reordering_gives_an_unlisted_chapter_a_place(
+    scanner: Scanner, root: Path
+) -> None:
+    """A chapter that arrived on disk is shown last; naming it in an order records it."""
+    make_story(
+        root,
+        "example-story",
+        title="Example Story",
+        chapters={"alpha.ink": "", "beta.ink": ""},
+        listed=[{"file": "alpha.ink"}],
+    )
+    story = next(iter(scanner.tree().stories.values()))
+    beta = next(c for c in story.chapters if c.filename == "beta.ink")
+    alpha = next(c for c in story.chapters if c.filename == "alpha.ink")
+
+    scanner.reorder_chapters(story.id, [beta.id, alpha.id])
+
+    manifest = root / "stories" / "example-story" / "story.yaml"
+    assert yaml.safe_load(manifest.read_text(encoding="utf-8"))["chapters"] == [
+        {"file": "beta.ink"},
+        {"file": "alpha.ink"},
+    ]
+
+
+def test_reordering_refuses_a_chapter_of_another_story(scanner: Scanner) -> None:
+    story = scanner.create_story("Example Story")
+    other = scanner.create_story("Other Story")
+    elsewhere = scanner.create_chapter(other.id, "One")
+
+    with pytest.raises(Malformed, match=elsewhere.id):
+        scanner.reorder_chapters(story.id, [elsewhere.id])
+
+
+def test_reordering_refuses_an_unknown_chapter(scanner: Scanner) -> None:
+    story = scanner.create_story("Example Story")
+
+    with pytest.raises(Malformed):
+        scanner.reorder_chapters(story.id, ["0" * 16])
+
+
+def test_reordering_refuses_a_repeated_chapter(scanner: Scanner) -> None:
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "One")
+
+    with pytest.raises(Malformed, match="twice"):
+        scanner.reorder_chapters(story.id, [chapter.id, chapter.id])
+
+
+def test_reordering_an_unknown_story_is_not_found(scanner: Scanner) -> None:
+    with pytest.raises(NotFound):
+        scanner.reorder_chapters("0" * 16, [])
+
+
+# --- what a header says, written ---------------------------------------------
+
+
+def test_a_status_is_written_into_the_header(scanner: Scanner, root: Path) -> None:
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "one")
+    scanner.write_chapter(chapter.id, "Once.")
+
+    updated = scanner.update_chapter(chapter.id, status="draft")
+
+    assert updated.status == "draft"
+    assert updated.id == chapter.id
+    path = root / "stories" / "example-story" / "chapters" / "one.ink"
+    assert path.read_text(encoding="utf-8") == "---\nstatus: draft\n---\nOnce."
+
+
+def test_an_empty_status_removes_it(scanner: Scanner, root: Path) -> None:
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "one")
+    scanner.update_chapter(chapter.id, status="draft")
+
+    cleared = scanner.update_chapter(chapter.id, status="")
+
+    assert cleared.status == ""
+    path = root / "stories" / "example-story" / "chapters" / "one.ink"
+    assert path.read_text(encoding="utf-8") == ""
+
+
+def test_a_rename_and_a_status_are_one_write(scanner: Scanner, root: Path) -> None:
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "one")
+    scanner.write_chapter(chapter.id, "Once.")
+
+    updated = scanner.update_chapter(chapter.id, name="The Letter", status="revised")
+
+    assert updated.name == "The Letter"
+    assert updated.status == "revised"
+    path = root / "stories" / "example-story" / "chapters" / "the-letter.ink"
+    assert path.read_text(encoding="utf-8") == (
+        "---\ntitle: The Letter\nstatus: revised\n---\nOnce."
+    )
+
+
+def test_a_status_written_by_hand_survives_a_rename(scanner: Scanner, root: Path) -> None:
+    """The header is read from disk at the moment of the write, not sent by the client."""
+    story = scanner.create_story("Example Story")
+    chapter = scanner.create_chapter(story.id, "one")
+    path = root / "stories" / "example-story" / "chapters" / "one.ink"
+    path.write_text("---\nstatus: revised\n---\nOnce.", encoding="utf-8")
+    scanner.invalidate()
+
+    renamed = scanner.update_chapter(chapter.id, name="Two")
+
+    assert renamed.status == "revised"

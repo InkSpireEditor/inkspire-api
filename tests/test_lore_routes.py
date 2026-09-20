@@ -9,7 +9,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_lorebook, make_story
+from tests.conftest import make_lorebook, make_story, story_id
 
 
 @pytest.fixture
@@ -18,12 +18,6 @@ def story_with_lorebook(data_root: Path) -> Path:
     story = make_story(data_root, "example", title="Example Story")
     make_lorebook(story)
     return story
-
-
-def story_id(client: TestClient, name: str = "Example Story") -> str:
-    """The id of the story shown under `name`."""
-    dirs = client.get("/api/stories/tree").json()["dirs"]
-    return next(one for one, dir_ in dirs.items() if dir_["name"] == name)
 
 
 # --- what a story says it has -----------------------------------------------

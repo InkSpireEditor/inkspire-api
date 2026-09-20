@@ -30,6 +30,11 @@ MAX_NAME_LENGTH = 255
 #: Longest accepted synopsis or context.
 MAX_SUMMARY_LENGTH = 2000
 
+#: Longest accepted status. A status is a free string — `outline`, `draft`, `revised`
+#: and `done` are only a suggestion — so the cap is there to bound the field, not to
+#: enforce a vocabulary.
+MAX_STATUS_LENGTH = 64
+
 #: Largest file accepted from a client. Prose reaches nowhere near this; the cap is
 #: here so a runaway request cannot be read into memory whole.
 MAX_FILE_BYTES = 4 * 1024 * 1024

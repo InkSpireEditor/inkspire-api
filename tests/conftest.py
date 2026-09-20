@@ -99,6 +99,33 @@ def make_story(
     return story_dir
 
 
+def entry_named(entries: list[dict], name: str) -> dict:
+    """The entry in a listing shown under `name`.
+
+    A listing is an array of entries each carrying its own `id`, so a test that wants one
+    of them finds it by the name a reader would pick it out by.
+    """
+    for entry in entries:
+        if entry["name"] == name:
+            return entry
+    raise AssertionError(f'Nothing named "{name}" in {[e["name"] for e in entries]}.')
+
+
+def dir_named(client: TestClient, space: str, name: str) -> dict:
+    """The directory `space`'s tree shows under `name`, with the files in it."""
+    return entry_named(client.get(f"/api/{space}/tree").json()["dirs"], name)
+
+
+def story_id(client: TestClient, name: str = "Example Story") -> str:
+    """The id the tree gives the story shown under `name`."""
+    return dir_named(client, "stories", name)["id"]
+
+
+def chapter_id(client: TestClient, story: str, chapter: str) -> str:
+    """The id the tree gives the chapter shown under `chapter`, in the story `story`."""
+    return entry_named(dir_named(client, "stories", story)["files"], chapter)["id"]
+
+
 def make_folder(
     root: Path, slug: str, *, title: str | None = None, context: str | None = None
 ) -> Path:

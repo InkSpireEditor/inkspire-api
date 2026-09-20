@@ -245,3 +245,57 @@ def test_prose_opening_on_a_fence_is_a_warning() -> None:
 def test_every_problem_is_reported_in_line_order() -> None:
     problems = ink.check("---\npov: Jane Doe\nstatus: 3\n---\nOnce.\n")
     assert [(p.line, p.level) for p in problems] == [(2, ink.WARNING), (3, ink.ERROR)]
+
+
+# --- writing a header ------------------------------------------------------
+
+
+def test_a_field_is_written_into_an_empty_header() -> None:
+    text = ink.with_header(ink.parse("Once.\n"), "one", {"status": "draft"})
+    assert text == "---\nstatus: draft\n---\nOnce.\n"
+
+
+def test_a_field_already_saying_that_writes_nothing() -> None:
+    """`None` rather than the same text, so a caller can skip the write."""
+    document = ink.parse("---\nstatus: draft\n---\nOnce.\n")
+    assert ink.with_header(document, "one", {"status": "draft"}) is None
+
+
+def test_an_empty_value_removes_the_field() -> None:
+    document = ink.parse("---\nstatus: draft\n---\nOnce.\n")
+    assert ink.with_header(document, "one", {"status": ""}) == "Once.\n"
+
+
+def test_a_title_the_filename_already_says_is_dropped() -> None:
+    """Renaming a file to what it is already called leaves it with no header."""
+    document = ink.parse("---\ntitle: Something Else\n---\nOnce.\n")
+    assert ink.with_header(document, "one", {"title": "one"}) == "Once.\n"
+
+
+def test_a_title_a_filename_cannot_say_is_written() -> None:
+    text = ink.with_header(ink.parse("Once.\n"), "the-letter", {"title": "The Letter"})
+    assert text == "---\ntitle: The Letter\n---\nOnce.\n"
+
+
+def test_a_field_not_mentioned_is_left_alone() -> None:
+    """Which is what keeps a status set by hand while a rename is being saved."""
+    document = ink.parse("---\nstatus: revised\n---\nOnce.\n")
+    text = ink.with_header(document, "one", {"title": "The Letter"})
+    assert text == "---\nstatus: revised\ntitle: The Letter\n---\nOnce.\n"
+
+
+def test_a_key_this_module_does_not_know_survives() -> None:
+    document = ink.parse("---\npov: Jane Doe\n---\nOnce.\n")
+    text = ink.with_header(document, "one", {"status": "draft"})
+    assert text == "---\npov: Jane Doe\nstatus: draft\n---\nOnce.\n"
+
+
+def test_several_fields_are_applied_in_one_pass() -> None:
+    text = ink.with_header(
+        ink.parse("Once.\n"),
+        "one",
+        {"title": "The Letter", "status": "draft", "summary": "She opens it."},
+    )
+    assert text == (
+        "---\ntitle: The Letter\nstatus: draft\nsummary: She opens it.\n---\nOnce.\n"
+    )
