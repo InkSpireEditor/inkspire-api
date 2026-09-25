@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import TIMELINE, make_story, make_timeline
+from tests.conftest import TIMELINE, make_story, make_timeline, story_id
 
 
 @pytest.fixture
@@ -18,12 +18,6 @@ def story_with_timeline(data_root: Path) -> Path:
     story = make_story(data_root, "example", title="Example Story")
     make_timeline(story)
     return story
-
-
-def story_id(client: TestClient, name: str = "Example Story") -> str:
-    """The id of the story shown under `name`."""
-    dirs = client.get("/api/stories/tree").json()["dirs"]
-    return next(one for one, dir_ in dirs.items() if dir_["name"] == name)
 
 
 # --- what a story says it has -----------------------------------------------

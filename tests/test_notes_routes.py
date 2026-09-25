@@ -14,7 +14,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from tests.conftest import EMAIL, make_folder, make_note
+from tests.conftest import EMAIL, entry_named, make_folder, make_note
 
 CONTENT_TYPE = {"Content-Type": "text/plain"}
 
@@ -35,10 +35,7 @@ def tree(client: TestClient) -> dict:
 
 
 def folder_id(client: TestClient, name: str) -> str:
-    for identifier, folder in tree(client)["dirs"].items():
-        if folder["name"] == name:
-            return identifier
-    raise AssertionError(f'No folder named "{name}".')
+    return entry_named(tree(client)["dirs"], name)["id"]
 
 
 def note_id(client: TestClient, name: str, folder: str | None = None) -> str:
@@ -47,10 +44,12 @@ def note_id(client: TestClient, name: str, folder: str | None = None) -> str:
         if folder is None
         else client.get(f"/api/notes/dir/{folder}").json()["files"]
     )
-    for identifier, note in listing.items():
-        if note["name"] == name:
-            return identifier
-    raise AssertionError(f'No file named "{name}".')
+    return entry_named(listing, name)["id"]
+
+
+def names(listing: list[dict]) -> list[str]:
+    """The names in a listing, in the order it gives them."""
+    return [entry["name"] for entry in listing]
 
 
 # --- the tree ---------------------------------------------------------------
@@ -62,16 +61,28 @@ def test_the_tree_holds_the_folders_and_the_files_at_the_root(
     answered = tree(logged_in)
 
     assert answered["user"] == EMAIL
-    assert [file["name"] for file in answered["files"].values()] == ["scratch"]
-    assert list(answered["dirs"].values()) == [
-        {"name": "research", "summary": "Background reading."}
+    assert names(answered["files"]) == ["scratch"]
+    assert answered["dirs"] == [
+        {
+            "id": folder_id(logged_in, "research"),
+            "name": "research",
+            "summary": "Background reading.",
+            "files": [
+                {
+                    "id": note_id(logged_in, "Worldbuilding",
+                                  folder_id(logged_in, "research")),
+                    "name": "Worldbuilding",
+                    "status": "",
+                }
+            ],
+        }
     ]
 
 
 def test_a_file_in_a_folder_is_not_at_the_root(
     logged_in: TestClient, workspace: Path
 ) -> None:
-    assert "Worldbuilding" not in [f["name"] for f in tree(logged_in)["files"].values()]
+    assert "Worldbuilding" not in names(tree(logged_in)["files"])
 
 
 def test_a_root_that_is_not_there_is_an_empty_tree(
@@ -79,7 +90,7 @@ def test_a_root_that_is_not_there_is_an_empty_tree(
 ) -> None:
     """It is made when something is first written, so nothing has to exist yet."""
     assert not settings.files_root.exists()
-    assert tree(logged_in) == {"user": EMAIL, "files": {}, "dirs": {}}
+    assert tree(logged_in) == {"user": EMAIL, "files": [], "dirs": []}
 
 
 def test_a_folder_answers_with_its_context_and_its_files(
@@ -90,7 +101,7 @@ def test_a_folder_answers_with_its_context_and_its_files(
 
     assert answered["name"] == "research"
     assert answered["summary"] == "Background reading."
-    assert [file["name"] for file in answered["files"].values()] == ["Worldbuilding"]
+    assert names(answered["files"]) == ["Worldbuilding"]
 
 
 def test_an_unknown_folder_is_not_found(logged_in: TestClient, workspace: Path) -> None:
@@ -450,4 +461,48 @@ def test_a_folder_a_file_and_a_save(logged_in: TestClient, files_root: Path) -> 
     )
     listing = logged_in.get(f"/api/notes/dir/{folder['id']}").json()
     assert listing["summary"] == "Background reading."
-    assert [file["name"] for file in listing["files"].values()] == ["Names"]
+    assert names(listing["files"]) == ["Names"]
+
+
+def test_the_tree_carries_every_folder_s_files_in_one_request(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    """As the stories tree does: no request per folder to find out what is in it."""
+    first = make_folder(files_root, "research")
+    make_note(first, "worldbuilding.ink")
+    second = make_folder(files_root, "admin")
+    make_note(second, "todo.ink")
+
+    answered = tree(logged_in)
+
+    assert names(answered["dirs"]) == ["admin", "research"]
+    assert names(entry_named(answered["dirs"], "research")["files"]) == [
+        "worldbuilding"
+    ]
+    assert names(entry_named(answered["dirs"], "admin")["files"]) == ["todo"]
+
+
+def test_both_lists_are_in_name_order(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    """This root records no order of its own, so the name is what settles one."""
+    make_note(files_root, "zeta.ink")
+    make_note(files_root, "alpha.ink")
+    folder = make_folder(files_root, "research")
+    make_note(folder, "zulu.ink")
+    make_note(folder, "bravo.ink")
+
+    answered = tree(logged_in)
+
+    assert names(answered["files"]) == ["alpha", "zeta"]
+    assert names(entry_named(answered["dirs"], "research")["files"]) == [
+        "bravo",
+        "zulu",
+    ]
+
+
+def test_a_file_at_the_root_carries_its_status(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    make_note(files_root, "scratch.ink", "---\nstatus: draft\n---\nA list.\n")
+    assert entry_named(tree(logged_in)["files"], "scratch")["status"] == "draft"

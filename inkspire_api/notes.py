@@ -90,6 +90,9 @@ class NoteTree:
     folders: dict[str, Folder]
     #: Every note, at the root or in a folder.
     notes: dict[str, Note]
+    #: The notes sitting at the root, in the order they are shown in, as a folder holds
+    #: its own. Every one of them is in `notes` too.
+    root: tuple[Note, ...] = ()
 
 
 def read_manifest(path: Path) -> dict:
@@ -210,8 +213,14 @@ class NotesScanner:
         folders: dict[str, Folder] = {}
         notes: dict[str, Note] = {}
 
-        for file in self._note_files(self.root):
-            note = self._note(PurePosixPath(file.name), file, None)
+        # In name order, as the notes in a folder are: this space records no order of its
+        # own, so the scan settles one and the routes serve what it settled.
+        root_notes = [
+            self._note(PurePosixPath(file.name), file, None)
+            for file in self._note_files(self.root)
+        ]
+        root_notes.sort(key=lambda note: note.name)
+        for note in root_notes:
             notes[note.id] = note
 
         for directory in self._folders():
@@ -236,7 +245,7 @@ class NotesScanner:
                 notes=tuple(own),
             )
 
-        return NoteTree(folders=folders, notes=notes)
+        return NoteTree(folders=folders, notes=notes, root=tuple(root_notes))
 
     # --- writing -----------------------------------------------------------
 
@@ -319,12 +328,22 @@ class NotesScanner:
         return self.note(derive_id(SPACE, str(relative / file.name)))
 
     def update_note(
-        self, note_id: str, *, name: str | None = None, folder_id: str | None
+        self,
+        note_id: str,
+        *,
+        name: str | None = None,
+        folder_id: str | None,
+        status: str | None = None,
+        summary: str | None = None,
     ) -> Note:
-        """Renames a note, moves it to a folder or to the root, or both.
+        """Renames a note, moves it to a folder or to the root, rewrites what its header
+        says about it, or any combination of those.
 
         `folder_id` says where the note should end up, `None` meaning the root, so a
         caller that means to leave it where it is passes the folder it is already in.
+
+        `status` and `summary` are written into the header, as they are for a chapter,
+        and either given as an empty string removes the key.
 
         The note's id changes whenever its path does, which a rename or a move both do.
         """
@@ -345,15 +364,20 @@ class NotesScanner:
             source.rename(target)
 
         target_relpath = target_relative / target.name
-        if name is not None:
-            self._retitle(target_relpath, display)
+        fields = ink.header_fields(
+            title=display if name is not None else None,
+            status=status,
+            summary=summary,
+        )
+        if fields:
+            self._write_header(target_relpath, fields)
 
         self.invalidate()
         return self.note(derive_id(SPACE, str(target_relpath)))
 
-    def _retitle(self, relpath: PurePosixPath, name: str) -> None:
-        """Writes `name` into a file's header as its title."""
-        text = ink.with_title(ink.parse(self._text(relpath)), name, relpath.stem)
+    def _write_header(self, relpath: PurePosixPath, fields: dict[str, str]) -> None:
+        """Applies `fields` to a file's header, leaving its prose as it is."""
+        text = ink.with_header(ink.parse(self._text(relpath)), relpath.stem, fields)
         if text is not None:
             write_atomically(self.path(relpath), text)
 
