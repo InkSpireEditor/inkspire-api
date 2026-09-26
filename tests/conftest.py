@@ -16,6 +16,7 @@ import httpx
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from git import Repo
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -61,6 +62,48 @@ def files_root(settings: Settings) -> Path:
     """An empty root for the files that are not a novel."""
     settings.files_root.mkdir(parents=True)
     return settings.files_root
+
+
+@pytest.fixture
+def git_origin(tmp_path: Path) -> Path:
+    """A bare repository under `tmp_path`, standing in for the private remote.
+
+    Never `origin` in the real sense: no test may reach `git@git.puys.name:...` over
+    the network, and this is what `git_root` pushes to and pulls from instead.
+    """
+    bare = tmp_path / "origin.git"
+    # Named explicitly rather than left to `init.defaultBranch`, which a CI runner
+    # may not have set to "main" at all.
+    Repo.init(bare, bare=True, initial_branch="main")
+    return bare
+
+
+@pytest.fixture
+def git_root(data_root: Path, git_origin: Path) -> Repo:
+    """The story repository as a real git working tree: one commit, tracking a local
+    bare `origin`, with an identity set on the repository itself rather than relying
+    on the environment.
+
+    A CI runner has git but no global `user.name`/`user.email` and no SSH key, so the
+    identity a test commits as has to be set here, on the repository alone — never
+    picked because it looks like a plausible person, but because it is nobody's: a
+    real name belongs to a real person and this is not one.
+    """
+    repo = Repo.init(data_root, initial_branch="main")
+    with repo.config_writer() as writer:
+        writer.set_value("user", "name", "Jane Doe")
+        writer.set_value("user", "email", "jane@example.com")
+
+    (data_root / ".gitignore").write_text(
+        "stories/*/lorebook/build/\nstories/*/lorebook/export/\n", encoding="utf-8"
+    )
+    repo.index.add([".gitignore"])
+    repo.index.commit("Initial commit")
+
+    origin = repo.create_remote("origin", str(git_origin))
+    origin.push("main:main")
+    repo.git.branch("--set-upstream-to=origin/main", "main")
+    return repo
 
 
 def make_story(
