@@ -227,9 +227,13 @@ def update_dir(dir_id: str, body: DirUpdate, scanner: ScannerDep) -> dict:
 
 
 @stories_router.delete("/dir/{dir_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_dir(dir_id: str, scanner: ScannerDep) -> Response:
-    """Deletes a story and its chapters, unless the directory holds anything else."""
-    scanner.delete_story(dir_id)
+def delete_dir(dir_id: str, scanner: ScannerDep, force: bool = False) -> Response:
+    """Deletes a story and its chapters.
+
+    Refused, naming what is in the way, unless the directory holds nothing else or
+    `?force=true` is given — which deletes it whole regardless of what is in it.
+    """
+    scanner.delete_story(dir_id, force=force)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

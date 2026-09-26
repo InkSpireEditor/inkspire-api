@@ -630,6 +630,40 @@ def test_a_story_holding_a_lorebook_is_not_deleted(scanner: Scanner, root: Path)
     assert (root / "stories" / "example-story").is_dir()
 
 
+def test_the_conflict_names_what_is_in_the_way(scanner: Scanner, root: Path) -> None:
+    """`holds` is the same list the message is built from, not a re-derivation of it."""
+    story = scanner.create_story("Example Story")
+    (root / "stories" / "example-story" / "lorebook").mkdir()
+    (root / "stories" / "example-story" / "timeline.yaml").touch()
+    scanner.invalidate()
+
+    with pytest.raises(Conflict) as excinfo:
+        scanner.delete_story(story.id)
+    assert excinfo.value.holds == ["lorebook", "timeline.yaml"]
+
+
+def test_force_deletes_a_story_regardless_of_what_it_holds(
+    scanner: Scanner, root: Path
+) -> None:
+    story = scanner.create_story("Example Story")
+    (root / "stories" / "example-story" / "lorebook").mkdir()
+
+    scanner.delete_story(story.id, force=True)
+
+    assert not (root / "stories" / "example-story").exists()
+
+
+def test_force_on_a_story_with_nothing_extra_still_deletes_it(
+    scanner: Scanner, root: Path
+) -> None:
+    """Force means "do not check", not "found something to override"."""
+    story = scanner.create_story("Example Story")
+
+    scanner.delete_story(story.id, force=True)
+
+    assert not (root / "stories" / "example-story").exists()
+
+
 # --- content ---------------------------------------------------------------
 
 
