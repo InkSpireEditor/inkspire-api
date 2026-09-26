@@ -6,6 +6,7 @@ Run it with: poetry run uvicorn inkspire_api.main:app --port 8000
 
 from __future__ import annotations
 
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,19 +15,25 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import auth, files, llm, lore, timelines
+from . import auth, files, llm, lore, repository, timelines
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
 from .fs import Conflict, Malformed, NotFound, StorageError
+from .repository import GitRefused, GitTimeout, RemoteFailed
 from .throttle import LoginThrottle, RateLimiter
 
 #: How a failure to read or change the stories on disk is answered. `Malformed` is a
 #: 422 because the file is there and a person has to fix it: nothing the client sent
-#: would have made the request work.
+#: would have made the request work. `NotARepository` and `GitIdentityMissing`
+#: (`repository.py`) are not here, for the same reason `DataRootMissing` is not: the
+#: configuration is wrong, not the request, so both fall through to the 500 below.
 STORAGE_STATUS = {
     NotFound: status.HTTP_404_NOT_FOUND,
     Conflict: status.HTTP_409_CONFLICT,
     Malformed: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    GitRefused: status.HTTP_409_CONFLICT,
+    RemoteFailed: status.HTTP_502_BAD_GATEWAY,
+    GitTimeout: status.HTTP_504_GATEWAY_TIMEOUT,
 }
 
 
@@ -53,6 +60,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.notes_scanner = None
     application.state.timelines = None
     application.state.lorebooks = None
+    # Held for the whole of a commit, a push or a pull, so a second one of those
+    # fails fast instead of running alongside the first.
+    application.state.git_lock = threading.Lock()
 
     # The frontend is served from a different port, so every request to this API is
     # cross-origin. allow_credentials is what lets the browser attach the auth
@@ -118,6 +128,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(timelines.router)
     api.include_router(lore.router)
     api.include_router(llm.router)
+    api.include_router(repository.router)
+    api.include_router(repository.history_router)
     application.include_router(api)
     return application
 

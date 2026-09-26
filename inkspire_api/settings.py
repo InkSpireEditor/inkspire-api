@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     llm_limit: int = 20
     llm_interval: int = 60
 
+    # Commit identity for the git routes. Left unset, `repository.py` falls back to
+    # whatever `git config` resolves in the story repository itself (repository, then
+    # global, then system) — set here only to commit as an identity the repository's
+    # own config does not carry.
+    git_author_name: str | None = None
+    git_author_email: str | None = None
+
+    # How long a single git command may run before it is killed. A push or a pull
+    # talks to the remote and can hang; a commit does not, but a hook might.
+    git_timeout: float = 60.0
+
     @field_validator("data_root", "files_root", "llm_providers_file")
     @classmethod
     def _expand_user(cls, value: Path) -> Path:

@@ -193,6 +193,28 @@ there and cannot be read as what it claims to be answers **422** with the reason
 missing a `positions` entry for a character combination, a date written as a bare year, an
 entity typed with a class the vocabulary does not declare. Those are the writer's to fix.
 
+### The story repository as git
+
+`INKSPIRE_DATA_ROOT` is a git working tree, and the API drives it directly:
+
+| Route | |
+|---|---|
+| `GET /api/git/status` | the branch, what has changed, and how far it is from its upstream |
+| `POST /api/git/commit` | body `{message}`. Commits only what the API itself writes |
+| `POST /api/git/push` | push the branch to its upstream |
+| `POST /api/git/pull` | fast-forward onto the upstream |
+| `GET /api/stories/file/{id}/history` | the chapter's commits, newest first |
+| `GET /api/stories/file/{id}/at/{rev}` | that chapter's prose at one commit, as `text/plain` |
+
+Saving a chapter never commits — only `/commit` does, and only onto a story's own
+`story.yaml` and its `chapters/*.ink`. A hand-edited lorebook or `timeline.yaml` shows
+in `/status` like anything else, marked `"committable": false`, and is never staged by
+the button. `/status` never fetches, so `ahead`/`behind` are only as fresh as the last
+pull, and a pull that cannot fast-forward is refused rather than merged.
+
+Commit, push and pull each take one lock for the whole request, so a second one of
+those while the first is still running is refused rather than run alongside it.
+
 ### Everything that is not a novel
 
 Notes, lists, a draft of nothing in particular. They are not novel content, so they are

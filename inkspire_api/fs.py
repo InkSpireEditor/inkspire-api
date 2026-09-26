@@ -39,6 +39,9 @@ MAX_STATUS_LENGTH = 64
 #: here so a runaway request cannot be read into memory whole.
 MAX_FILE_BYTES = 4 * 1024 * 1024
 
+#: Longest accepted commit message.
+MAX_COMMIT_MESSAGE_LENGTH = 2000
+
 
 class StorageError(RuntimeError):
     """Something on disk is not as the API needs it."""
