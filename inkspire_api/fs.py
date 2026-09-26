@@ -52,7 +52,15 @@ class NotFound(StorageError):
 
 
 class Conflict(StorageError):
-    """The operation would destroy or overwrite something."""
+    """The operation would destroy or overwrite something.
+
+    `holds` names what is in the way, for the one caller that needs to list it rather
+    than read it out of `message` — `None` where there is nothing more structured to say.
+    """
+
+    def __init__(self, message: str, holds: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.holds = holds
 
 
 class Malformed(StorageError):

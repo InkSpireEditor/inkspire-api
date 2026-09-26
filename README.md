@@ -151,7 +151,8 @@ One story is one directory in the tree, and its chapters are that directory's fi
 
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
-this API's to remove, even though the commands that read them ship here.
+this API's to remove, even though the commands that read them ship here — the 409 body
+names them in `holds`. `?force=true` deletes the directory whole regardless.
 
 ### A story's timeline and lorebook
 
@@ -268,7 +269,9 @@ A request to `/api` authenticates with either the `jwt_token` cookie or an
 `Authorization: Bearer` header. Tokens are signed HS256 with `INKSPIRE_JWT_SECRET`;
 nothing outside this application verifies one, so there is no keypair to manage.
 
-Errors are `{"code", "message"}` at every status.
+Errors are at least `{"code", "message"}` at every status. `DELETE /api/stories/dir/{id}`
+also carries `holds`, the entries in the way, when it answers 409; `?force=true` deletes
+the directory regardless of what is in it.
 
 ### Text generation
 

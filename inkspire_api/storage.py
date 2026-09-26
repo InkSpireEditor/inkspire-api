@@ -355,25 +355,28 @@ class Scanner:
         self.invalidate()
         return self.story(story_id)
 
-    def delete_story(self, story_id: str) -> None:
+    def delete_story(self, story_id: str, *, force: bool = False) -> None:
         """Deletes a story directory and the chapters in it.
 
         Refused while the directory holds anything else. A lorebook and a timeline are
-        written by hand and are not this endpoint's to remove.
+        written by hand and are not this endpoint's to remove — unless `force` is set,
+        which deletes the directory whole regardless of what is in it.
         """
         story = self.story(story_id)
         story_dir = self.path(story.relpath)
 
-        extra = sorted(
-            entry.name
-            for entry in story_dir.iterdir()
-            if entry.name not in (MANIFEST, CHAPTERS)
-        )
-        if extra:
-            raise Conflict(
-                f'"{story.name}" also holds {", ".join(extra)}, which deleting it '
-                "would remove. Delete those first."
+        if not force:
+            extra = sorted(
+                entry.name
+                for entry in story_dir.iterdir()
+                if entry.name not in (MANIFEST, CHAPTERS)
             )
+            if extra:
+                raise Conflict(
+                    f'"{story.name}" also holds {", ".join(extra)}, which deleting it '
+                    "would remove. Delete those first.",
+                    holds=extra,
+                )
 
         shutil.rmtree(story_dir)
         self.invalidate()

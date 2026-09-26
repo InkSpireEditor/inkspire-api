@@ -410,6 +410,41 @@ def test_a_story_holding_a_lorebook_is_not_deleted(logged_in: TestClient, reposi
     assert (repository / "stories" / "example-story").is_dir()
 
 
+def test_the_409_names_what_is_in_the_way(logged_in: TestClient, repository: Path) -> None:
+    (repository / "stories" / "example-story" / "lorebook").mkdir()
+    (repository / "stories" / "example-story" / "timeline.yaml").touch()
+    identifier = story_id(logged_in, "Example Story")
+
+    body = logged_in.delete(f"/api/stories/dir/{identifier}").json()
+    assert body["holds"] == ["lorebook", "timeline.yaml"]
+
+
+def test_force_true_deletes_a_story_that_would_otherwise_be_refused(
+    logged_in: TestClient, repository: Path
+) -> None:
+    (repository / "stories" / "example-story" / "lorebook").mkdir()
+    identifier = story_id(logged_in, "Example Story")
+
+    response = logged_in.delete(f"/api/stories/dir/{identifier}?force=true")
+    assert response.status_code == 204
+    assert not (repository / "stories" / "example-story").exists()
+
+
+def test_a_clean_story_still_answers_204_with_no_force(
+    logged_in: TestClient, repository: Path
+) -> None:
+    identifier = story_id(logged_in, "Example Story")
+    assert logged_in.delete(f"/api/stories/dir/{identifier}").status_code == 204
+
+
+def test_force_true_on_a_clean_story_still_204s(
+    logged_in: TestClient, repository: Path
+) -> None:
+    """Force means "do not check", not "found something to override"."""
+    identifier = story_id(logged_in, "Example Story")
+    assert logged_in.delete(f"/api/stories/dir/{identifier}?force=true").status_code == 204
+
+
 # --- what a header says ----------------------------------------------------
 
 

@@ -108,7 +108,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         and that is not something the client did.
         """
         code = STORAGE_STATUS.get(type(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
-        return JSONResponse({"code": code, "message": str(exc)}, status_code=code)
+        body = {"code": code, "message": str(exc)}
+        # Widens the shape to three keys for the one error that has more to say than
+        # a message: which entries stand in the way of a story's deletion.
+        holds = getattr(exc, "holds", None)
+        if holds:
+            body["holds"] = holds
+        return JSONResponse(body, status_code=code)
 
     application.include_router(auth.router)
 
