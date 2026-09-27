@@ -1,27 +1,34 @@
 # -*- coding: utf-8 -*-
 """File and directory routes, for the two roots the API serves.
 
-The stories, where a directory is a story and its files are that story's chapters:
+The stories, where a directory is a story and its files are that story's chapters --
+except a file sitting loose at the root, which is a one-shot: a story with exactly one
+chapter and no manifest.
 
-    GET    /api/stories/tree                  every story, with the chapters in each
+    GET    /api/stories/tree                  every story and one-shot, with the
+                                              chapters in each story
     GET    /api/stories/dir/{id}              one story, and the chapters in it
     POST   /api/stories/dir                   create a story
     PUT    /api/stories/dir/{id}              retitle a story, or rewrite its synopsis
     DELETE /api/stories/dir/{id}              delete a story and its chapters
     PUT    /api/stories/dir/{id}/chapters     set the order the chapters are read in
-    POST   /api/stories/file                  create a chapter in a story
-    GET    /api/stories/file/{id}             one chapter's name, status and summary
-    PUT    /api/stories/file/{id}             rename a chapter, move it, or set its
-                                              status or summary
-    DELETE /api/stories/file/{id}             delete a chapter
-    GET    /api/stories/file/{id}/contents    the chapter's prose, as text/plain
+    POST   /api/stories/file                  create a chapter in a story, or, given
+                                              no story, a one-shot at the root
+    GET    /api/stories/file/{id}             one chapter's or one-shot's name,
+                                              status and summary
+    PUT    /api/stories/file/{id}             rename a chapter or a one-shot, move a
+                                              chapter, or set either's status or summary
+    DELETE /api/stories/file/{id}             delete a chapter or a one-shot
+    GET    /api/stories/file/{id}/contents    its prose, as text/plain
     PUT    /api/stories/file/{id}/contents    replace that prose with the request body
 
-And everything that is not a novel, under `/api/notes/...`, the same routes with three
-differences: a file may sit at the root, so `POST` accepts `dir: null` and the tree's
-`files` is not always empty; a file may be moved back out to the root, so `PUT` tells an
-absent `dir` from one explicitly `null`; and there is no order to set, because a folder
-there records none, so that root has no `/chapters` route.
+And everything that is not a novel, under `/api/notes/...`, the same routes with two
+differences: `PUT` there tells an absent `dir` from one explicitly `null`, so a note can
+be moved back out to a folder's root -- a chapter's `dir` has no such distinction, and
+promoting a one-shot into a story's chapter by giving it one is not implemented, so
+`PUT` refuses a one-shot's `dir` outright rather than silently doing nothing with it;
+and there is no order to set, because a folder there records none, so that root has no
+`/chapters` route.
 
 A tree is one request. `files` and `dirs` are arrays, each entry carrying its own
 `id`, and a directory carries its own `files` — so reading a root takes one response
@@ -53,13 +60,14 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, StringConstraints
 
 from .deps import CurrentUser, SettingsDep
+from .entries import File, Folder
 from .fs import (
     MAX_FILE_BYTES,
     MAX_NAME_LENGTH,
     MAX_STATUS_LENGTH,
     MAX_SUMMARY_LENGTH,
 )
-from .notes import Folder, Note, NotesScanner
+from .notes import NotesScanner
 from .storage import Chapter, Scanner, Story
 
 stories_router = APIRouter(prefix="/stories", tags=["stories"])
@@ -112,8 +120,8 @@ class DirUpdate(BaseModel):
 class FileCreate(BaseModel):
     """A file to create, and where to create it."""
 
-    #: The story or folder to create it in. Named `dir` by the clients. Under
-    #: `/api/notes` it may be `null`, which is the root.
+    #: The story or folder to create it in. Named `dir` by the clients. `null` is the
+    #: root -- a one-shot under `/api/stories`, a loose note under `/api/notes`.
     dir: str | None = None
     name: Name
 
@@ -122,9 +130,11 @@ class FileUpdate(BaseModel):
     """What to change about a file. An absent field is left as it is."""
 
     name: Name | None = None
-    #: Where to move the file to. A chapter always belongs to a story, so there `null`
-    #: leaves it where it is; a note may be moved to the root, and there `null` is the
-    #: root and leaving the field out is what leaves the note where it is.
+    #: Where to move the file to. A note may be moved to the root, and there `null` is
+    #: the root and leaving the field out is what leaves the note where it is. A
+    #: one-shot has no story to move into, so any `dir` given against one is refused.
+    #: A chapter's `dir` has no root to move to or from: `null` there just leaves it in
+    #: its own story, the same as leaving the field out.
     dir: str | None = None
     #: Written into the file's own header. Either given as `""` removes the key, so a
     #: status can be cleared as well as set.
@@ -141,7 +151,7 @@ class ChapterOrder(BaseModel):
 # --- the shape both roots answer in -----------------------------------------
 
 
-def _file_entry(file: Chapter | Note, *, summary: bool = False) -> dict:
+def _file_entry(file: File, *, summary: bool = False) -> dict:
     """One file in a listing. `summary` is left out where a listing covers every root."""
     entry = {"id": file.id, "name": file.name, "status": file.status}
     if summary:
@@ -157,9 +167,7 @@ def _story_entry(story: Story, *, summary: bool = False) -> dict:
         "summary": story.summary,
         "timeline": story.has_timeline,
         "lorebook": story.has_lorebook,
-        "files": [
-            _file_entry(chapter, summary=summary) for chapter in story.chapters
-        ],
+        "files": [_file_entry(chapter, summary=summary) for chapter in story.files],
     }
 
 
@@ -168,8 +176,8 @@ def _folder_entry(folder: Folder, *, summary: bool = False) -> dict:
     return {
         "id": folder.id,
         "name": folder.name,
-        "summary": folder.context,
-        "files": [_file_entry(note, summary=summary) for note in folder.notes],
+        "summary": folder.summary,
+        "files": [_file_entry(note, summary=summary) for note in folder.files],
     }
 
 
@@ -184,18 +192,21 @@ def _by_name(entries: list[dict]) -> list[dict]:
 
 @stories_router.get("/tree")
 def tree(user: CurrentUser, scanner: ScannerDep) -> dict:
-    """Every story, and the chapters in each, in one response.
+    """Every story, the chapters in each, and every one-shot sitting loose at the
+    root, in one response.
 
-    `files` holds the files that belong to no story, of which there are none here: a
-    chapter lives in a story's directory. It is sent so a client can read this tree and
-    the other one the same way.
+    A one-shot is a story with exactly one chapter and no manifest, so it belongs in
+    `files` rather than `dirs` — the same shape the notes root already answers in.
 
-    A chapter's `summary` is left out. It runs to a couple of thousand characters and
-    this response covers every story; `dir/{id}` is what carries it.
+    A chapter's or a one-shot's `summary` is left out. It runs to a couple of thousand
+    characters and this response covers every story; `dir/{id}`/`file/{id}` is what
+    carries it.
     """
     return {
         "user": user.email,
-        "files": [],
+        "files": _by_name(
+            [_file_entry(one_shot) for one_shot in scanner.tree().one_shots.values()]
+        ),
         "dirs": _by_name(
             [_story_entry(story) for story in scanner.tree().stories.values()]
         ),
@@ -254,70 +265,93 @@ def reorder_chapters(dir_id: str, body: ChapterOrder, scanner: ScannerDep) -> di
 
 @stories_router.post("/file", status_code=status.HTTP_201_CREATED)
 def create_file(body: FileCreate, scanner: ScannerDep) -> dict:
-    """Creates a chapter in a story."""
+    """Creates a chapter in a story, or, given no story, a one-shot at the root."""
     if body.dir is None:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "A chapter belongs to a story. Choose one, or create a story first.",
-        )
+        one_shot = scanner.create_one_shot(body.name)
+        return {"id": one_shot.id, "name": one_shot.name, "dir": None}
     chapter = scanner.create_chapter(body.dir, body.name)
     return {"id": chapter.id, "name": chapter.name, "dir": chapter.story_id}
 
 
 @stories_router.get("/file/{file_id}")
 def file_info(file_id: str, scanner: ScannerDep) -> dict:
-    """One chapter: the name it is shown under, and what its header says about it."""
-    chapter = scanner.chapter(file_id)
+    """One chapter or one-shot: the name it is shown under, and what its header says."""
+    file = scanner.file(file_id)
     return {
-        "id": chapter.id,
-        "name": chapter.name,
-        "status": chapter.status,
-        "summary": chapter.summary,
+        "id": file.id,
+        "name": file.name,
+        "status": file.status,
+        "summary": file.summary,
     }
 
 
 @stories_router.put("/file/{file_id}")
 def update_file(file_id: str, body: FileUpdate, scanner: ScannerDep) -> dict:
-    """Renames a chapter, moves it to another story, or rewrites what its header says.
+    """Renames a chapter or a one-shot, moves a chapter to another story, or rewrites
+    what either's header says.
 
-    A rename or a move changes the chapter's id; a status or a summary on its own does
-    not, since neither touches the path.
+    A rename or a move changes the id; a status or a summary on its own does not,
+    since neither touches the path. Moving a one-shot into a story -- promoting it to
+    a chapter -- is not implemented, so `dir` set against one is refused rather than
+    silently ignored.
     """
-    chapter = scanner.update_chapter(
-        file_id,
-        name=body.name,
-        story_id=body.dir,
-        status=body.status,
-        summary=body.summary,
+    file = scanner.file(file_id)
+    if isinstance(file, Chapter):
+        chapter = scanner.update_chapter(
+            file_id,
+            name=body.name,
+            story_id=body.dir,
+            status=body.status,
+            summary=body.summary,
+        )
+        return {
+            "id": chapter.id,
+            "name": chapter.name,
+            "dir": chapter.story_id,
+            "status": chapter.status,
+            "summary": chapter.summary,
+        }
+
+    if body.dir is not None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "A one-shot has no story to move into yet.",
+        )
+    one_shot = scanner.update_one_shot(
+        file_id, name=body.name, status=body.status, summary=body.summary
     )
     return {
-        "id": chapter.id,
-        "name": chapter.name,
-        "dir": chapter.story_id,
-        "status": chapter.status,
-        "summary": chapter.summary,
+        "id": one_shot.id,
+        "name": one_shot.name,
+        "dir": None,
+        "status": one_shot.status,
+        "summary": one_shot.summary,
     }
 
 
 @stories_router.delete("/file/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_file(file_id: str, scanner: ScannerDep) -> Response:
-    """Deletes a chapter."""
-    scanner.delete_chapter(file_id)
+    """Deletes a chapter or a one-shot."""
+    file = scanner.file(file_id)
+    if isinstance(file, Chapter):
+        scanner.delete_chapter(file_id)
+    else:
+        scanner.delete_one_shot(file_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @stories_router.get("/file/{file_id}/contents", response_class=PlainTextResponse)
 def read_contents(file_id: str, scanner: ScannerDep) -> PlainTextResponse:
-    """A chapter's prose, as `text/plain`, without its header."""
-    return PlainTextResponse(scanner.read_chapter(file_id))
+    """A chapter's or a one-shot's prose, as `text/plain`, without its header."""
+    return PlainTextResponse(scanner.read_file(file_id))
 
 
 @stories_router.put("/file/{file_id}/contents", status_code=status.HTTP_204_NO_CONTENT)
 async def write_contents(
     file_id: str, request: Request, scanner: ScannerDep
 ) -> Response:
-    """Replaces a chapter's prose with the request body, keeping its header."""
-    return await replace_contents(request, scanner.write_chapter, file_id)
+    """Replaces a chapter's or a one-shot's prose, keeping its header."""
+    return await replace_contents(request, scanner.write_file, file_id)
 
 
 # --- everything that is not a novel -----------------------------------------
@@ -347,14 +381,14 @@ def notes_dir_info(dir_id: str, notes: NotesDep) -> dict:
 def notes_create_dir(body: DirCreate, notes: NotesDep) -> dict:
     """Creates a folder. It gets a manifest only if there is something to put in it."""
     folder = notes.create_folder(body.name, body.summary or "")
-    return {"id": folder.id, "name": folder.name, "summary": folder.context}
+    return {"id": folder.id, "name": folder.name, "summary": folder.summary}
 
 
 @notes_router.put("/dir/{dir_id}")
 def notes_update_dir(dir_id: str, body: DirUpdate, notes: NotesDep) -> dict:
-    """Renames a folder, or rewrites its context. Its id does not change."""
-    folder = notes.update_folder(dir_id, name=body.name, context=body.summary)
-    return {"id": folder.id, "name": folder.name, "summary": folder.context}
+    """Renames a folder, or rewrites its summary. Its id does not change."""
+    folder = notes.update_folder(dir_id, name=body.name, summary=body.summary)
+    return {"id": folder.id, "name": folder.name, "summary": folder.summary}
 
 
 @notes_router.delete("/dir/{dir_id}", status_code=status.HTTP_204_NO_CONTENT)

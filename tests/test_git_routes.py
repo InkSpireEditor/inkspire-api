@@ -67,6 +67,25 @@ def test_a_chapter_is_committable_a_lorebook_and_a_timeline_are_not(
     assert by_path["stories/example/timeline.yaml"]["committable"] is False
 
 
+def test_a_one_shot_is_committable(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
+
+    changes = logged_in.get("/api/git/status").json()["changes"]
+    by_path = {change["path"]: change for change in changes}
+    assert by_path["stories/solo.ink"]["committable"] is True
+
+
+def test_committing_a_one_shot(logged_in: TestClient, git_root: Repo, data_root: Path) -> None:
+    (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
+
+    response = logged_in.post("/api/git/commit", json={"message": "A one-shot"})
+    assert response.status_code == 200
+    assert response.json()["committed"] == ["stories/solo.ink"]
+    assert logged_in.get("/api/git/status").json()["clean"] is True
+
+
 def test_an_ignored_generated_file_never_shows(
     logged_in: TestClient, git_root: Repo, data_root: Path
 ) -> None:

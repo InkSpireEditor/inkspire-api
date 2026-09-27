@@ -139,12 +139,24 @@ def test_the_tree_leaves_out_a_chapter_s_summary(
     assert story_files(logged_in, "Example Story")[0]["summary"] == "What happens."
 
 
-def test_the_tree_has_no_loose_files(logged_in: TestClient, repository: Path) -> None:
-    """Every chapter belongs to a story, so nothing sits at the root of this space.
-
-    A file that belongs to no story lives in the other root. See `test_notes_routes.py`.
-    """
+def test_the_tree_has_no_loose_files_when_there_are_none(
+    logged_in: TestClient, repository: Path
+) -> None:
+    """A chapter belongs to a story; a one-shot is the loose file this checks for
+    none of, since this fixture's two stories have none."""
     assert logged_in.get("/api/stories/tree").json()["files"] == []
+
+
+def test_a_one_shot_shows_up_in_the_tree_as_a_loose_file(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    (data_root / "stories" / "solo.ink").write_text(
+        "---\ntitle: Solo\n---\nOnce.\n", encoding="utf-8"
+    )
+    listed = logged_in.get("/api/stories/tree").json()["files"]
+    assert names(listed) == ["Solo"]
+    assert "status" in listed[0]
+    assert "summary" not in listed[0]
 
 
 def test_an_empty_repository_is_an_empty_tree(logged_in: TestClient, data_root: Path) -> None:
@@ -257,11 +269,15 @@ def test_a_created_chapter_is_in_its_story(logged_in: TestClient, repository: Pa
     assert entry_named(listing, "Third Chapter")["id"] == created["id"]
 
 
-def test_a_chapter_cannot_be_created_outside_a_story(logged_in: TestClient, repository: Path) -> None:
-    """`dir: null` is the root, and this space has none. Under `/api/notes` it is allowed."""
+def test_creating_a_file_with_no_story_makes_a_one_shot(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    """`dir: null` is the root, and this root's root is a one-shot rather than an
+    error -- the same shape `/api/notes` already answers `dir: null` in."""
     response = logged_in.post("/api/stories/file", json={"name": "Loose", "dir": None})
-    assert response.status_code == 422
-    assert "story" in response.json()["message"]
+    assert response.status_code == 201
+    assert response.json()["dir"] is None
+    assert (data_root / "stories" / "loose.ink").is_file()
 
 
 def test_a_chapter_in_an_unknown_story_is_not_found(logged_in: TestClient, repository: Path) -> None:
@@ -273,6 +289,83 @@ def test_a_chapter_needs_a_name(logged_in: TestClient, repository: Path) -> None
     identifier = story_id(logged_in, "Example Story")
     response = logged_in.post("/api/stories/file", json={"name": " ", "dir": identifier})
     assert response.status_code == 400
+
+
+# --- one-shots ---------------------------------------------------------------
+
+
+def one_shot_id(client: TestClient, name: str = "Solo") -> str:
+    """Creates a one-shot and answers its id."""
+    return client.post("/api/stories/file", json={"name": name, "dir": None}).json()["id"]
+
+
+def test_a_one_shots_info_carries_no_dir(logged_in: TestClient, repository: Path) -> None:
+    identifier = one_shot_id(logged_in)
+    body = logged_in.get(f"/api/stories/file/{identifier}").json()
+    assert body == {"id": identifier, "name": "Solo", "status": "", "summary": ""}
+
+
+def test_a_one_shots_contents_are_read_and_written(
+    logged_in: TestClient, repository: Path
+) -> None:
+    identifier = one_shot_id(logged_in)
+    logged_in.put(
+        f"/api/stories/file/{identifier}/contents", content="Once.", headers=CONTENT_TYPE
+    )
+    response = logged_in.get(f"/api/stories/file/{identifier}/contents")
+    assert response.text == "Once."
+
+
+def test_a_one_shots_status_and_summary_are_set_through_its_header(
+    logged_in: TestClient, repository: Path
+) -> None:
+    identifier = one_shot_id(logged_in)
+    response = logged_in.put(
+        f"/api/stories/file/{identifier}",
+        json={"status": "draft", "summary": "A short piece."},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["status"], body["summary"]) == ("draft", "A short piece.")
+    assert body["id"] == identifier
+
+
+def test_renaming_a_one_shot_changes_its_id(logged_in: TestClient, repository: Path) -> None:
+    identifier = one_shot_id(logged_in)
+    response = logged_in.put(f"/api/stories/file/{identifier}", json={"name": "Renamed"})
+    assert response.status_code == 200
+    assert response.json()["id"] != identifier
+    assert response.json()["name"] == "Renamed"
+
+
+def test_setting_a_one_shots_status_leaves_its_id_alone(
+    logged_in: TestClient, repository: Path
+) -> None:
+    identifier = one_shot_id(logged_in)
+    response = logged_in.put(f"/api/stories/file/{identifier}", json={"status": "draft"})
+    assert response.json()["id"] == identifier
+
+
+def test_moving_a_one_shot_into_a_story_is_refused(
+    logged_in: TestClient, repository: Path
+) -> None:
+    """Promoting a one-shot to a chapter is not implemented, so this is a 422 rather
+    than a silent no-op or a corrupting half-move."""
+    identifier = one_shot_id(logged_in)
+    target = story_id(logged_in, "Example Story")
+    response = logged_in.put(f"/api/stories/file/{identifier}", json={"dir": target})
+    assert response.status_code == 422
+    assert "one-shot" in response.json()["message"]
+
+
+def test_a_one_shot_can_be_deleted(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    identifier = one_shot_id(logged_in)
+    response = logged_in.delete(f"/api/stories/file/{identifier}")
+    assert response.status_code == 204
+    assert logged_in.get(f"/api/stories/file/{identifier}").status_code == 404
+    assert logged_in.get("/api/stories/tree").json()["files"] == []
 
 
 # --- renaming and retitling -------------------------------------------------

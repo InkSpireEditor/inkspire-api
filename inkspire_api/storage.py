@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """The stories on disk, and the ids the API addresses them by.
 
-The layout is one directory per story, each holding a `story.yaml` and a `chapters/`
-directory of `.ink` files:
+Most stories are one directory each, holding a `story.yaml` and a `chapters/` directory
+of `.ink` files:
 
     stories/<story-slug>/story.yaml
     stories/<story-slug>/chapters/<chapter-slug>.ink
@@ -13,9 +13,19 @@ determines which chapters exist, and each chapter's own header gives it its titl
 status and summary. Anything else in a story directory — a `lorebook/`, a
 `timeline.yaml` — is not a chapter and is not listed.
 
-A client names a story or a chapter by an id derived from its path, never by the path,
-so no request can point at a location on disk. Ids need no table and survive a restart.
-Renaming a chapter changes its id, because it is then a different path.
+A loose `.ink` file sitting directly at the stories root, with no directory around it,
+is a one-shot: a story with exactly one chapter and no manifest.
+
+    stories/<one-shot-slug>.ink
+
+Its own header carries the same title, status and summary a chapter's header does —
+there is nothing for a `story.yaml` to add when there is only one chapter and no order
+to record.
+
+A client names a story, a chapter or a one-shot by an id derived from its path, never
+by the path, so no request can point at a location on disk. Ids need no table and
+survive a restart. Renaming a chapter or a one-shot changes its id, because it is then
+a different path.
 """
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import ink
+from .entries import File, Folder
 from .fs import (
     Conflict,
     HeldScan,
@@ -73,34 +84,25 @@ class DataRootMissing(StorageError):
 
 
 @dataclass(frozen=True)
-class Chapter:
+class Chapter(File):
     """One `.ink` file in a story's chapters directory."""
 
-    id: str
-    #: Relative to the repository root.
-    relpath: PurePosixPath
-    #: The header's title, or the filename without its suffix.
-    name: str
-    status: str
-    summary: str
     story_id: str
 
-    @property
-    def filename(self) -> str:
-        """The file's own name, which is what a manifest entry refers to."""
-        return self.relpath.name
+
+#: A loose `.ink` file at the stories root -- a story with exactly one chapter and no
+#: manifest. It is nothing more than a `File`: everything a chapter's own header
+#: already carries -- title, status, summary -- is what a one-shot has too, and there
+#: is nothing for a `story.yaml` to add. Distinguished from a chapter only by which
+#: scan found it, the same way a note at a folder's root and one inside it are both
+#: just `Note`, distinguished only by `folder_id`.
+OneShot = File
 
 
 @dataclass(frozen=True)
-class Story:
+class Story(Folder):
     """One story directory, with the chapters found in it."""
 
-    id: str
-    slug: str
-    relpath: PurePosixPath
-    name: str
-    summary: str
-    chapters: tuple[Chapter, ...]
     #: Whether `timeline.yaml` and `lorebook/lorebook.yaml` are here. Neither is read
     #: by the scan; a client asks for them on their own routes.
     has_timeline: bool = False
@@ -113,6 +115,7 @@ class Tree:
 
     stories: dict[str, Story]
     chapters: dict[str, Chapter]
+    one_shots: dict[str, OneShot]
 
 
 def read_manifest(path: Path) -> dict:
@@ -179,10 +182,11 @@ def ensure_entry(listed: list, filename: str) -> None:
 class Scanner:
     """Reads the repository, and makes the changes the API is asked for.
 
-    A scan walks `stories/`, parses each `story.yaml` and lists each `chapters/`. The
-    result is held until the files or a manifest change, so repeated requests do not
-    reparse unchanged YAML. Writing a chapter's content leaves the held scan valid: it
-    changes no name and no path.
+    A scan walks `stories/`, parses each `story.yaml` and lists each `chapters/`, and
+    also lists the one-shots sitting loose at the root. The result is held until the
+    files or a manifest change, so repeated requests do not reparse unchanged YAML.
+    Writing a chapter's or a one-shot's content leaves the held scan valid: it changes
+    no name and no path.
     """
 
     def __init__(self, root: Path) -> None:
@@ -218,6 +222,25 @@ class Scanner:
             raise NotFound(f'No chapter with id "{chapter_id}".')
         return chapter
 
+    def one_shot(self, one_shot_id: str) -> OneShot:
+        """The one-shot with that id, or `NotFound`."""
+        one_shot = self.tree().one_shots.get(one_shot_id)
+        if one_shot is None:
+            raise NotFound(f'No one-shot with id "{one_shot_id}".')
+        return one_shot
+
+    def file(self, file_id: str) -> File:
+        """Whichever kind of file this id names -- a chapter or a one-shot -- or
+        `NotFound`. A route that only cares about a file's content, its header fields
+        or its path resolves through here rather than picking a lookup itself. A
+        `Chapter` is a `File` too, so the caller narrows with `isinstance` only if it
+        needs the chapter-specific `story_id`."""
+        tree = self.tree()
+        found = tree.chapters.get(file_id) or tree.one_shots.get(file_id)
+        if found is None:
+            raise NotFound(f'No file with id "{file_id}".')
+        return found
+
     def path(self, relpath: PurePosixPath) -> Path:
         """The absolute path of something in the repository."""
         return resolve_within(self.root, relpath, "story repository")
@@ -225,6 +248,13 @@ class Scanner:
     def _story_dirs(self) -> list[Path]:
         """The story directories, in name order. A symlinked directory is not one."""
         return directories(self.stories_dir)
+
+    @staticmethod
+    def _one_shot_files(stories_dir: Path) -> list[Path]:
+        """The one-shots sitting loose at the stories root, in filename order. The
+        direct counterpart to `_chapter_files`, applied to the root itself rather than
+        a story's own `chapters/` directory."""
+        return files_with_suffix(stories_dir, CHAPTER_SUFFIX)
 
     def _current_stamp(self) -> tuple:
         """What the held scan is checked against: which files exist, and when each
@@ -239,25 +269,31 @@ class Scanner:
         the work the held scan exists to avoid, and a chapter retitled in its own
         header changes no name and no path. Rewriting one within a tick of a scan is
         therefore missed; a change made through this class invalidates the scan
-        outright.
+        outright. A one-shot is compared the same way, having no manifest of its own.
 
         The timeline and the lorebook are here by presence rather than by mtime: the
         scan records only whether each exists, and editing one does not change that.
         Writing a story its first `timeline.yaml` has to show up, though, so a scan
         taken before it cannot be kept.
         """
-        return tuple(
-            (
-                story_dir.name,
-                mtime(story_dir / MANIFEST),
-                (story_dir / TIMELINE).is_file(),
-                (story_dir / LOREBOOK / LOREBOOK_MANIFEST).is_file(),
-                tuple(
-                    (file.name, mtime(file))
-                    for file in self._chapter_files(story_dir / CHAPTERS)
-                ),
-            )
-            for story_dir in self._story_dirs()
+        return (
+            tuple(
+                (
+                    story_dir.name,
+                    mtime(story_dir / MANIFEST),
+                    (story_dir / TIMELINE).is_file(),
+                    (story_dir / LOREBOOK / LOREBOOK_MANIFEST).is_file(),
+                    tuple(
+                        (file.name, mtime(file))
+                        for file in self._chapter_files(story_dir / CHAPTERS)
+                    ),
+                )
+                for story_dir in self._story_dirs()
+            ),
+            tuple(
+                (file.name, mtime(file))
+                for file in self._one_shot_files(self.stories_dir)
+            ),
         )
 
     def _scan(self) -> Tree:
@@ -296,12 +332,28 @@ class Scanner:
                 relpath=relpath,
                 name=str(document.get("title") or slug),
                 summary=str(document.get("synopsis") or ""),
-                chapters=tuple(own),
+                files=tuple(own),
                 has_timeline=(story_dir / TIMELINE).is_file(),
                 has_lorebook=(story_dir / LOREBOOK / LOREBOOK_MANIFEST).is_file(),
             )
 
-        return Tree(stories=stories, chapters=chapters)
+        return Tree(stories=stories, chapters=chapters, one_shots=self._one_shots())
+
+    def _one_shots(self) -> dict[str, OneShot]:
+        """The one-shots at the stories root, indexed by id."""
+        one_shots: dict[str, OneShot] = {}
+        for file in self._one_shot_files(self.stories_dir):
+            relpath = PurePosixPath(STORIES) / file.name
+            header = ink.read_header(file)
+            one_shot = OneShot(
+                id=derive_id(SPACE, str(relpath)),
+                relpath=relpath,
+                name=ink.display_name(header, file.stem),
+                status=str(header.get("status") or ""),
+                summary=str(header.get("summary") or ""),
+            )
+            one_shots[one_shot.id] = one_shot
+        return one_shots
 
     @staticmethod
     def _chapter_files(chapters_dir: Path) -> list[Path]:
@@ -404,6 +456,22 @@ class Scanner:
             derive_id(SPACE, f"{story.relpath}/{CHAPTERS}/{file.name}")
         )
 
+    def create_one_shot(self, name: str) -> OneShot:
+        """Creates an `.ink` file with no prose loose at the stories root.
+
+        Mirrors `create_chapter` minus the story it would otherwise belong to: there
+        is no `chapters/` directory to make and no manifest entry to add.
+        """
+        self._require_root()
+        self.stories_dir.mkdir(parents=True, exist_ok=True)
+
+        file = free_path(self.stories_dir, slugify(name, "story"), CHAPTER_SUFFIX)
+        header = {"title": name} if name != file.stem else {}
+        write_atomically(file, ink.render(header, ""))
+
+        self.invalidate()
+        return self.one_shot(derive_id(SPACE, f"{STORIES}/{file.name}"))
+
     def update_chapter(
         self,
         chapter_id: str,
@@ -475,6 +543,40 @@ class Scanner:
         if text is not None:
             write_atomically(self.path(relpath), text)
 
+    def update_one_shot(
+        self,
+        one_shot_id: str,
+        *,
+        name: str | None = None,
+        status: str | None = None,
+        summary: str | None = None,
+    ) -> OneShot:
+        """Renames a one-shot, rewrites what its header says about it, or both.
+
+        Mirrors `update_chapter` minus everything that exists only because a chapter
+        belongs to a story: there is no manifest entry to move and nowhere else for a
+        one-shot's file to go. The id changes whenever the rename does.
+        """
+        one_shot = self.one_shot(one_shot_id)
+        source = self.path(one_shot.relpath)
+
+        stem = slugify(name, "story") if name is not None else source.stem
+        if stem == source.stem:
+            target = source
+        else:
+            target = free_path(self.stories_dir, stem, CHAPTER_SUFFIX)
+            source.rename(target)
+
+        target_relpath = PurePosixPath(STORIES) / target.name
+        fields = ink.header_fields(
+            title=name if name is not None else None, status=status, summary=summary
+        )
+        if fields:
+            self._write_header(target_relpath, fields)
+
+        self.invalidate()
+        return self.one_shot(derive_id(SPACE, str(target_relpath)))
+
     def reorder_chapters(self, story_id: str, order: list[str]) -> Story:
         """Writes `order` into `story.yaml` as the order the story's chapters are read in.
 
@@ -487,7 +589,7 @@ class Scanner:
         Only `story.yaml` is written. No chapter file is read or written.
         """
         story = self.story(story_id)
-        own = {chapter.id for chapter in story.chapters}
+        own = {chapter.id for chapter in story.files}
 
         filenames: list[str] = []
         for chapter_id in order:
@@ -523,6 +625,12 @@ class Scanner:
             _remove_entry(listed, chapter.filename)
         self.invalidate()
 
+    def delete_one_shot(self, one_shot_id: str) -> None:
+        """Deletes a one-shot's file. There is no manifest entry to remove."""
+        one_shot = self.one_shot(one_shot_id)
+        self.path(one_shot.relpath).unlink(missing_ok=True)
+        self.invalidate()
+
     @contextmanager
     def _chapter_list(self, story: Story) -> Iterator[list]:
         """Yields the manifest's chapter entries for editing, writing it back if they change.
@@ -547,23 +655,23 @@ class Scanner:
         """A chapter's text as it is on disk, header and all."""
         return read_text(self.path(relpath), relpath)
 
-    def read_chapter(self, chapter_id: str) -> str:
-        """A chapter's prose, without the header above it."""
-        chapter = self.chapter(chapter_id)
-        return ink.parse(self._text(chapter.relpath)).body
+    def read_file(self, file_id: str) -> str:
+        """A chapter's or a one-shot's prose, without the header above it."""
+        file = self.file(file_id)
+        return ink.parse(self._text(file.relpath)).body
 
-    def write_chapter(self, chapter_id: str, body: str) -> None:
-        """Replaces a chapter's prose, keeping the header the file has.
+    def write_file(self, file_id: str, body: str) -> None:
+        """Replaces a chapter's or a one-shot's prose, keeping the header the file has.
 
         The header is read from disk at the moment of the write, not taken from
         anything the client sent, so a title or a status changed by hand since the
         client loaded the file survives the save.
         """
-        chapter = self.chapter(chapter_id)
-        path = self.path(chapter.relpath)
+        file = self.file(file_id)
+        path = self.path(file.relpath)
         if not path.is_file():
-            raise NotFound(f'"{chapter.relpath}" is no longer on disk.')
+            raise NotFound(f'"{file.relpath}" is no longer on disk.')
 
-        document = ink.parse(self._text(chapter.relpath))
+        document = ink.parse(self._text(file.relpath))
         write_atomically(path, ink.render(document.metadata, body))
         self._held.restamp()

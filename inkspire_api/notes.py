@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import ink
+from .entries import File, Folder
 from .fs import (
     Conflict,
     HeldScan,
@@ -52,35 +53,11 @@ MANIFEST = "manifest.yaml"
 
 
 @dataclass(frozen=True)
-class Note:
+class Note(File):
     """One `.ink` file, at the root or in a folder."""
 
-    id: str
-    #: Relative to the root of this space.
-    relpath: PurePosixPath
-    #: The header's title, or the filename without its suffix.
-    name: str
-    status: str
-    summary: str
     #: The folder holding it, or `None` for one sitting at the root.
     folder_id: str | None
-
-    @property
-    def filename(self) -> str:
-        """The file's own name."""
-        return self.relpath.name
-
-
-@dataclass(frozen=True)
-class Folder:
-    """One directory in this space, with the notes found in it."""
-
-    id: str
-    slug: str
-    relpath: PurePosixPath
-    name: str
-    context: str
-    notes: tuple[Note, ...]
 
 
 @dataclass(frozen=True)
@@ -112,17 +89,19 @@ def write_manifest(path: Path, document: dict) -> None:
         path.unlink(missing_ok=True)
 
 
-def folder_document(slug: str, name: str, context: str) -> dict:
+def folder_document(slug: str, name: str, summary: str) -> dict:
     """What a folder's manifest should hold, which is nothing at all where it can be.
 
-    A folder named after its own slug, with no context, needs no file: the directory
-    already says everything there is to know about it.
+    A folder named after its own slug, with no summary, needs no file: the directory
+    already says everything there is to know about it. Written as `context:`, the
+    manifest's own word for it -- the summary field is named for the wire format and
+    for `Folder`'s shared shape, not for what the YAML on disk calls it.
     """
     document: dict = {}
     if name != slug:
         document["title"] = name
-    if context:
-        document["context"] = context
+    if summary:
+        document["context"] = summary
     return document
 
 
@@ -241,30 +220,30 @@ class NotesScanner:
                 slug=slug,
                 relpath=relpath,
                 name=str(document.get("title") or slug),
-                context=str(document.get("context") or ""),
-                notes=tuple(own),
+                summary=str(document.get("context") or ""),
+                files=tuple(own),
             )
 
         return NoteTree(folders=folders, notes=notes, root=tuple(root_notes))
 
     # --- writing -----------------------------------------------------------
 
-    def create_folder(self, name: str, context: str = "") -> Folder:
+    def create_folder(self, name: str, summary: str = "") -> Folder:
         """Creates a directory, with a manifest only if there is something to put in it."""
         self.root.mkdir(parents=True, exist_ok=True)
         directory = free_path(self.root, slugify(name, "folder"))
         directory.mkdir()
         write_manifest(
-            directory / MANIFEST, folder_document(directory.name, name, context)
+            directory / MANIFEST, folder_document(directory.name, name, summary)
         )
 
         self.invalidate()
         return self.folder(derive_id(SPACE, directory.name))
 
     def update_folder(
-        self, folder_id: str, *, name: str | None = None, context: str | None = None
+        self, folder_id: str, *, name: str | None = None, summary: str | None = None
     ) -> Folder:
-        """Renames a folder, or rewrites its context. The directory keeps its slug.
+        """Renames a folder, or rewrites its summary. The directory keeps its slug.
 
         The id is derived from the path, so it does not change here and the notes in
         the folder keep theirs.
@@ -273,7 +252,7 @@ class NotesScanner:
         document = folder_document(
             folder.slug,
             name if name is not None else folder.name,
-            context if context is not None else folder.context,
+            summary if summary is not None else folder.summary,
         )
         write_manifest(self.path(folder.relpath / MANIFEST), document)
 

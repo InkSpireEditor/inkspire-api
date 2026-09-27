@@ -13,8 +13,10 @@ from pathlib import Path, PurePosixPath
 import pytest
 import yaml
 
+from inkspire_api.entries import File, Folder
 from inkspire_api.fs import Conflict, NotFound, StorageError, derive_id
 from inkspire_api.notes import SPACE, NotesScanner
+from inkspire_api.storage import Story
 
 from tests.conftest import make_folder, make_note
 
@@ -55,6 +57,25 @@ def test_a_file_at_the_root_is_listed(notes: NotesScanner, root: Path) -> None:
     assert (note.name, note.folder_id) == ("scratch", None)
 
 
+def test_a_note_is_a_file_with_a_folder_it_may_belong_to(
+    notes: NotesScanner, root: Path
+) -> None:
+    """A note adds only `folder_id` to what a `File` already is -- the same relation a
+    one-shot has to `storage.Chapter`, the other way round."""
+    make_note(root, "scratch.ink", "Once.\n")
+    note = next(iter(notes.tree().notes.values()))
+    assert isinstance(note, File)
+
+
+def test_a_notes_folder_is_a_bare_folder(notes: NotesScanner, root: Path) -> None:
+    """A notes folder needs nothing beyond `Folder` -- it is `Story` that adds fields,
+    not the other way round."""
+    make_folder(root, "research", context="Background reading.")
+    folder = only_folder(notes)
+    assert isinstance(folder, Folder)
+    assert not isinstance(folder, Story)
+
+
 def test_a_directory_needs_no_manifest_to_be_a_folder(
     notes: NotesScanner, root: Path
 ) -> None:
@@ -74,14 +95,14 @@ def test_a_folder_carries_the_context_its_manifest_gives_it(
     notes: NotesScanner, root: Path
 ) -> None:
     make_folder(root, "research", context="Background reading.")
-    assert only_folder(notes).context == "Background reading."
+    assert only_folder(notes).summary == "Background reading."
 
 
 def test_a_folder_with_no_manifest_has_no_context(
     notes: NotesScanner, root: Path
 ) -> None:
     make_folder(root, "research")
-    assert only_folder(notes).context == ""
+    assert only_folder(notes).summary == ""
 
 
 def test_the_files_in_a_folder_belong_to_it(notes: NotesScanner, root: Path) -> None:
@@ -89,8 +110,8 @@ def test_the_files_in_a_folder_belong_to_it(notes: NotesScanner, root: Path) -> 
     make_note(folder, "worldbuilding.ink")
 
     listed = only_folder(notes)
-    assert [note.name for note in listed.notes] == ["worldbuilding"]
-    assert listed.notes[0].folder_id == listed.id
+    assert [note.name for note in listed.files] == ["worldbuilding"]
+    assert listed.files[0].folder_id == listed.id
 
 
 def test_only_ink_files_are_files(notes: NotesScanner, root: Path) -> None:
@@ -102,7 +123,7 @@ def test_only_ink_files_are_files(notes: NotesScanner, root: Path) -> None:
 
 def test_a_manifest_is_not_a_file(notes: NotesScanner, root: Path) -> None:
     make_folder(root, "research", context="Background.")
-    assert only_folder(notes).notes == ()
+    assert only_folder(notes).files == ()
 
 
 def test_a_folder_inside_a_folder_is_not_listed(notes: NotesScanner, root: Path) -> None:
@@ -152,7 +173,7 @@ def test_an_unparseable_manifest_does_not_hide_the_files(
 
     listed = only_folder(notes)
     assert listed.name == "research"
-    assert [note.name for note in listed.notes] == ["worldbuilding"]
+    assert [note.name for note in listed.files] == ["worldbuilding"]
 
 
 # --- ids --------------------------------------------------------------------
@@ -230,12 +251,12 @@ def test_a_retitled_file_is_picked_up(notes: NotesScanner, root: Path) -> None:
 
 def test_a_rewritten_manifest_is_picked_up(notes: NotesScanner, root: Path) -> None:
     folder = make_folder(root, "research", context="Before.")
-    assert only_folder(notes).context == "Before."
+    assert only_folder(notes).summary == "Before."
 
     manifest = folder / "manifest.yaml"
     manifest.write_text("context: After.\n", encoding="utf-8")
     os.utime(manifest, ns=(0, 1))
-    assert only_folder(notes).context == "After."
+    assert only_folder(notes).summary == "After."
 
 
 def test_writing_a_file_leaves_the_held_scan_alone(notes: NotesScanner, root: Path) -> None:
@@ -257,7 +278,7 @@ def test_a_created_folder_is_a_directory_and_nothing_else(
 
     assert (root / "research").is_dir()
     assert list((root / "research").iterdir()) == []
-    assert (folder.name, folder.context) == ("research", "")
+    assert (folder.name, folder.summary) == ("research", "")
 
 
 def test_a_created_folder_records_a_name_its_slug_cannot_say(
@@ -299,7 +320,7 @@ def test_giving_a_folder_a_context_writes_the_manifest_it_had_none_of(
     folder = notes.create_folder("research")
     assert not (root / "research" / "manifest.yaml").exists()
 
-    notes.update_folder(folder.id, context="Background reading.")
+    notes.update_folder(folder.id, summary="Background reading.")
 
     assert yaml.safe_load(
         (root / "research" / "manifest.yaml").read_text(encoding="utf-8")
@@ -311,7 +332,7 @@ def test_emptying_a_context_takes_the_manifest_away_again(
 ) -> None:
     """Nothing left to keep, so nothing is kept beside the folder."""
     folder = notes.create_folder("research", "Background reading.")
-    notes.update_folder(folder.id, context="")
+    notes.update_folder(folder.id, summary="")
     assert not (root / "research" / "manifest.yaml").exists()
 
 

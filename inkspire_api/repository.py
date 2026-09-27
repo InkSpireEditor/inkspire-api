@@ -152,12 +152,15 @@ LockDep = Annotated[None, Depends(_locked)]
 
 
 def _committable(path: str) -> bool:
-    """Whether `/commit` will stage this path: a story's own manifest, or a chapter.
+    """Whether `/commit` will stage this path: a story's own manifest, a chapter, or a
+    one-shot loose at the stories root.
 
     A literal check on the path's parts rather than a git pathspec, because a glob
     pathspec matches across `/` and would not actually express "one level deep".
     """
     parts = PurePosixPath(path).parts
+    if len(parts) == 2 and parts[0] == STORIES and parts[1].endswith(CHAPTER_SUFFIX):
+        return True
     if len(parts) == 3 and parts[0] == STORIES and parts[2] == MANIFEST:
         return True
     return (
