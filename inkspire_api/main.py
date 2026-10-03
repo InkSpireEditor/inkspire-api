@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import auth, files, llm, lore, repository, timelines
+from . import auth, documents, files, llm, lore, repository, timelines
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
 from .fs import Conflict, Malformed, NotFound, StorageError
@@ -129,6 +129,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     api.include_router(files.stories_router)
     api.include_router(files.notes_router)
+    api.include_router(documents.stories_router)
+    api.include_router(documents.notes_router)
     # Both hang off a story, so their paths sit under the stories router's prefix
     # without being part of it: what they serve is authored by hand and read-only.
     api.include_router(timelines.router)

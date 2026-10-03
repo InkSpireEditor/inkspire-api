@@ -131,7 +131,7 @@ def test_the_tree_leaves_out_a_chapter_s_summary(
         data_root,
         "example-story",
         title="Example Story",
-        chapters={"first-chapter.ink": "---\nsummary: What happens.\n---\nOnce.\n"},
+        chapters={"first-chapter.ink": "===== ink:meta\nsummary: What happens.\n===== ink:body\nOnce.\n"},
     )
 
     listed = entry_named(dirs(logged_in), "Example Story")["files"][0]
@@ -151,7 +151,7 @@ def test_a_one_shot_shows_up_in_the_tree_as_a_loose_file(
     logged_in: TestClient, data_root: Path, repository: Path
 ) -> None:
     (data_root / "stories" / "solo.ink").write_text(
-        "---\ntitle: Solo\n---\nOnce.\n", encoding="utf-8"
+        "===== ink:meta\ntitle: Solo\n===== ink:body\nOnce.\n", encoding="utf-8"
     )
     listed = logged_in.get("/api/stories/tree").json()["files"]
     assert names(listed) == ["Solo"]
@@ -256,7 +256,7 @@ def test_creating_a_chapter_writes_an_ink_file(logged_in: TestClient, repository
     assert response.json()["name"] == "Third Chapter"
     assert response.json()["dir"] == identifier
     path = repository / "stories" / "example-story" / "chapters" / "third-chapter.ink"
-    assert path.read_text(encoding="utf-8") == "---\ntitle: Third Chapter\n---\n"
+    assert path.read_text(encoding="utf-8") == "===== ink:meta\ntitle: Third Chapter\n===== ink:body\n"
 
 
 def test_a_created_chapter_is_in_its_story(logged_in: TestClient, repository: Path) -> None:
@@ -309,9 +309,7 @@ def test_a_one_shots_contents_are_read_and_written(
     logged_in: TestClient, repository: Path
 ) -> None:
     identifier = one_shot_id(logged_in)
-    logged_in.put(
-        f"/api/stories/file/{identifier}/contents", content="Once.", headers=CONTENT_TYPE
-    )
+    logged_in.put(f"/api/stories/file/{identifier}/document", json={"body": "Once."})
     response = logged_in.get(f"/api/stories/file/{identifier}/contents")
     assert response.text == "Once."
 
@@ -420,7 +418,7 @@ def test_renaming_a_chapter_renames_its_file(logged_in: TestClient, repository: 
 
     chapters = repository / "stories" / "example-story" / "chapters"
     assert (chapters / "renamed-chapter.ink").read_text(encoding="utf-8") == (
-        "---\ntitle: Renamed Chapter\n---\nOnce."
+        "===== ink:meta\ntitle: Renamed Chapter\n===== ink:body\nOnce."
     )
     assert not (chapters / "first-chapter.ink").exists()
 
@@ -546,7 +544,7 @@ def test_a_chapter_answers_with_what_its_header_says(
 ) -> None:
     chapters = repository / "stories" / "example-story" / "chapters"
     (chapters / "third.ink").write_text(
-        "---\ntitle: The Letter\nstatus: draft\nsummary: She opens it.\n---\nOnce.\n",
+        "===== ink:meta\ntitle: The Letter\nstatus: draft\nsummary: She opens it.\n===== ink:body\nOnce.\n",
         encoding="utf-8",
     )
 
@@ -590,11 +588,9 @@ def test_a_chapter_is_written_from_the_request_body(logged_in: TestClient, repos
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     text = "Once, on a cold morning — she left.\n"
 
-    response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content=text.encode(), headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": text})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     assert logged_in.get(f"/api/stories/file/{chapter}/contents").text == text
     path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
     assert path.read_text(encoding="utf-8") == text
@@ -602,11 +598,9 @@ def test_a_chapter_is_written_from_the_request_body(logged_in: TestClient, repos
 
 def test_an_empty_chapter_may_be_written(logged_in: TestClient, repository: Path) -> None:
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
-    response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content=b"", headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": ""})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     assert logged_in.get(f"/api/stories/file/{chapter}/contents").text == ""
 
 
@@ -614,29 +608,31 @@ def test_the_contents_of_an_unknown_chapter_are_not_found(logged_in: TestClient,
     assert logged_in.get(f"/api/stories/file/{'0' * 16}/contents").status_code == 404
     assert (
         logged_in.put(
-            f"/api/stories/file/{'0' * 16}/contents", content=b"Once.", headers=CONTENT_TYPE
+            f"/api/stories/file/{'0' * 16}/document", json={"body": "Once."}
         ).status_code
         == 404
     )
 
 
-def test_a_chapter_that_is_not_utf8_is_refused(logged_in: TestClient, repository: Path) -> None:
+def test_a_chapter_that_is_not_json_is_refused(logged_in: TestClient, repository: Path) -> None:
+    """A save sends JSON, which is UTF-8 by definition, so bytes that are not text can
+    no longer reach the file at all — they fail to parse before any of this is reached."""
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content=b"\xff\xfe", headers=CONTENT_TYPE
+        f"/api/stories/file/{chapter}/document", content=b"\xff\xfe", headers=CONTENT_TYPE
     )
 
     assert response.status_code == 400
-    assert "UTF-8" in response.json()["message"]
+    path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    assert path.read_text(encoding="utf-8") == "Once."
 
 
 def test_a_chapter_beyond_the_limit_is_refused(logged_in: TestClient, repository: Path) -> None:
 
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents",
-        content=b"x" * (MAX_FILE_BYTES + 1),
-        headers=CONTENT_TYPE,
+        f"/api/stories/file/{chapter}/document",
+        json={"body": "x" * (MAX_FILE_BYTES + 1)},
     )
 
     assert response.status_code == 413
@@ -650,7 +646,7 @@ def test_the_contents_of_a_chapter_leave_out_its_header(
     """The editor holds prose, so the header never reaches it and never reaches a model."""
     chapters = repository / "stories" / "example-story" / "chapters"
     (chapters / "first-chapter.ink").write_text(
-        "---\ntitle: The Letter\n---\nOnce.\n", encoding="utf-8"
+        "===== ink:meta\ntitle: The Letter\n===== ink:body\nOnce.\n", encoding="utf-8"
     )
     chapter = chapter_id(logged_in, "Example Story", "The Letter")
 
@@ -662,22 +658,22 @@ def test_saving_a_chapter_keeps_the_header_on_disk(
 ) -> None:
     chapters = repository / "stories" / "example-story" / "chapters"
     path = chapters / "first-chapter.ink"
-    path.write_text("---\ntitle: The Letter\n---\nOnce.\n", encoding="utf-8")
+    path.write_text("===== ink:meta\ntitle: The Letter\n===== ink:body\nOnce.\n", encoding="utf-8")
     chapter = chapter_id(logged_in, "Example Story", "The Letter")
 
-    response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content="Twice.\n", headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": "Twice.\n"})
 
-    assert response.status_code == 204
-    assert path.read_text(encoding="utf-8") == "---\ntitle: The Letter\n---\nTwice.\n"
+    assert response.status_code == 200
+    assert path.read_text(encoding="utf-8") == (
+        "===== ink:meta\ntitle: The Letter\n===== ink:body\nTwice.\n"
+    )
 
 
 def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
     assert client.get(f"/api/stories/file/{'0' * 16}/contents").status_code == 401
     assert (
         client.put(
-            f"/api/stories/file/{'0' * 16}/contents", content=b"Once.", headers=CONTENT_TYPE
+            f"/api/stories/file/{'0' * 16}/document", json={"body": "Once."}
         ).status_code
         == 401
     )
@@ -700,7 +696,8 @@ def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
         ("put", f"file/{'0' * 16}"),
         ("delete", f"file/{'0' * 16}"),
         ("get", f"file/{'0' * 16}/contents"),
-        ("put", f"file/{'0' * 16}/contents"),
+        ("get", f"file/{'0' * 16}/document"),
+        ("put", f"file/{'0' * 16}/document"),
     ],
 )
 def test_every_route_refuses_a_request_with_no_token(
@@ -755,9 +752,8 @@ def test_a_story_a_chapter_and_a_save(logged_in: TestClient, data_root: Path) ->
     assert logged_in.get(f"/api/stories/file/{chapter['id']}/contents").text == ""
 
     logged_in.put(
-        f"/api/stories/file/{chapter['id']}/contents",
-        content="Once, on a cold morning.".encode(),
-        headers=CONTENT_TYPE,
+        f"/api/stories/file/{chapter['id']}/document",
+        json={"body": "Once, on a cold morning."},
     )
 
     tree = logged_in.get("/api/stories/tree").json()
@@ -925,7 +921,7 @@ def test_a_status_is_set_through_the_header(
     assert response.json()["status"] == "draft"
     assert response.json()["id"] == chapter, "a status change moves no file"
     path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
-    assert path.read_text(encoding="utf-8") == "---\nstatus: draft\n---\nOnce."
+    assert path.read_text(encoding="utf-8") == "===== ink:meta\nstatus: draft\n===== ink:body\nOnce."
 
 
 def test_a_status_reaches_the_listing(logged_in: TestClient, repository: Path) -> None:
@@ -971,9 +967,8 @@ def test_a_status_does_not_disturb_the_prose(
 ) -> None:
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     logged_in.put(
-        f"/api/stories/file/{chapter}/contents",
-        content="Once, on a cold morning.".encode(),
-        headers=CONTENT_TYPE,
+        f"/api/stories/file/{chapter}/document",
+        json={"body": "Once, on a cold morning."},
     )
 
     logged_in.put(f"/api/stories/file/{chapter}", json={"status": "draft"})

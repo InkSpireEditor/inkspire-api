@@ -36,19 +36,22 @@ import re
 import secrets
 import sys
 import time
-from pathlib import Path
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Annotated, cast
 
 import typer
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from . import ink
+from . import ink, provenance, repository
 from .db import get_sessionmaker
+from .fs import write_atomically
 from .llm import LLMError, LLMService, UnknownModel, render_prompt
 from .models import MAX_EMAIL_LENGTH, RefreshToken, User, utcnow
 from .security import hash_password
-from .settings import SecretNotConfigured, get_settings
+from .settings import SecretNotConfigured, Settings, get_settings
 from .storage import CHAPTER_SUFFIX
 
 #: Bytes of randomness behind a generated password. Hex-encoded, so 24 characters.
@@ -500,3 +503,228 @@ def check(
     typer.secho(
         summary, fg=typer.colors.YELLOW if warnings else typer.colors.GREEN, err=True
     )
+
+
+# --- reclassifying provenance -----------------------------------------------
+
+#: How a hash is shown: enough to tell two apart, short enough to read in a column.
+SHOWN_HASH = 4
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """What `reclassify` found about one paragraph."""
+
+    #: Its place in the body, counting from 1, which is how a reader finds it.
+    index: int
+    #: The hash the paragraph has now.
+    digest: str
+    #: `ok`, `recovered` or `reset`.
+    state: str
+    #: The stale key this was recovered from, where it was.
+    was: str | None = None
+    #: How many runs came through.
+    runs: int = 0
+
+
+def brief(digest: str) -> str:
+    """`47f5…330e`: both ends of a hash, which is what a reader compares."""
+    return f"{digest[:SHOWN_HASH]}…{digest[-SHOWN_HASH:]}"
+
+
+def repository_for(path: Path, settings: Settings) -> Path | None:
+    """The git working tree `path` sits in, or `None` where it sits in none.
+
+    Only the stories root is a repository. The notes root is not one, and a stories
+    root nobody has cloned is not either — in both cases a stale paragraph resets,
+    which is what `repository.reconciled` does with no repository (§7.5).
+    """
+    try:
+        path.resolve().relative_to(settings.data_root.resolve())
+    except ValueError:
+        return None
+    return settings.data_root if (settings.data_root / ".git").exists() else None
+
+
+def verdicts_for(
+    body: str, stored: provenance.Metadata, recovery: repository.Recovery
+) -> list[Verdict]:
+    """One verdict per paragraph of `body`.
+
+    A paragraph whose hash was already stored was never stale. One whose hash was not
+    is stale, and `recovery.sources` says which stored key explained it — that pairing
+    is decided by similarity (§7.5), so it has to be reported by the recovery rather
+    than reconstructed here from the key sets, which could only guess.
+    """
+    found: list[Verdict] = []
+    for index, digest in enumerate(provenance.hashes_of(body), start=1):
+        if digest in stored:
+            found.append(Verdict(index, digest, "ok"))
+        elif digest in recovery.sources:
+            found.append(
+                Verdict(
+                    index,
+                    digest,
+                    "recovered",
+                    was=recovery.sources[digest],
+                    runs=len(recovery.metadata[digest]),
+                )
+            )
+        else:
+            found.append(Verdict(index, digest, "reset"))
+    return found
+
+
+def reclassify_file(path: Path, settings: Settings) -> tuple[list[Verdict], str | None, str | None]:
+    """What one file needs, as verdicts, the revision used, and the text to write.
+
+    The text is `None` where there is nothing to write — the file has no provenance
+    section, or every paragraph's hash already matches. A file whose section cannot be
+    read at all answers no verdicts, so the caller reports it and leaves it alone:
+    there is no recovery to apply to a section nobody can parse.
+    """
+    document = ink.parse(path.read_text(encoding="utf-8"))
+    section = document.sections.get(ink.SECTION_PROVENANCE)
+    if section is None:
+        return [], None, None
+
+    stored = provenance.parse_section(section)
+    if stored is None:
+        return [], None, None
+
+    root = repository_for(path, settings)
+    if root is None:
+        recovery = repository.reconciled(
+            None, PurePosixPath(path.name), document.body, stored
+        )
+    else:
+        relpath = PurePosixPath(path.resolve().relative_to(root.resolve()))
+        with repository.open_repository(root) as repo:
+            # No ceiling here, unlike a request: this is run by hand, after a miss, and
+            # is worth however long the whole history takes.
+            recovery = repository.reconciled(
+                repo, relpath, document.body, stored, limit=None
+            )
+
+    found = verdicts_for(document.body, stored, recovery)
+    if set(recovery.metadata) == set(stored):
+        return found, None, None
+    return (
+        found,
+        recovery.revision,
+        ink.render_with(
+            document,
+            document.body,
+            ink.SECTION_PROVENANCE,
+            provenance.render_section(recovery.metadata),
+        ),
+    )
+
+
+def report(verdict: Verdict, revision: str | None) -> None:
+    """One paragraph's line of the report."""
+    if verdict.state == "ok":
+        typer.secho(f"  para {verdict.index}  {brief(verdict.digest)}  ok")
+        return
+    if verdict.state == "recovered":
+        was = f", was {brief(verdict.was)}" if verdict.was else ""
+        typer.secho(
+            f"  para {verdict.index}  {brief(verdict.digest)}  STALE  -> recoverable"
+            f" from {revision}{was} ({plural(verdict.runs, 'run')})",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    typer.secho(
+        f"  para {verdict.index}  {brief(verdict.digest)}  STALE  -> would reset",
+        fg=typer.colors.RED,
+    )
+
+
+def reclassify_one(path: Path, settings: Settings, *, force: bool) -> Counter[str]:
+    """Reports one file, writes it where `force` says to, and counts what it found."""
+    counts: Counter[str] = Counter()
+    try:
+        found, revision, text = reclassify_file(path, settings)
+    except (OSError, UnicodeDecodeError) as error:
+        typer.secho(f"{shown(path)}: cannot be read as text: {error}", fg=typer.colors.RED)
+        counts["stale"] += 1
+        return counts
+
+    if text is None:
+        return counts
+
+    typer.secho(shown(path))
+    for verdict in found:
+        report(verdict, revision)
+        if verdict.state == "recovered":
+            counts["stale"] += 1
+            counts["recoverable"] += 1
+        elif verdict.state == "reset":
+            counts["stale"] += 1
+            counts["would_reset"] += 1
+
+    if force:
+        write_atomically(path, text)
+        counts["written"] += 1
+    return counts
+
+
+@ink_app.command("reclassify")
+def reclassify(
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Files or directories to reclassify. Omit for both roots."),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Write the recovered provenance.")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", "-n", help="Report and write nothing. The default.")
+    ] = False,
+) -> None:
+    """Put right the provenance of a paragraph edited outside the editor.
+
+    A paragraph edited by hand no longer hashes to the key its runs are stored under,
+    so those runs describe prose that is no longer there. Recomputing the hash is not
+    the fix: it would record the new text while keeping offsets measured against the
+    old. Instead the paragraph's own earlier text is looked for in the file's history,
+    diffed forward, and the runs replayed over the result. What history cannot explain
+    resets to plain prose rather than being guessed at.
+
+    **Nothing is written without `--force`.** A dry run exits non-zero if it found
+    anything stale, so it can gate a commit; `--force` exits zero once it has resolved
+    it. A notes file has no history and can only ever reset.
+
+    With no argument this covers both roots, as `ink check` does.
+    """
+    if force and dry_run:
+        fail("Pass --force or --dry-run, not both.")
+
+    settings = get_settings()
+    roots = [root for root in (settings.data_root, settings.files_root) if root.is_dir()]
+    files = ink_files(list(paths) if paths else roots)
+    if not files:
+        typer.secho("No .ink files to reclassify.", fg=typer.colors.YELLOW, err=True)
+        return
+
+    counts: Counter[str] = Counter()
+    for path in files:
+        counts += reclassify_one(path, settings, force=force)
+
+    summary = (
+        f"{plural(len(files), 'file')} checked, {counts['stale']} stale, "
+        f"{counts['recoverable']} recoverable, {counts['would_reset']} would reset."
+    )
+    if force:
+        typer.secho(
+            f"{summary} {plural(counts['written'], 'file')} written.",
+            fg=typer.colors.GREEN,
+            err=True,
+        )
+        return
+    if counts["stale"]:
+        typer.secho(
+            f"{summary} Nothing written; pass --force to apply.", fg=typer.colors.YELLOW, err=True
+        )
+        raise typer.Exit(code=1)
+    typer.secho(summary, fg=typer.colors.GREEN, err=True)

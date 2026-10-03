@@ -16,13 +16,31 @@ Each root's scanner stays its own: walking `stories/` and walking the notes root
 different enough -- different manifest filename, different ordering rule, different
 git treatment -- that sharing one scanner would cost more than the field lists shared
 here save. This module holds only the shapes a scan reads into, not how either scan
-gets there.
+gets there -- plus `StoredDocument`, which is what one read of a file answers on either
+root, so one route can serve both.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import NamedTuple
+
+
+class StoredDocument(NamedTuple):
+    """One file as it is on disk: where it is, its prose, and its provenance section.
+
+    Where it is comes back because recovering stale provenance needs the file's history
+    (§7.5), and only `repository.py` may ask git for that — so a scanner hands out what
+    to ask about rather than growing a git dependency of its own.
+
+    `provenance` is the section's text, unparsed. `ink.py` carries a section it does not
+    read, and a scanner is no different.
+    """
+
+    relpath: PurePosixPath
+    body: str
+    provenance: str | None
 
 
 @dataclass(frozen=True)

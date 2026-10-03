@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import ink
-from .entries import File, Folder
+from .entries import File, Folder, StoredDocument
 from .fs import (
     Conflict,
     HeldScan,
@@ -447,7 +447,7 @@ class Scanner:
 
         file = free_path(chapters_dir, slugify(name, "chapter"), CHAPTER_SUFFIX)
         header = {"title": name} if name != file.stem else {}
-        write_atomically(file, ink.render(header, ""))
+        write_atomically(file, ink.render(header, "", {}))
         with self._chapter_list(story) as listed:
             ensure_entry(listed, file.name)
 
@@ -467,7 +467,7 @@ class Scanner:
 
         file = free_path(self.stories_dir, slugify(name, "story"), CHAPTER_SUFFIX)
         header = {"title": name} if name != file.stem else {}
-        write_atomically(file, ink.render(header, ""))
+        write_atomically(file, ink.render(header, "", {}))
 
         self.invalidate()
         return self.one_shot(derive_id(SPACE, f"{STORIES}/{file.name}"))
@@ -655,17 +655,30 @@ class Scanner:
         """A chapter's text as it is on disk, header and all."""
         return read_text(self.path(relpath), relpath)
 
-    def read_file(self, file_id: str) -> str:
-        """A chapter's or a one-shot's prose, without the header above it."""
+    def read_document(self, file_id: str) -> StoredDocument:
+        """A chapter's or a one-shot's prose and provenance, without its header.
+
+        The one read, for both the editor and `GET /contents` — which takes the body off
+        it and ignores the rest. There is nothing to save by reading less: `ink.parse`
+        splits every section whatever the caller wants.
+        """
         file = self.file(file_id)
-        return ink.parse(self._text(file.relpath)).body
+        document = ink.parse(self._text(file.relpath))
+        return StoredDocument(
+            file.relpath, document.body, document.sections.get(ink.SECTION_PROVENANCE)
+        )
 
-    def write_file(self, file_id: str, body: str) -> None:
-        """Replaces a chapter's or a one-shot's prose, keeping the header the file has.
+    def write_document(self, file_id: str, body: str, section: str | None) -> None:
+        """Replaces a chapter's or a one-shot's prose **and** its provenance together.
 
-        The header is read from disk at the moment of the write, not taken from
-        anything the client sent, so a title or a status changed by hand since the
-        client loaded the file survives the save.
+        One write, because a section derived from the body may not be written without it
+        (§7.1): the moment they are written separately the hashes stop matching the prose
+        and the next load discards provenance the writer just created. `section` of
+        `None` removes it.
+
+        The header and every other section are read from disk at the moment of the
+        write rather than taken from the client, so a title or a status changed by hand
+        since the client loaded the file survives the save.
         """
         file = self.file(file_id)
         path = self.path(file.relpath)
@@ -673,5 +686,6 @@ class Scanner:
             raise NotFound(f'"{file.relpath}" is no longer on disk.')
 
         document = ink.parse(self._text(file.relpath))
-        write_atomically(path, ink.render(document.metadata, body))
+        text = ink.render_with(document, body, ink.SECTION_PROVENANCE, section)
+        write_atomically(path, text)
         self._held.restamp()

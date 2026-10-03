@@ -21,6 +21,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from git import Repo
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from typer.testing import CliRunner
@@ -34,7 +35,7 @@ from tests.conftest import (
     sse_body,
 )
 
-from inkspire_api import cli
+from inkspire_api import cli, provenance
 from inkspire_api.llm import LLMService, render_prompt
 from inkspire_api.models import RefreshToken, User
 from inkspire_api.security import verify_password
@@ -588,7 +589,7 @@ def write_chapter(root: Path, name: str, text: str) -> Path:
 
 
 def test_a_repository_of_good_files_passes(check, tmp_path) -> None:
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\n===== ink:body\nOnce.\n")
     write_chapter(tmp_path, "two.ink", "Prose with no header.\n")
 
     result = check()
@@ -597,8 +598,8 @@ def test_a_repository_of_good_files_passes(check, tmp_path) -> None:
     assert "2 files checked, 0 errors, 0 warnings." in result.output
 
 
-def test_an_unreadable_header_fails_and_says_where(check, tmp_path) -> None:
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\nOnce.\n")
+def test_prose_above_the_first_section_fails_and_says_where(check, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", "Once.\n===== ink:body\nTwice.\n")
 
     result = check()
 
@@ -609,7 +610,7 @@ def test_an_unreadable_header_fails_and_says_where(check, tmp_path) -> None:
 
 def test_a_warning_alone_passes(check, tmp_path) -> None:
     """A key nothing reads is worth saying, and is not worth failing over."""
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\npov: Jane Doe\n---\nOnce.\n")
+    write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\npov: Jane Doe\n===== ink:body\nOnce.\n")
 
     result = check()
 
@@ -621,7 +622,7 @@ def test_a_warning_alone_passes(check, tmp_path) -> None:
 def test_a_file_that_is_not_utf8_is_an_error(check, tmp_path) -> None:
     chapters = tmp_path / "novel-data" / "stories" / "example-story" / "chapters"
     chapters.mkdir(parents=True)
-    (chapters / "one.ink").write_bytes(b"---\ntitle: \xff\xfe\n---\n")
+    (chapters / "one.ink").write_bytes(b"===== ink:meta\ntitle: \xff\xfe\n===== ink:body\n")
 
     result = check()
 
@@ -630,8 +631,8 @@ def test_a_file_that_is_not_utf8_is_an_error(check, tmp_path) -> None:
 
 
 def test_one_named_file_is_checked_on_its_own(check, tmp_path) -> None:
-    good = write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
-    write_chapter(tmp_path, "two.ink", "---\ntitle: Two\nOnce.\n")
+    good = write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\n===== ink:body\nOnce.\n")
+    write_chapter(tmp_path, "two.ink", "Once.\n===== ink:body\nTwice.\n")
 
     result = check(str(good))
 
@@ -655,10 +656,10 @@ def test_a_path_that_is_not_there_is_refused(check, tmp_path) -> None:
 
 def test_both_roots_are_checked(check, tmp_path) -> None:
     """A note is the same kind of file as a chapter, and is checked with them."""
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\n===== ink:body\nOnce.\n")
     (tmp_path / "files").mkdir()
     (tmp_path / "files" / "scratch.ink").write_text(
-        "---\ntitle: Scratch\nOnce.\n", encoding="utf-8"
+        "A list.\n===== ink:body\nAnother.\n", encoding="utf-8"
     )
 
     result = check()
@@ -675,3 +676,230 @@ def test_a_root_that_is_not_there_is_not_an_error(check, tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "1 file checked" in result.output
+
+
+# --- ink reclassify ---------------------------------------------------------
+
+OLD_PARA = "The door creaked. The streets glistened like wet glass under the lamplight."
+NEW_PARA = "The door creaked open. The streets glistened like wet glass under the lamplight."
+OLD_KEY = "47f57caaa4fb330e"
+NEW_KEY = "39f4ef4afdf22890"
+OLD_SECTION = f'"{OLD_KEY}": [[18, 45, "gen"], [45, 54, "fix"], [54, 75, "gen"]]\n'
+CHAPTER_PATH = "stories/example-story/chapters/one.ink"
+
+
+def ink_file(body: str, section: str | None = None) -> str:
+    """One `.ink` file's text, with a provenance footer where there is one."""
+    text = f"===== ink:body\n{body}\n"
+    return text if section is None else f"{text}===== ink:provenance\n{section}"
+
+
+@pytest.fixture
+def reclassify(monkeypatch, tmp_path):
+    """Runs `inkspire ink reclassify`, with both roots where the test put them."""
+    data_root = tmp_path / "novel-data"
+    # exist_ok, because `story_repo` may have made it first: both fixtures build the
+    # same root and nothing fixes which one pytest resolves first.
+    (data_root / "stories").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(
+            data_root=data_root, files_root=tmp_path / "files", jwt_secret="s" * 32
+        ),
+    )
+
+    def run(*args: str):
+        return runner.invoke(cli.app, ["ink", "reclassify", *args])
+
+    return run
+
+
+@pytest.fixture
+def story_repo(tmp_path):
+    """A story repository with one chapter holding §7.5's paragraph and its provenance,
+    committed, so there is a history to recover from."""
+    data_root = tmp_path / "novel-data"
+    chapters = data_root / "stories" / "example-story" / "chapters"
+    chapters.mkdir(parents=True, exist_ok=True)
+    (chapters / "one.ink").write_text(ink_file(OLD_PARA, OLD_SECTION), encoding="utf-8")
+
+    repo = Repo.init(data_root, initial_branch="main")
+    with repo.config_writer() as writer:
+        writer.set_value("user", "name", "Jane Doe")
+        writer.set_value("user", "email", "jane@example.com")
+    repo.index.add([CHAPTER_PATH])
+    repo.index.commit("Add the chapter")
+    return data_root
+
+
+def edit(data_root: Path, body: str, section: str | None = OLD_SECTION) -> Path:
+    """Rewrites the chapter the way a hand edit outside the editor would."""
+    path = data_root / CHAPTER_PATH
+    path.write_text(ink_file(body, section), encoding="utf-8")
+    return path
+
+
+def test_a_dry_run_writes_nothing_and_exits_non_zero(reclassify, story_repo) -> None:
+    path = edit(story_repo, NEW_PARA)
+    before = path.read_bytes()
+
+    result = reclassify()
+
+    assert result.exit_code == 1
+    assert path.read_bytes() == before
+    assert "STALE" in result.output
+    assert "recoverable" in result.output
+    assert "Nothing written; pass --force to apply." in result.output
+
+
+def test_a_dry_run_is_the_default_and_may_be_asked_for(reclassify, story_repo) -> None:
+    """So intent is visible in a script."""
+    path = edit(story_repo, NEW_PARA)
+    before = path.read_bytes()
+
+    result = reclassify("--dry-run")
+
+    assert result.exit_code == 1
+    assert path.read_bytes() == before
+
+
+def test_force_rewrites_the_entry_under_the_new_hash(reclassify, story_repo) -> None:
+    path = edit(story_repo, NEW_PARA)
+
+    result = reclassify("--force")
+
+    assert result.exit_code == 0
+    text = path.read_text(encoding="utf-8")
+    assert f'"{NEW_KEY}": [[23, 50, "gen"], [50, 59, "fix"], [59, 80, "gen"]]' in text
+    assert OLD_KEY not in text
+    assert NEW_PARA in text
+    assert "1 file written." in result.output
+
+
+def test_force_leaves_nothing_stale_behind(reclassify, story_repo) -> None:
+    """A second run has nothing to do, which is what says the first one worked."""
+    edit(story_repo, NEW_PARA)
+    assert reclassify("-f").exit_code == 0
+
+    second = reclassify()
+    assert second.exit_code == 0
+    assert "STALE" not in second.output
+
+
+def test_force_and_dry_run_together_are_refused(reclassify, story_repo) -> None:
+    edit(story_repo, NEW_PARA)
+    result = reclassify("--force", "--dry-run")
+    assert result.exit_code == 1
+    assert "not both" in result.output
+
+
+def test_a_clean_file_is_not_reported_at_all(reclassify, story_repo) -> None:
+    """Nothing is stale, so there is nothing to say about it."""
+    result = reclassify()
+
+    assert result.exit_code == 0
+    assert "STALE" not in result.output
+    assert "1 file checked, 0 stale" in result.output
+
+
+def test_a_file_with_no_provenance_is_left_alone(reclassify, tmp_path) -> None:
+    path = write_chapter(tmp_path, "one.ink", ink_file("Once."))
+    before = path.read_bytes()
+
+    result = reclassify("--force")
+
+    assert result.exit_code == 0
+    assert path.read_bytes() == before
+
+
+def test_no_matching_revision_resets_that_paragraph_only(reclassify, story_repo) -> None:
+    """Its neighbour keeps its runs exactly, which is why provenance is keyed by
+    paragraph and not by file."""
+    kept = "Untouched."
+    kept_key = provenance.paragraph_hash(kept)
+    edit(
+        story_repo,
+        f"{kept}\n\nNothing whatsoever to do with any of that.",
+        f'"{kept_key}": [[0, 2, "fix"]]\n"deadbeefdeadbeef": [[0, 4, "gen"]]\n',
+    )
+
+    result = reclassify("--force")
+
+    assert result.exit_code == 0
+    text = (story_repo / CHAPTER_PATH).read_text(encoding="utf-8")
+    assert f'"{kept_key}": [[0, 2, "fix"]]' in text
+    assert "deadbeefdeadbeef" not in text
+    assert "would reset" in result.output
+
+
+def test_a_notes_file_resets_without_attempting_git(reclassify, tmp_path) -> None:
+    """The notes root is not a repository, so there is nothing to recover from."""
+    files_root = tmp_path / "files"
+    files_root.mkdir(parents=True, exist_ok=True)
+    path = files_root / "scratch.ink"
+    path.write_text(ink_file(NEW_PARA, OLD_SECTION), encoding="utf-8")
+
+    result = reclassify("--force")
+
+    assert result.exit_code == 0
+    text = path.read_text(encoding="utf-8")
+    assert f'"{NEW_KEY}": []' in text
+    assert OLD_KEY not in text
+    assert "would reset" in result.output
+
+
+def test_a_story_root_that_is_not_a_repository_can_only_reset(reclassify, tmp_path) -> None:
+    """A data root nobody has cloned. The command still works; recovery is what is lost."""
+    path = write_chapter(tmp_path, "one.ink", ink_file(NEW_PARA, OLD_SECTION))
+
+    result = reclassify("--force")
+
+    assert result.exit_code == 0
+    assert f'"{NEW_KEY}": []' in path.read_text(encoding="utf-8")
+
+
+def test_one_named_file_is_reclassified_on_its_own(reclassify, story_repo) -> None:
+    path = edit(story_repo, NEW_PARA)
+    other = story_repo / "stories" / "example-story" / "chapters" / "two.ink"
+    other.write_text(ink_file(NEW_PARA, OLD_SECTION), encoding="utf-8")
+
+    result = reclassify("-f", str(path))
+
+    assert result.exit_code == 0
+    assert "1 file checked" in result.output
+    assert OLD_KEY in other.read_text(encoding="utf-8")
+
+
+def test_a_section_that_cannot_be_read_is_left_alone(reclassify, story_repo) -> None:
+    """There is no recovery to apply to a section nobody can parse, and rewriting it
+    from nothing would throw away whatever it was meant to say."""
+    path = edit(story_repo, NEW_PARA, "[unclosed\n")
+    before = path.read_bytes()
+
+    result = reclassify("--force")
+
+    assert result.exit_code == 0
+    assert path.read_bytes() == before
+
+
+def test_an_empty_repository_has_nothing_to_reclassify(reclassify) -> None:
+    result = reclassify()
+    assert result.exit_code == 0
+    assert "No .ink files to reclassify." in result.output
+
+
+def test_a_path_that_is_not_there_is_refused(reclassify, tmp_path) -> None:
+    result = reclassify(str(tmp_path / "gone.ink"))
+    assert result.exit_code == 1
+    assert "is not there" in result.output
+
+
+def test_the_report_names_the_paragraph_and_the_hash(reclassify, story_repo) -> None:
+    edit(story_repo, NEW_PARA)
+
+    result = reclassify()
+
+    assert "para 1" in result.output
+    assert "39f4…2890" in result.output
+    assert f"was {OLD_KEY[:4]}…{OLD_KEY[-4:]}" in result.output

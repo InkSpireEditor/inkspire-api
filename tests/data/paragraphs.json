@@ -1,0 +1,230 @@
+[
+  {
+    "name": "an empty body",
+    "body": "",
+    "paragraphs": [],
+    "separators": [
+      ""
+    ],
+    "hashes": []
+  },
+  {
+    "name": "a single paragraph",
+    "body": "One.",
+    "paragraphs": [
+      "One."
+    ],
+    "separators": [
+      "",
+      ""
+    ],
+    "hashes": [
+      "4bcadb0b969b1345"
+    ]
+  },
+  {
+    "name": "a single paragraph with a closing newline",
+    "body": "One.\n",
+    "paragraphs": [
+      "One."
+    ],
+    "separators": [
+      "",
+      "\n"
+    ],
+    "hashes": [
+      "4bcadb0b969b1345"
+    ]
+  },
+  {
+    "name": "two paragraphs",
+    "body": "One.\n\nTwo.\n",
+    "paragraphs": [
+      "One.",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\n\n",
+      "\n"
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "a longer run of blank lines",
+    "body": "One.\n\n\n\nTwo.",
+    "paragraphs": [
+      "One.",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\n\n\n\n",
+      ""
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "CRLF separators",
+    "body": "One.\r\n\r\nTwo.\r\n",
+    "paragraphs": [
+      "One.",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\r\n\r\n",
+      "\r\n"
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "a separator mixing CRLF and LF",
+    "body": "One.\r\n\nTwo.\n",
+    "paragraphs": [
+      "One.",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\r\n\n",
+      "\n"
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "leading blank lines",
+    "body": "\n\nOne.\n\nTwo.",
+    "paragraphs": [
+      "One.",
+      "Two."
+    ],
+    "separators": [
+      "\n\n",
+      "\n\n",
+      ""
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "trailing blank lines",
+    "body": "One.\n\nTwo.\n\n\n",
+    "paragraphs": [
+      "One.",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\n\n",
+      "\n\n\n"
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "nothing but blank lines",
+    "body": "\n\n\n",
+    "paragraphs": [],
+    "separators": [
+      "\n\n\n"
+    ],
+    "hashes": []
+  },
+  {
+    "name": "a single newline alone",
+    "body": "\n",
+    "paragraphs": [],
+    "separators": [
+      "\n"
+    ],
+    "hashes": []
+  },
+  {
+    "name": "a line break inside a paragraph",
+    "body": "One.\nStill one.\n\nTwo.\n",
+    "paragraphs": [
+      "One.\nStill one.",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\n\n",
+      "\n"
+    ],
+    "hashes": [
+      "96d49d4af9c2344d",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "a markdown rule between paragraphs",
+    "body": "One.\n\n---\n\nTwo.\n",
+    "paragraphs": [
+      "One.",
+      "---",
+      "Two."
+    ],
+    "separators": [
+      "",
+      "\n\n",
+      "\n\n",
+      "\n"
+    ],
+    "hashes": [
+      "4bcadb0b969b1345",
+      "19ca7403f3b1f93d",
+      "b5c4382674a745b4"
+    ]
+  },
+  {
+    "name": "accents and japanese",
+    "body": "Prose — ünïcode, 日本語.\n\nMore.\n",
+    "paragraphs": [
+      "Prose — ünïcode, 日本語.",
+      "More."
+    ],
+    "separators": [
+      "",
+      "\n\n",
+      "\n"
+    ],
+    "hashes": [
+      "6c8370f5f314235e",
+      "928e7f336198fa9b"
+    ]
+  },
+  {
+    "name": "two identical paragraphs share a hash",
+    "body": "Same.\n\nSame.\n",
+    "paragraphs": [
+      "Same.",
+      "Same."
+    ],
+    "separators": [
+      "",
+      "\n\n",
+      "\n"
+    ],
+    "hashes": [
+      "0e3d4d2cf20666b4",
+      "0e3d4d2cf20666b4"
+    ]
+  }
+]

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import ink
-from .entries import File, Folder
+from .entries import File, Folder, StoredDocument
 from .fs import (
     Conflict,
     HeldScan,
@@ -301,7 +301,7 @@ class NotesScanner:
 
         file = free_path(directory, slugify(name, "file"), ink.SUFFIX)
         header = {"title": name} if name != file.stem else {}
-        write_atomically(file, ink.render(header, ""))
+        write_atomically(file, ink.render(header, "", {}))
 
         self.invalidate()
         return self.note(derive_id(SPACE, str(relative / file.name)))
@@ -372,18 +372,26 @@ class NotesScanner:
         """A file's text as it is on disk, header and all."""
         return read_text(self.path(relpath), relpath)
 
-    def read_note(self, note_id: str) -> str:
-        """A note's prose, without the header above it."""
-        note = self.note(note_id)
-        return ink.parse(self._text(note.relpath)).body
+    def read_document(self, file_id: str) -> StoredDocument:
+        """A note's prose and provenance, without its header.
 
-    def write_note(self, note_id: str, body: str) -> None:
-        """Replaces a note's prose, keeping the header the file has."""
-        note = self.note(note_id)
+        The same shape the stories root answers, so one route serves both — even though
+        a note has no history to recover from (§7.5).
+        """
+        note = self.note(file_id)
+        document = ink.parse(self._text(note.relpath))
+        return StoredDocument(
+            note.relpath, document.body, document.sections.get(ink.SECTION_PROVENANCE)
+        )
+
+    def write_document(self, file_id: str, body: str, section: str | None) -> None:
+        """Replaces a note's prose and its provenance together, for §7.1's reason."""
+        note = self.note(file_id)
         path = self.path(note.relpath)
         if not path.is_file():
             raise NotFound(f'"{note.relpath}" is no longer on disk.')
 
         document = ink.parse(self._text(note.relpath))
-        write_atomically(path, ink.render(document.metadata, body))
+        text = ink.render_with(document, body, ink.SECTION_PROVENANCE, section)
+        write_atomically(path, text)
         self._held.restamp()
