@@ -24,6 +24,9 @@ and the continuations a language model streams back.
   being served. See [Stories on disk](#stories-on-disk).
 - **Streams generated text.** `POST /api/llm/generate` forwards a model's output chunk by
   chunk over server-sent events, from any of several providers.
+- **Records who wrote each character.** A chapter keeps, beside its prose, which stretches a
+  model wrote and which of those the writer has since corrected — and recovers that record
+  from git when the file is edited outside the editor. See [The `.ink` file](#the-ink-file).
 - **Authenticates with JWTs in cookies**, rotating a refresh token, with accounts made
   from the shell rather than by registration.
 - **Ships two more commands**, `lorebook` and `timeline`, which read a story's knowledge
@@ -99,39 +102,93 @@ chapter the manifest does not list is shown after the ones it does.
 
 ### The `.ink` file
 
-A chapter may open with front matter — a YAML mapping between two `---` lines — and the
-rest of the file is the prose:
+A file is a sequence of named sections. Each opens with a fence line and runs to the next
+fence or to the end of the file:
 
-    ---
+    ===== ink:meta
     title: The Letter in the Study
     status: draft
     summary: |
       She finally opens it, and it is not what she was told it was.
-    ---
+    ===== ink:body
     She had not opened it. Three years of not opening it, and the wax still held.
+    ===== ink:provenance
+    "47f57caaa4fb330e": [[18, 45, "gen"], [45, 54, "fix"]]
 
-All three keys are optional, and so is the header. `title` is the name the chapter is
-shown under, so a chapter has a name whatever its slug drops; a file with no title is
-shown as its filename without the suffix. `status` is a free string — `outline`, `draft`,
-`revised` and `done` are the suggested vocabulary. A key this API does not know is kept
-as it is, so one added by hand survives a save.
+**A file with no fence line anywhere is all prose**, which is what a writer gets by making
+a file and typing in it, and what keeps these readable to anything that reads text.
 
-`/contents` is the prose under that header. A read leaves the header out, and a write
-keeps the header that is on disk, so the writer never sees YAML and no header reaches a
-model.
+`ink:meta` is a YAML mapping and all of its keys are optional, as is the section itself.
+`title` is the name the chapter is shown under, so a chapter has a name whatever its slug
+drops; a file with no title is shown as its filename without the suffix. `status` is a free
+string — `outline`, `draft`, `revised` and `done` are the suggested vocabulary. A key this
+API does not know is kept as it is, so one added by hand survives a save. It has to come
+first: listing a tree reads only the top of each file, so a header further down would not be
+found.
 
-Reading a header is deliberately forgiving: one that is unterminated, unparseable or not
-a mapping leaves the chapter with no metadata and all of its text as prose. A malformed
-first line must not take a chapter out of the tree. `inkspire ink check` is where those
-problems are reported instead:
+`ink:body` is the prose, and `/contents` is exactly it — nothing to strip, no markup in it.
+
+`ink:provenance` records who wrote each character: one entry per paragraph, keyed by a hash
+of that paragraph's own text, whose value is the stretches that are not the writer's own as
+`[start, end, kind]` with offsets relative to the paragraph. `gen` is a model's text, `fix`
+is a model's text the writer has since corrected, and the writer's own is the default and so
+is never stored. Keying by content rather than by position means editing one paragraph leaves
+every other paragraph's record untouched.
+
+`---` means nothing here, so it is free to be a Markdown horizontal rule in prose.
+
+**A section this build does not know is preserved exactly**, so a newer build's metadata
+survives a round trip through an older one.
+
+Reading is deliberately forgiving. A header that is not YAML costs the metadata and nothing
+else — the fences say where the prose starts, so a broken header cannot take the prose with
+it — and a file nobody can make sense of keeps all of its text. A malformed line must never
+take a chapter out of the tree. `inkspire ink check` is where those problems are reported
+instead:
 
 ```bash
-poetry run inkspire ink check                    # every .ink file in both roots
+poetry run inkspire ink check                        # every .ink file in both roots
 poetry run inkspire ink check stories/example-story  # or only what is named
 ```
 
-It prints `path:line: level: message` and exits non-zero if any file carries an error,
-so it can gate a commit. A warning alone — an unknown key — exits 0.
+It prints `path:line: level: message` and exits non-zero if any file carries an error, so it
+can gate a commit. A warning alone — a key or a section it has no meaning for — exits 0.
+Errors are prose above the first section, a section opened twice, a `meta` section that is
+not first or is not a YAML mapping, and a known key whose value is not text.
+
+### Provenance a hand edit left behind
+
+Editing a chapter outside the editor changes a paragraph's text, so it no longer hashes to
+the key its record is stored under — and those offsets now describe prose that is gone.
+**Recomputing the hash is not the fix**: it would record the new text while keeping offsets
+measured against the old, turning something detectable into a silent wrong answer.
+
+So the paragraph's own earlier text is looked for in the file's git history, diffed forward,
+and the record replayed over the result: characters that survived keep what they were,
+inserted ones become the writer's, deleted ones contribute nothing. What history cannot
+explain is dropped rather than guessed at, and no model is ever asked which passages read as
+machine-written — that would fabricate a record rather than recover one.
+
+`GET /document` does this before answering, so the writer normally never sees a drift, and it
+**writes nothing** doing so: recovering on a read must not dirty the story repository. To put
+it right on disk:
+
+```bash
+poetry run inkspire ink reclassify                   # report; writes nothing
+poetry run inkspire ink reclassify -f                # apply
+poetry run inkspire ink reclassify -n chapters/02.ink  # a dry run, said out loud
+```
+
+    chapters/02.ink
+      para 1  080e…6029  ok
+      para 2  39f4…2890  STALE  -> recoverable from 07e9299, was 47f5…330e (3 runs)
+      para 3  7f39…2f97  ok
+    1 file checked, 1 stale, 1 recoverable, 0 would reset. Nothing written; pass --force to apply.
+
+A dry run exits non-zero if it found anything stale, so it too can gate a commit, and a clean
+file prints nothing at all. Unlike the route this walks the whole history rather than
+stopping at a ceiling: it is run by hand, after a miss, and is worth the time. Notes have no
+history — their root is not a repository — so there a stale paragraph can only be dropped.
 
 One story is one directory in the tree, and its chapters are that directory's files:
 
@@ -147,7 +204,8 @@ One story is one directory in the tree, and its chapters are that directory's fi
 | `PUT /api/stories/file/{id}` | rename a chapter, or move it to another story |
 | `DELETE /api/stories/file/{id}` | delete a chapter |
 | `GET /api/stories/file/{id}/contents` | the chapter's prose, as `text/plain` |
-| `PUT /api/stories/file/{id}/contents` | replace that prose, keeping the header |
+| `GET /api/stories/file/{id}/document` | the prose **and** its provenance, reconciled |
+| `PUT /api/stories/file/{id}/document` | replace both, in one write |
 
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
@@ -233,13 +291,17 @@ a context. Directories do not nest: a folder holds files. Files are `.ink` files
 same format as a chapter, so a note is shown under the title in its own header.
 
 `/api/notes/...` answers exactly what `/api/stories/...` does — `tree`, `dir/{id}`,
-`file/{id}`, `file/{id}/contents` — with two differences, both because a file here may
-sit at the root:
+`file/{id}`, `file/{id}/contents` and `file/{id}/document` — with three differences. Two are
+because a file here may sit at the root:
 
 - `POST /api/notes/file` accepts `dir: null`, and the tree's `files` map is not always
   empty.
 - `PUT /api/notes/file/{id}` tells an absent `dir` from one that is explicitly `null`:
   leaving the field out leaves the file where it is, and `null` moves it to the root.
+
+The third is that this root is not a git repository, so there is no history here to recover a
+stale provenance record from — a paragraph edited outside the editor can only have its record
+dropped.
 
 Deleting a folder takes its files and its manifest, and is refused with a 409 while it
 holds anything else.
