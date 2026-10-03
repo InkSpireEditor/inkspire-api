@@ -447,7 +447,7 @@ class Scanner:
 
         file = free_path(chapters_dir, slugify(name, "chapter"), CHAPTER_SUFFIX)
         header = {"title": name} if name != file.stem else {}
-        write_atomically(file, ink.render(header, ""))
+        write_atomically(file, ink.render(header, "", {}))
         with self._chapter_list(story) as listed:
             ensure_entry(listed, file.name)
 
@@ -467,7 +467,7 @@ class Scanner:
 
         file = free_path(self.stories_dir, slugify(name, "story"), CHAPTER_SUFFIX)
         header = {"title": name} if name != file.stem else {}
-        write_atomically(file, ink.render(header, ""))
+        write_atomically(file, ink.render(header, "", {}))
 
         self.invalidate()
         return self.one_shot(derive_id(SPACE, f"{STORIES}/{file.name}"))
@@ -661,11 +661,13 @@ class Scanner:
         return ink.parse(self._text(file.relpath)).body
 
     def write_file(self, file_id: str, body: str) -> None:
-        """Replaces a chapter's or a one-shot's prose, keeping the header the file has.
+        """Replaces a chapter's or a one-shot's prose, keeping every other section.
 
         The header is read from disk at the moment of the write, not taken from
         anything the client sent, so a title or a status changed by hand since the
-        client loaded the file survives the save.
+        client loaded the file survives the save. Whatever sections sit below the
+        prose are carried over for the same reason, and because dropping one would
+        lose metadata this build may not understand.
         """
         file = self.file(file_id)
         path = self.path(file.relpath)
@@ -673,5 +675,5 @@ class Scanner:
             raise NotFound(f'"{file.relpath}" is no longer on disk.')
 
         document = ink.parse(self._text(file.relpath))
-        write_atomically(path, ink.render(document.metadata, body))
+        write_atomically(path, ink.render(document.metadata, body, document.sections))
         self._held.restamp()

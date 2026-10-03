@@ -152,14 +152,18 @@ def test_a_symlinked_file_is_not_listed(notes: NotesScanner, root: Path, tmp_pat
 
 def test_a_file_is_named_by_its_header(notes: NotesScanner, root: Path) -> None:
     """A note keeps the name that was typed wherever it sits, root included."""
-    make_note(root, "scratch.ink", "---\ntitle: Scratch Pad\n---\nOnce.\n")
+    make_note(root, "scratch.ink", "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\nOnce.\n")
     assert [n.name for n in notes.tree().notes.values()] == ["Scratch Pad"]
 
 
 def test_a_file_carries_the_status_and_summary_its_header_gives_it(
     notes: NotesScanner, root: Path
 ) -> None:
-    make_note(root, "scratch.ink", "---\nstatus: draft\nsummary: A list.\n---\nOnce.\n")
+    make_note(
+        root,
+        "scratch.ink",
+        "===== ink:meta\nstatus: draft\nsummary: A list.\n===== ink:body\nOnce.\n",
+    )
     note = next(iter(notes.tree().notes.values()))
     assert (note.status, note.summary) == ("draft", "A list.")
 
@@ -244,7 +248,7 @@ def test_a_retitled_file_is_picked_up(notes: NotesScanner, root: Path) -> None:
     path = make_note(root, "scratch.ink", "Once.\n")
     assert [n.name for n in notes.tree().notes.values()] == ["scratch"]
 
-    path.write_text("---\ntitle: Scratch Pad\n---\nOnce.\n", encoding="utf-8")
+    path.write_text("===== ink:meta\ntitle: Scratch Pad\n===== ink:body\nOnce.\n", encoding="utf-8")
     os.utime(path, ns=(0, 1))
     assert [n.name for n in notes.tree().notes.values()] == ["Scratch Pad"]
 
@@ -394,7 +398,7 @@ def test_a_created_file_at_the_root_is_a_header_and_no_prose(
     note = notes.create_note(None, "Scratch Pad")
 
     assert (root / "scratch-pad.ink").read_text(encoding="utf-8") == (
-        "---\ntitle: Scratch Pad\n---\n"
+        "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\n"
     )
     assert (note.name, note.folder_id) == ("Scratch Pad", None)
 
@@ -439,7 +443,7 @@ def test_renaming_a_file_writes_the_name_into_its_header(
     renamed = notes.update_note(note.id, name="Scratch Pad", folder_id=None)
 
     assert (root / renamed.filename).read_text(encoding="utf-8") == (
-        "---\ntitle: Scratch Pad\n---\nOnce.\n"
+        "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\nOnce.\n"
     )
 
 
@@ -511,19 +515,23 @@ def test_a_file_reads_back_what_was_written(notes: NotesScanner) -> None:
 
 
 def test_reading_a_file_leaves_out_its_header(notes: NotesScanner, root: Path) -> None:
-    make_note(root, "scratch.ink", "---\ntitle: Scratch Pad\n---\nA list.\n")
+    make_note(root, "scratch.ink", "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\nA list.\n")
     note = next(iter(notes.tree().notes.values()))
     assert notes.read_note(note.id) == "A list.\n"
 
 
 def test_writing_a_file_keeps_its_header(notes: NotesScanner, root: Path) -> None:
-    make_note(root, "scratch.ink", "---\ntitle: Scratch Pad\nstatus: draft\n---\nOne.\n")
+    make_note(
+        root,
+        "scratch.ink",
+        "===== ink:meta\ntitle: Scratch Pad\nstatus: draft\n===== ink:body\nOne.\n",
+    )
     note = next(iter(notes.tree().notes.values()))
 
     notes.write_note(note.id, "Two.\n")
 
     assert (root / "scratch.ink").read_text(encoding="utf-8") == (
-        "---\ntitle: Scratch Pad\nstatus: draft\n---\nTwo.\n"
+        "===== ink:meta\ntitle: Scratch Pad\nstatus: draft\n===== ink:body\nTwo.\n"
     )
 
 

@@ -131,7 +131,7 @@ def test_the_tree_leaves_out_a_chapter_s_summary(
         data_root,
         "example-story",
         title="Example Story",
-        chapters={"first-chapter.ink": "---\nsummary: What happens.\n---\nOnce.\n"},
+        chapters={"first-chapter.ink": "===== ink:meta\nsummary: What happens.\n===== ink:body\nOnce.\n"},
     )
 
     listed = entry_named(dirs(logged_in), "Example Story")["files"][0]
@@ -151,7 +151,7 @@ def test_a_one_shot_shows_up_in_the_tree_as_a_loose_file(
     logged_in: TestClient, data_root: Path, repository: Path
 ) -> None:
     (data_root / "stories" / "solo.ink").write_text(
-        "---\ntitle: Solo\n---\nOnce.\n", encoding="utf-8"
+        "===== ink:meta\ntitle: Solo\n===== ink:body\nOnce.\n", encoding="utf-8"
     )
     listed = logged_in.get("/api/stories/tree").json()["files"]
     assert names(listed) == ["Solo"]
@@ -256,7 +256,7 @@ def test_creating_a_chapter_writes_an_ink_file(logged_in: TestClient, repository
     assert response.json()["name"] == "Third Chapter"
     assert response.json()["dir"] == identifier
     path = repository / "stories" / "example-story" / "chapters" / "third-chapter.ink"
-    assert path.read_text(encoding="utf-8") == "---\ntitle: Third Chapter\n---\n"
+    assert path.read_text(encoding="utf-8") == "===== ink:meta\ntitle: Third Chapter\n===== ink:body\n"
 
 
 def test_a_created_chapter_is_in_its_story(logged_in: TestClient, repository: Path) -> None:
@@ -420,7 +420,7 @@ def test_renaming_a_chapter_renames_its_file(logged_in: TestClient, repository: 
 
     chapters = repository / "stories" / "example-story" / "chapters"
     assert (chapters / "renamed-chapter.ink").read_text(encoding="utf-8") == (
-        "---\ntitle: Renamed Chapter\n---\nOnce."
+        "===== ink:meta\ntitle: Renamed Chapter\n===== ink:body\nOnce."
     )
     assert not (chapters / "first-chapter.ink").exists()
 
@@ -546,7 +546,7 @@ def test_a_chapter_answers_with_what_its_header_says(
 ) -> None:
     chapters = repository / "stories" / "example-story" / "chapters"
     (chapters / "third.ink").write_text(
-        "---\ntitle: The Letter\nstatus: draft\nsummary: She opens it.\n---\nOnce.\n",
+        "===== ink:meta\ntitle: The Letter\nstatus: draft\nsummary: She opens it.\n===== ink:body\nOnce.\n",
         encoding="utf-8",
     )
 
@@ -650,7 +650,7 @@ def test_the_contents_of_a_chapter_leave_out_its_header(
     """The editor holds prose, so the header never reaches it and never reaches a model."""
     chapters = repository / "stories" / "example-story" / "chapters"
     (chapters / "first-chapter.ink").write_text(
-        "---\ntitle: The Letter\n---\nOnce.\n", encoding="utf-8"
+        "===== ink:meta\ntitle: The Letter\n===== ink:body\nOnce.\n", encoding="utf-8"
     )
     chapter = chapter_id(logged_in, "Example Story", "The Letter")
 
@@ -662,7 +662,7 @@ def test_saving_a_chapter_keeps_the_header_on_disk(
 ) -> None:
     chapters = repository / "stories" / "example-story" / "chapters"
     path = chapters / "first-chapter.ink"
-    path.write_text("---\ntitle: The Letter\n---\nOnce.\n", encoding="utf-8")
+    path.write_text("===== ink:meta\ntitle: The Letter\n===== ink:body\nOnce.\n", encoding="utf-8")
     chapter = chapter_id(logged_in, "Example Story", "The Letter")
 
     response = logged_in.put(
@@ -670,7 +670,7 @@ def test_saving_a_chapter_keeps_the_header_on_disk(
     )
 
     assert response.status_code == 204
-    assert path.read_text(encoding="utf-8") == "---\ntitle: The Letter\n---\nTwice.\n"
+    assert path.read_text(encoding="utf-8") == "===== ink:meta\ntitle: The Letter\n===== ink:body\nTwice.\n"
 
 
 def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
@@ -925,7 +925,7 @@ def test_a_status_is_set_through_the_header(
     assert response.json()["status"] == "draft"
     assert response.json()["id"] == chapter, "a status change moves no file"
     path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
-    assert path.read_text(encoding="utf-8") == "---\nstatus: draft\n---\nOnce."
+    assert path.read_text(encoding="utf-8") == "===== ink:meta\nstatus: draft\n===== ink:body\nOnce."
 
 
 def test_a_status_reaches_the_listing(logged_in: TestClient, repository: Path) -> None:

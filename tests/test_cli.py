@@ -588,7 +588,7 @@ def write_chapter(root: Path, name: str, text: str) -> Path:
 
 
 def test_a_repository_of_good_files_passes(check, tmp_path) -> None:
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\n===== ink:body\nOnce.\n")
     write_chapter(tmp_path, "two.ink", "Prose with no header.\n")
 
     result = check()
@@ -597,8 +597,8 @@ def test_a_repository_of_good_files_passes(check, tmp_path) -> None:
     assert "2 files checked, 0 errors, 0 warnings." in result.output
 
 
-def test_an_unreadable_header_fails_and_says_where(check, tmp_path) -> None:
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\nOnce.\n")
+def test_prose_above_the_first_section_fails_and_says_where(check, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", "Once.\n===== ink:body\nTwice.\n")
 
     result = check()
 
@@ -609,7 +609,7 @@ def test_an_unreadable_header_fails_and_says_where(check, tmp_path) -> None:
 
 def test_a_warning_alone_passes(check, tmp_path) -> None:
     """A key nothing reads is worth saying, and is not worth failing over."""
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\npov: Jane Doe\n---\nOnce.\n")
+    write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\npov: Jane Doe\n===== ink:body\nOnce.\n")
 
     result = check()
 
@@ -621,7 +621,7 @@ def test_a_warning_alone_passes(check, tmp_path) -> None:
 def test_a_file_that_is_not_utf8_is_an_error(check, tmp_path) -> None:
     chapters = tmp_path / "novel-data" / "stories" / "example-story" / "chapters"
     chapters.mkdir(parents=True)
-    (chapters / "one.ink").write_bytes(b"---\ntitle: \xff\xfe\n---\n")
+    (chapters / "one.ink").write_bytes(b"===== ink:meta\ntitle: \xff\xfe\n===== ink:body\n")
 
     result = check()
 
@@ -630,8 +630,8 @@ def test_a_file_that_is_not_utf8_is_an_error(check, tmp_path) -> None:
 
 
 def test_one_named_file_is_checked_on_its_own(check, tmp_path) -> None:
-    good = write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
-    write_chapter(tmp_path, "two.ink", "---\ntitle: Two\nOnce.\n")
+    good = write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\n===== ink:body\nOnce.\n")
+    write_chapter(tmp_path, "two.ink", "Once.\n===== ink:body\nTwice.\n")
 
     result = check(str(good))
 
@@ -655,10 +655,10 @@ def test_a_path_that_is_not_there_is_refused(check, tmp_path) -> None:
 
 def test_both_roots_are_checked(check, tmp_path) -> None:
     """A note is the same kind of file as a chapter, and is checked with them."""
-    write_chapter(tmp_path, "one.ink", "---\ntitle: One\n---\nOnce.\n")
+    write_chapter(tmp_path, "one.ink", "===== ink:meta\ntitle: One\n===== ink:body\nOnce.\n")
     (tmp_path / "files").mkdir()
     (tmp_path / "files" / "scratch.ink").write_text(
-        "---\ntitle: Scratch\nOnce.\n", encoding="utf-8"
+        "A list.\n===== ink:body\nAnother.\n", encoding="utf-8"
     )
 
     result = check()

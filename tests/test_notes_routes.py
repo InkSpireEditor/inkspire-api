@@ -24,7 +24,7 @@ def workspace(files_root: Path) -> Path:
     """A file at the root, and a folder holding one."""
     make_note(files_root, "scratch.ink", "A list.\n")
     folder = make_folder(files_root, "research", context="Background reading.")
-    make_note(folder, "worldbuilding.ink", "---\ntitle: Worldbuilding\n---\nOnce.\n")
+    make_note(folder, "worldbuilding.ink", "===== ink:meta\ntitle: Worldbuilding\n===== ink:body\nOnce.\n")
     return files_root
 
 
@@ -121,7 +121,7 @@ def test_a_file_can_be_created_at_the_root(
     assert response.json()["name"] == "Scratch Pad"
     assert response.json()["dir"] is None
     assert (files_root / "scratch-pad.ink").read_text(encoding="utf-8") == (
-        "---\ntitle: Scratch Pad\n---\n"
+        "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\n"
     )
 
 
@@ -223,7 +223,7 @@ def test_a_file_answers_with_what_its_header_says(
     make_note(
         files_root,
         "scratch.ink",
-        "---\ntitle: Scratch Pad\nstatus: draft\nsummary: A list.\n---\nOnce.\n",
+        "===== ink:meta\ntitle: Scratch Pad\nstatus: draft\nsummary: A list.\n===== ink:body\nOnce.\n",
     )
     identifier = note_id(logged_in, "Scratch Pad")
 
@@ -273,7 +273,7 @@ def test_renaming_a_file_renames_it_and_changes_its_id(
     assert response.status_code == 200
     assert response.json()["id"] != identifier
     assert (workspace / "scratch-pad.ink").read_text(encoding="utf-8") == (
-        "---\ntitle: Scratch Pad\n---\nA list.\n"
+        "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\nA list.\n"
     )
 
 
@@ -388,7 +388,7 @@ def test_saving_a_file_keeps_its_header(logged_in: TestClient, workspace: Path) 
     assert response.status_code == 204
     path = workspace / "research" / "worldbuilding.ink"
     assert path.read_text(encoding="utf-8") == (
-        "---\ntitle: Worldbuilding\n---\nTwice.\n"
+        "===== ink:meta\ntitle: Worldbuilding\n===== ink:body\nTwice.\n"
     )
 
 
@@ -504,5 +504,5 @@ def test_both_lists_are_in_name_order(
 def test_a_file_at_the_root_carries_its_status(
     logged_in: TestClient, files_root: Path
 ) -> None:
-    make_note(files_root, "scratch.ink", "---\nstatus: draft\n---\nA list.\n")
+    make_note(files_root, "scratch.ink", "===== ink:meta\nstatus: draft\n===== ink:body\nA list.\n")
     assert entry_named(tree(logged_in)["files"], "scratch")["status"] == "draft"

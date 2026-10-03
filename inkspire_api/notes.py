@@ -301,7 +301,7 @@ class NotesScanner:
 
         file = free_path(directory, slugify(name, "file"), ink.SUFFIX)
         header = {"title": name} if name != file.stem else {}
-        write_atomically(file, ink.render(header, ""))
+        write_atomically(file, ink.render(header, "", {}))
 
         self.invalidate()
         return self.note(derive_id(SPACE, str(relative / file.name)))
@@ -378,12 +378,12 @@ class NotesScanner:
         return ink.parse(self._text(note.relpath)).body
 
     def write_note(self, note_id: str, body: str) -> None:
-        """Replaces a note's prose, keeping the header the file has."""
+        """Replaces a note's prose, keeping the header and every other section."""
         note = self.note(note_id)
         path = self.path(note.relpath)
         if not path.is_file():
             raise NotFound(f'"{note.relpath}" is no longer on disk.')
 
         document = ink.parse(self._text(note.relpath))
-        write_atomically(path, ink.render(document.metadata, body))
+        write_atomically(path, ink.render(document.metadata, body, document.sections))
         self._held.restamp()
