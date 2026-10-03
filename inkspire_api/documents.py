@@ -84,14 +84,13 @@ def _read(
     if stored is None:
         return {"body": body, "metadata": None, "reconciled": None}
 
-    if repo is None:
-        answered, revision = provenance.without_recovery(body, stored), None
-    else:
-        answered, revision = repository.recover(repo, PurePosixPath(relpath), body, stored)
+    recovery = repository.reconciled(repo, PurePosixPath(relpath), body, stored)
     return {
         "body": body,
-        "metadata": {key: [list(run) for run in runs] for key, runs in answered.items()},
-        "reconciled": _reconciled(stored, answered, revision),
+        "metadata": {
+            key: [list(run) for run in runs] for key, runs in recovery.metadata.items()
+        },
+        "reconciled": _reconciled(stored, recovery.metadata, recovery.revision),
     }
 
 

@@ -9,6 +9,7 @@ decided here with no repository anywhere near it.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -185,27 +186,27 @@ def _edit(data_root: Path, body: str) -> None:
 
 def test_a_match_in_an_older_revision_is_recovered(committed: Repo, data_root: Path) -> None:
     _edit(data_root, NEW)
-    answered, revision = repository.recover(committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
-    assert answered == {NEW_HASH: NEW_RUNS}
-    assert revision == committed.head.commit.hexsha[:7]
+    recovery = repository.recover(committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
+    assert recovery.metadata == {NEW_HASH: NEW_RUNS}
+    assert recovery.revision == committed.head.commit.hexsha[:7]
 
 
 def test_no_match_in_any_revision_resets_that_paragraph(committed: Repo, data_root: Path) -> None:
     """The edited state was never committed, so nothing can say what the runs described.
     Nothing is invented."""
     _edit(data_root, NEW)
-    answered, revision = repository.recover(
+    recovery = repository.recover(
         committed, RELPATH, NEW, {"deadbeefdeadbeef": [(0, 4, "gen")]}
     )
-    assert answered == {NEW_HASH: []}
-    assert revision is None
+    assert recovery.metadata == {NEW_HASH: []}
+    assert recovery.revision is None
 
 
 def test_a_file_with_no_history_at_all_resets(git_root: Repo, data_root: Path) -> None:
     make_story(data_root, "example-story", chapters={"one.ink": f"{ink.fence_line('body')}{NEW}\n"})
-    answered, revision = repository.recover(git_root, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
-    assert answered == {NEW_HASH: []}
-    assert revision is None
+    recovery = repository.recover(git_root, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
+    assert recovery.metadata == {NEW_HASH: []}
+    assert recovery.revision is None
 
 
 def test_a_clean_file_makes_no_git_call(
@@ -218,9 +219,9 @@ def test_a_clean_file_makes_no_git_call(
         raise AssertionError("history was walked for a file with no stale paragraph")
 
     monkeypatch.setattr(repository, "_log_records", refuse)
-    answered, revision = repository.recover(committed, RELPATH, OLD, {OLD_HASH: OLD_RUNS})
-    assert answered == {OLD_HASH: OLD_RUNS}
-    assert revision is None
+    recovery = repository.recover(committed, RELPATH, OLD, {OLD_HASH: OLD_RUNS})
+    assert recovery.metadata == {OLD_HASH: OLD_RUNS}
+    assert recovery.revision is None
 
 
 def test_a_file_with_no_stored_provenance_makes_no_git_call(
@@ -232,9 +233,9 @@ def test_a_file_with_no_stored_provenance_makes_no_git_call(
         raise AssertionError("history was walked for a file with no provenance")
 
     monkeypatch.setattr(repository, "_log_records", refuse)
-    answered, revision = repository.recover(committed, RELPATH, NEW, {})
-    assert answered == {NEW_HASH: []}
-    assert revision is None
+    recovery = repository.recover(committed, RELPATH, NEW, {})
+    assert recovery.metadata == {NEW_HASH: []}
+    assert recovery.revision is None
 
 
 def test_only_the_stale_paragraph_is_recovered(committed: Repo, data_root: Path) -> None:
@@ -248,11 +249,11 @@ def test_only_the_stale_paragraph_is_recovered(committed: Repo, data_root: Path)
     after = f"Untouched.\n\n{NEW}\n"
     _edit(data_root, after)
     kept = provenance.paragraph_hash("Untouched.")
-    answered, revision = repository.recover(
+    recovery = repository.recover(
         committed, RELPATH, after, {kept: [(0, 2, "fix")], OLD_HASH: OLD_RUNS}
     )
-    assert answered == {kept: [(0, 2, "fix")], NEW_HASH: NEW_RUNS}
-    assert revision == committed.head.commit.hexsha[:7]
+    assert recovery.metadata == {kept: [(0, 2, "fix")], NEW_HASH: NEW_RUNS}
+    assert recovery.revision == committed.head.commit.hexsha[:7]
 
 
 def test_a_paragraph_too_unlike_the_stale_one_is_not_paired_with_it(
@@ -262,11 +263,11 @@ def test_a_paragraph_too_unlike_the_stale_one_is_not_paired_with_it(
     pairing here would be a guess, so the paragraph resets."""
     replaced = "Nothing whatsoever to do with any of that.\n"
     _edit(data_root, replaced)
-    answered, revision = repository.recover(
+    recovery = repository.recover(
         committed, RELPATH, replaced, {OLD_HASH: OLD_RUNS}
     )
-    assert answered == {provenance.paragraph_hash(replaced.rstrip("\n")): []}
-    assert revision == committed.head.commit.hexsha[:7]
+    assert recovery.metadata == {provenance.paragraph_hash(replaced.rstrip("\n")): []}
+    assert recovery.revision == committed.head.commit.hexsha[:7]
 
 
 def test_two_identical_stale_paragraphs_share_the_one_recovery(
@@ -277,26 +278,70 @@ def test_two_identical_stale_paragraphs_share_the_one_recovery(
     claimed."""
     after = f"{NEW}\n\n{NEW}\n"
     _edit(data_root, after)
-    answered, revision = repository.recover(committed, RELPATH, after, {OLD_HASH: OLD_RUNS})
-    assert answered == {NEW_HASH: NEW_RUNS}
-    assert revision == committed.head.commit.hexsha[:7]
+    recovery = repository.recover(committed, RELPATH, after, {OLD_HASH: OLD_RUNS})
+    assert recovery.metadata == {NEW_HASH: NEW_RUNS}
+    assert recovery.revision == committed.head.commit.hexsha[:7]
 
 
-def test_the_walk_stops_after_the_revision_ceiling(
-    committed: Repo, data_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A chapter with a long history and a paragraph stale since the start must not make
-    one blob read per commit inside a GET."""
-    monkeypatch.setattr(repository, "MAX_RECOVERY_REVISIONS", 2)
-    for index in range(4):
+def _bury(committed: Repo, data_root: Path, revisions: int) -> None:
+    """Commits `revisions` further edits, so the original paragraph is that far back."""
+    for index in range(revisions):
         _edit(data_root, f"Revision {index}.\n")
         committed.index.add([str(RELPATH)])
         committed.index.commit(f"Edit {index}")
 
+
+def test_the_walk_stops_at_the_ceiling_it_is_given(committed: Repo, data_root: Path) -> None:
+    """A chapter with a long history and a paragraph stale since the start must not make
+    one blob read per commit inside a GET. `MAX_RECOVERY_REVISIONS` is what a request
+    passes; the ceiling itself is the parameter, so this exercises it directly rather
+    than reaching around it to the module."""
+    _bury(committed, data_root, 4)
+
     _edit(data_root, NEW)
-    answered, revision = repository.recover(committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
-    assert answered == {NEW_HASH: []}
-    assert revision is None
+    recovery = repository.recover(
+        committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS}, limit=2
+    )
+    assert recovery.metadata == {NEW_HASH: []}
+    assert recovery.revision is None
+
+
+def test_no_ceiling_walks_the_whole_history(committed: Repo, data_root: Path) -> None:
+    """What `ink reclassify` asks for: run by hand after a miss, and worth the time."""
+    _bury(committed, data_root, 4)
+
+    _edit(data_root, NEW)
+    recovery = repository.recover(
+        committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS}, limit=None
+    )
+    assert recovery.metadata == {NEW_HASH: NEW_RUNS}
+    assert recovery.revision is not None
+
+
+def test_the_default_ceiling_is_what_a_request_gets() -> None:
+    """A default of `None` here would walk a whole history inside a `GET`, which nothing
+    else would catch. The number is pinned too, so it cannot drift away from §7.5."""
+    assert repository.MAX_RECOVERY_REVISIONS == 50
+    for function in (repository.recover, repository.reconciled):
+        default = inspect.signature(function).parameters["limit"].default
+        assert default == repository.MAX_RECOVERY_REVISIONS
+
+
+# --- the shared fork -------------------------------------------------------
+
+
+def test_no_repository_means_reset(data_root: Path) -> None:
+    """One function decides this, so the route and the command cannot disagree."""
+    recovery = repository.reconciled(None, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
+    assert recovery.metadata == {NEW_HASH: []}
+    assert recovery.revision is None
+
+
+def test_a_repository_means_recovery(committed: Repo, data_root: Path) -> None:
+    _edit(data_root, NEW)
+    recovery = repository.reconciled(committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
+    assert recovery.metadata == {NEW_HASH: NEW_RUNS}
+    assert recovery.revision == committed.head.commit.hexsha[:7]
 
 
 # --- the section on disk ---------------------------------------------------

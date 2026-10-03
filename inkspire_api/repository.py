@@ -33,7 +33,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -455,6 +455,25 @@ def history(repo: Repo, chapter: Chapter, *, limit: int) -> list[dict]:
     ]
 
 
+class Recovery(NamedTuple):
+    """What a reconciliation answered.
+
+    `sources` maps a paragraph's new hash to the stale key its runs came from. Only
+    `ink reclassify` reads it, to say in its report which key it recovered — but it has
+    to come from here, because the pairing is decided by similarity (§7.5) and a caller
+    comparing key sets afterwards could only guess at it.
+    """
+
+    #: The metadata the file should hold, keyed by the paragraphs it has now.
+    metadata: provenance.Metadata
+    #: The newest revision that explained anything, or `None` if none did.
+    revision: str | None
+    #: New hash to the stale key it was recovered from, for whatever was. Required
+    #: rather than defaulted: a mutable default on a NamedTuple is one object shared by
+    #: every instance that takes it.
+    sources: dict[str, str]
+
+
 #: How many revisions back a provenance recovery looks before giving up.
 #:
 #: The walk costs one blob read per revision, so without a ceiling a chapter with
@@ -483,13 +502,17 @@ def _paragraphs_at(repo: Repo, record: dict) -> list[str]:
 
 
 def _stale_texts(
-    repo: Repo, relpath: PurePosixPath, wanted: set[str]
+    repo: Repo, relpath: PurePosixPath, wanted: set[str], limit: int | None
 ) -> tuple[dict[str, str], str | None]:
     """The text each hash in `wanted` had, found by walking the file's history.
 
     Newest first, stopping as soon as every wanted hash is accounted for, so the cost is
     the revisions since the edit rather than the length of the history. Answers what was
     found and the newest revision that contributed — `None` where nothing did.
+
+    `limit` of `None` walks the whole history, which only `ink reclassify` asks for: it
+    is run by hand, after a miss, and is worth however long it takes. A request takes the
+    ceiling instead.
 
     Takes no lock. The commit/push/pull lock serialises writes, and opening a chapter
     must not fail because a push is running.
@@ -501,7 +524,7 @@ def _stale_texts(
 
     found: dict[str, str] = {}
     revision: str | None = None
-    for record in records[:MAX_RECOVERY_REVISIONS]:
+    for record in (records if limit is None else records[:limit]):
         for paragraph in _paragraphs_at(repo, record):
             digest = provenance.paragraph_hash(paragraph)
             if digest in wanted and digest not in found:
@@ -529,8 +552,13 @@ def _best_match(paragraph: str, found: dict[str, str]) -> str | None:
 
 
 def recover(
-    repo: Repo, relpath: PurePosixPath, body: str, metadata: provenance.Metadata
-) -> tuple[provenance.Metadata, str | None]:
+    repo: Repo,
+    relpath: PurePosixPath,
+    body: str,
+    metadata: provenance.Metadata,
+    *,
+    limit: int | None = MAX_RECOVERY_REVISIONS,
+) -> Recovery:
     """`metadata` rekeyed to `body`'s paragraphs, recovering what history can explain.
 
     A paragraph whose hash is stored keeps its runs untouched. A paragraph whose hash is
@@ -547,21 +575,35 @@ def recover(
     stale on disk until the next ordinary save; `ink reclassify --force` is the only
     thing that persists a recovery on its own.
     """
-    hashes = provenance.hashes_of(body)
-    present = set(hashes)
-    stale = {digest for digest in metadata if digest not in present}
-    unexplained = [digest for digest in hashes if digest not in metadata]
-
-    if not stale or not unexplained:
-        return provenance.without_recovery(body, metadata), None
-
-    found, revision = _stale_texts(repo, relpath, stale)
-    if not found:
-        return provenance.without_recovery(body, metadata), None
-
     paragraphs, _ = provenance.split_paragraphs(body)
+    hashes = [provenance.paragraph_hash(paragraph) for paragraph in paragraphs]
+    stale = {digest for digest in metadata if digest not in set(hashes)}
+
+    nothing_to_do = not stale or all(digest in metadata for digest in hashes)
+    if nothing_to_do:
+        return Recovery(provenance.without_recovery(body, metadata), None, {})
+
+    found, revision = _stale_texts(repo, relpath, stale, limit)
+    if not found:
+        return Recovery(provenance.without_recovery(body, metadata), None, {})
+
+    return _replayed(zip(hashes, paragraphs), metadata, found, revision)
+
+
+def _replayed(
+    paragraphs: Iterator[tuple[str, str]],
+    metadata: provenance.Metadata,
+    found: dict[str, str],
+    revision: str | None,
+) -> Recovery:
+    """Each paragraph's runs: its own where its hash is stored, replayed where it is not.
+
+    `found` is consumed as it goes, so one stale text explains one paragraph and no
+    more — two paragraphs cannot both be what one stored paragraph became.
+    """
     runs: dict[str, list[provenance.Run]] = {}
-    for digest, paragraph in zip(hashes, paragraphs):
+    sources: dict[str, str] = {}
+    for digest, paragraph in paragraphs:
         if digest in runs:
             # Two identical paragraphs share one entry (§7.3). Without this the second
             # would find the stale text already claimed and overwrite the recovery with
@@ -575,8 +617,28 @@ def recover(
             runs[digest] = []
             continue
         runs[digest] = provenance.reconcile(found.pop(key), metadata[key], paragraph)
+        sources[digest] = key
+    return Recovery(runs, revision, sources)
 
-    return runs, revision
+
+def reconciled(
+    repo: Repo | None,
+    relpath: PurePosixPath,
+    body: str,
+    metadata: provenance.Metadata,
+    *,
+    limit: int | None = MAX_RECOVERY_REVISIONS,
+) -> Recovery:
+    """`metadata` rekeyed to `body`, recovering from history where there is any.
+
+    The one place that decides what no repository means, so the `document` route and
+    `ink reclassify` cannot come to different answers about it. `None` for `repo` is the
+    notes root, whose files have no history, and a story root nobody has cloned: in
+    either case a paragraph that is no longer accounted for resets (§7.5).
+    """
+    if repo is None:
+        return Recovery(provenance.without_recovery(body, metadata), None, {})
+    return recover(repo, relpath, body, metadata, limit=limit)
 
 
 def content_at(repo: Repo, chapter: Chapter, rev: str) -> str:
