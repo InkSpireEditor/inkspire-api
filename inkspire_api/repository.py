@@ -41,7 +41,7 @@ from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import BaseModel, StringConstraints
 
-from . import ink
+from . import ink, provenance
 from .deps import SettingsDep
 from .files import ScannerDep
 from .fs import MAX_COMMIT_MESSAGE_LENGTH, NotFound, StorageError, derive_id
@@ -434,6 +434,130 @@ def history(repo: Repo, chapter: Chapter, *, limit: int) -> list[dict]:
         {key: record[key] for key in ("sha", "short", "author", "date", "message")}
         for record in _log_records(repo, chapter.relpath, limit=limit)
     ]
+
+
+#: How many revisions back a provenance recovery looks before giving up.
+#:
+#: The walk costs one blob read per revision, so without a ceiling a chapter with
+#: thousands of commits and one stale paragraph from the first of them would make
+#: thousands of `git show` calls inside a single `GET`. A wall-clock timeout is the wrong
+#: bound here and `_run` says why: a local read does not hang, so what has to be limited
+#: is the work, not the waiting. Fifty revisions is far past the few a hand edit sits
+#: behind; past that, the paragraph resets.
+MAX_RECOVERY_REVISIONS = 50
+
+#: How alike a stored paragraph and a current one must be to be called the same
+#: paragraph, edited. Below this the pairing would be a guess, and a wrong pairing
+#: writes a confident account of something that never happened — so the paragraph resets
+#: instead. `reconcile` itself is correct for any pair; this guards only the pairing.
+MIN_PAIRING_SIMILARITY = 0.5
+
+
+def _paragraphs_at(repo: Repo, record: dict) -> list[str]:
+    """The paragraphs of one revision of a file, or none if that blob cannot be read."""
+    try:
+        text = repo.git.show(f"{record['sha']}:{record['path']}")
+    except GitCommandError:
+        return []
+    paragraphs, _ = provenance.split_paragraphs(ink.parse(text).body)
+    return paragraphs
+
+
+def _stale_texts(
+    repo: Repo, relpath: PurePosixPath, wanted: set[str]
+) -> tuple[dict[str, str], str | None]:
+    """The text each hash in `wanted` had, found by walking the file's history.
+
+    Newest first, stopping as soon as every wanted hash is accounted for, so the cost is
+    the revisions since the edit rather than the length of the history. Answers what was
+    found and the newest revision that contributed — `None` where nothing did.
+
+    Takes no lock. The commit/push/pull lock serialises writes, and opening a chapter
+    must not fail because a push is running.
+    """
+    try:
+        records = _log_records(repo, relpath, limit=None)
+    except GitCommandError:
+        return {}, None
+
+    found: dict[str, str] = {}
+    revision: str | None = None
+    for record in records[:MAX_RECOVERY_REVISIONS]:
+        for paragraph in _paragraphs_at(repo, record):
+            digest = provenance.paragraph_hash(paragraph)
+            if digest in wanted and digest not in found:
+                found[digest] = paragraph
+                if revision is None:
+                    revision = record["short"]
+        if len(found) == len(wanted):
+            break
+    return found, revision
+
+
+def _best_match(paragraph: str, found: dict[str, str]) -> str | None:
+    """Which of the stale paragraphs `paragraph` is the edited version of, if any.
+
+    Greedy in the body's own order, and each stale text is used once — two paragraphs
+    cannot both be what one stored paragraph became.
+    """
+    best: str | None = None
+    score = MIN_PAIRING_SIMILARITY
+    for key, text in found.items():
+        ratio = provenance.similarity(text, paragraph)
+        if ratio >= score:
+            best, score = key, ratio
+    return best
+
+
+def recover(
+    repo: Repo, relpath: PurePosixPath, body: str, metadata: provenance.Metadata
+) -> tuple[provenance.Metadata, str | None]:
+    """`metadata` rekeyed to `body`'s paragraphs, recovering what history can explain.
+
+    A paragraph whose hash is stored keeps its runs untouched. A paragraph whose hash is
+    not is stale — its text was edited outside the editor — so the stored key's own text
+    is looked for in the file's history, diffed forward to what the paragraph says now,
+    and its runs replayed over the result (§7.5). What history cannot explain resets to
+    an empty list, which renders as plain prose. Nothing is invented.
+
+    Answers the new metadata and the revision it was recovered from, or `None` where
+    nothing was recovered — either because nothing was stale or because the walk found
+    no match.
+
+    **Writes nothing.** A read must not dirty the story repository, so the file stays
+    stale on disk until the next ordinary save; `ink reclassify --force` is the only
+    thing that persists a recovery on its own.
+    """
+    hashes = provenance.hashes_of(body)
+    present = set(hashes)
+    stale = {digest for digest in metadata if digest not in present}
+    unexplained = [digest for digest in hashes if digest not in metadata]
+
+    if not stale or not unexplained:
+        return provenance.without_recovery(body, metadata), None
+
+    found, revision = _stale_texts(repo, relpath, stale)
+    if not found:
+        return provenance.without_recovery(body, metadata), None
+
+    paragraphs, _ = provenance.split_paragraphs(body)
+    runs: dict[str, list[provenance.Run]] = {}
+    for digest, paragraph in zip(hashes, paragraphs):
+        if digest in runs:
+            # Two identical paragraphs share one entry (§7.3). Without this the second
+            # would find the stale text already claimed and overwrite the recovery with
+            # an empty list.
+            continue
+        if digest in metadata:
+            runs[digest] = list(metadata[digest])
+            continue
+        key = _best_match(paragraph, found)
+        if key is None:
+            runs[digest] = []
+            continue
+        runs[digest] = provenance.reconcile(found.pop(key), metadata[key], paragraph)
+
+    return runs, revision
 
 
 def content_at(repo: Repo, chapter: Chapter, rev: str) -> str:
