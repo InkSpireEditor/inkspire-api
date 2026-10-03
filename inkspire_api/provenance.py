@@ -30,8 +30,14 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
+import logging
 import re
 from collections.abc import Sequence
+
+import yaml
+
+logger = logging.getLogger(__name__)
 
 #: A run of two or more line endings, or the single one that closes a body. Written as
 #: one pattern because both are separators: everything a paragraph is not.
@@ -220,3 +226,89 @@ def without_recovery(body: str, metadata: Metadata) -> Metadata:
         digest: list(metadata.get(digest, []))
         for digest in hashes_of(body)
     }
+
+
+# --- the section on disk ---------------------------------------------------
+
+
+def render_section(metadata: Metadata) -> str:
+    """`metadata` as the text of an `ink:provenance` section.
+
+    One line per paragraph, in paragraph order, the runs in JSON — which is YAML, and
+    is the flow style §7.3's example is written in, so a line stays one line however
+    many runs a paragraph has.
+
+    **The key is quoted.** A hash is sixteen hex characters, and roughly one in 1845 of
+    them is all digits, which YAML reads back as an integer rather than a string. Left
+    bare, that paragraph's provenance would be lost on the next load for no reason the
+    file shows.
+    """
+    return "".join(
+        f"{json.dumps(digest)}: {json.dumps([[int(start), int(end), kind] for start, end, kind in runs])}\n"
+        for digest, runs in metadata.items()
+    )
+
+
+def _offset(value: object) -> int | None:
+    """One end of a run, as an integer, or `None` where it is not a whole number."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _runs_in(digest: str, value: object) -> list[Run]:
+    """One entry's runs, dropping anything that is not `[start, end, kind]`."""
+    if not isinstance(value, list):
+        logger.warning("provenance for %s is not a list of runs: %r", digest, value)
+        return []
+    runs: list[Run] = []
+    for item in value:
+        start = _offset(item[0]) if isinstance(item, list) and len(item) == 3 else None
+        end = _offset(item[1]) if start is not None else None
+        if start is None or end is None or not isinstance(item[2], str):
+            logger.warning(
+                "provenance for %s has a run that is not [start, end, kind]: %r", digest, item
+            )
+            continue
+        runs.append((start, end, item[2]))
+    return runs
+
+
+def parse_section(text: str) -> Metadata | None:
+    """An `ink:provenance` section's text as paragraph hashes to runs.
+
+    `None` where the section cannot be read at all — it is not YAML, or it is not a
+    mapping. That is the same answer as a file with no section: the prose is untouched
+    and every paragraph renders plain, which is recoverable (§7.5), where guessing at a
+    broken section would not be. An empty section is `{}`, which is a different thing: a
+    file the editor has saved whose prose is all hand-written.
+
+    **Nothing is resolved to a type YAML guessed at.** `BaseLoader` reads every scalar
+    as the text it is written as, and the offsets are converted here instead, because
+    every way YAML resolves a scalar by itself is wrong for a hash:
+
+    - `1234567890123456` becomes an integer, which then matches no paragraph. Roughly
+      one hash in 1845 is all digits.
+    - `0012345670123456` becomes *octal*, so it reads back as a different number
+      entirely — wrong rather than merely unusable, and a file holding both the quoted
+      and the bare spelling of one hash would split it into two entries.
+    - `yes` and `no` become booleans. Not reachable from a hash, but the same mistake.
+
+    `render_section` quotes the key so none of this arises in a file this writes. This
+    is what makes a file edited by hand, or written by an older build, read correctly
+    anyway.
+    """
+    try:
+        loaded = yaml.load(text, Loader=yaml.BaseLoader)
+    except yaml.YAMLError as error:
+        logger.warning("the provenance section could not be parsed: %s", error)
+        return None
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        logger.warning("the provenance section is not a mapping: %r", loaded)
+        return None
+    return {str(key): _runs_in(str(key), value) for key, value in loaded.items()}

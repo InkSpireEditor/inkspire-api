@@ -129,6 +129,25 @@ def get_repository(settings: SettingsDep) -> Iterator[Repo]:
 RepoDep = Annotated[Repo, Depends(get_repository)]
 
 
+def get_optional_repository(settings: SettingsDep) -> Iterator[Repo | None]:
+    """The story repository where there is one, and `None` where there is not.
+
+    For a route whose work git only improves. Opening a chapter must not fail because
+    the data root was never cloned — provenance recovery is the one thing lost, and a
+    paragraph that cannot be recovered resets (§7.5), which is a working answer. The
+    `/git/*` routes keep `RepoDep` and still refuse outright, since without a
+    repository they have nothing to say at all.
+    """
+    try:
+        with open_repository(settings.data_root) as repo:
+            yield repo
+    except NotARepository:
+        yield None
+
+
+OptionalRepoDep = Annotated[Repo | None, Depends(get_optional_repository)]
+
+
 def _locked(request: Request) -> Iterator[None]:
     """Refuses a second git-changing request while one is already running.
 

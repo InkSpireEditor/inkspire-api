@@ -309,9 +309,7 @@ def test_a_one_shots_contents_are_read_and_written(
     logged_in: TestClient, repository: Path
 ) -> None:
     identifier = one_shot_id(logged_in)
-    logged_in.put(
-        f"/api/stories/file/{identifier}/contents", content="Once.", headers=CONTENT_TYPE
-    )
+    logged_in.put(f"/api/stories/file/{identifier}/document", json={"body": "Once."})
     response = logged_in.get(f"/api/stories/file/{identifier}/contents")
     assert response.text == "Once."
 
@@ -590,11 +588,9 @@ def test_a_chapter_is_written_from_the_request_body(logged_in: TestClient, repos
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     text = "Once, on a cold morning — she left.\n"
 
-    response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content=text.encode(), headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": text})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     assert logged_in.get(f"/api/stories/file/{chapter}/contents").text == text
     path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
     assert path.read_text(encoding="utf-8") == text
@@ -602,11 +598,9 @@ def test_a_chapter_is_written_from_the_request_body(logged_in: TestClient, repos
 
 def test_an_empty_chapter_may_be_written(logged_in: TestClient, repository: Path) -> None:
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
-    response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content=b"", headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": ""})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     assert logged_in.get(f"/api/stories/file/{chapter}/contents").text == ""
 
 
@@ -614,29 +608,31 @@ def test_the_contents_of_an_unknown_chapter_are_not_found(logged_in: TestClient,
     assert logged_in.get(f"/api/stories/file/{'0' * 16}/contents").status_code == 404
     assert (
         logged_in.put(
-            f"/api/stories/file/{'0' * 16}/contents", content=b"Once.", headers=CONTENT_TYPE
+            f"/api/stories/file/{'0' * 16}/document", json={"body": "Once."}
         ).status_code
         == 404
     )
 
 
-def test_a_chapter_that_is_not_utf8_is_refused(logged_in: TestClient, repository: Path) -> None:
+def test_a_chapter_that_is_not_json_is_refused(logged_in: TestClient, repository: Path) -> None:
+    """A save sends JSON, which is UTF-8 by definition, so bytes that are not text can
+    no longer reach the file at all — they fail to parse before any of this is reached."""
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content=b"\xff\xfe", headers=CONTENT_TYPE
+        f"/api/stories/file/{chapter}/document", content=b"\xff\xfe", headers=CONTENT_TYPE
     )
 
     assert response.status_code == 400
-    assert "UTF-8" in response.json()["message"]
+    path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    assert path.read_text(encoding="utf-8") == "Once."
 
 
 def test_a_chapter_beyond_the_limit_is_refused(logged_in: TestClient, repository: Path) -> None:
 
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents",
-        content=b"x" * (MAX_FILE_BYTES + 1),
-        headers=CONTENT_TYPE,
+        f"/api/stories/file/{chapter}/document",
+        json={"body": "x" * (MAX_FILE_BYTES + 1)},
     )
 
     assert response.status_code == 413
@@ -665,19 +661,19 @@ def test_saving_a_chapter_keeps_the_header_on_disk(
     path.write_text("===== ink:meta\ntitle: The Letter\n===== ink:body\nOnce.\n", encoding="utf-8")
     chapter = chapter_id(logged_in, "Example Story", "The Letter")
 
-    response = logged_in.put(
-        f"/api/stories/file/{chapter}/contents", content="Twice.\n", headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": "Twice.\n"})
 
-    assert response.status_code == 204
-    assert path.read_text(encoding="utf-8") == "===== ink:meta\ntitle: The Letter\n===== ink:body\nTwice.\n"
+    assert response.status_code == 200
+    assert path.read_text(encoding="utf-8") == (
+        "===== ink:meta\ntitle: The Letter\n===== ink:body\nTwice.\n"
+    )
 
 
 def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
     assert client.get(f"/api/stories/file/{'0' * 16}/contents").status_code == 401
     assert (
         client.put(
-            f"/api/stories/file/{'0' * 16}/contents", content=b"Once.", headers=CONTENT_TYPE
+            f"/api/stories/file/{'0' * 16}/document", json={"body": "Once."}
         ).status_code
         == 401
     )
@@ -700,7 +696,8 @@ def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
         ("put", f"file/{'0' * 16}"),
         ("delete", f"file/{'0' * 16}"),
         ("get", f"file/{'0' * 16}/contents"),
-        ("put", f"file/{'0' * 16}/contents"),
+        ("get", f"file/{'0' * 16}/document"),
+        ("put", f"file/{'0' * 16}/document"),
     ],
 )
 def test_every_route_refuses_a_request_with_no_token(
@@ -755,9 +752,8 @@ def test_a_story_a_chapter_and_a_save(logged_in: TestClient, data_root: Path) ->
     assert logged_in.get(f"/api/stories/file/{chapter['id']}/contents").text == ""
 
     logged_in.put(
-        f"/api/stories/file/{chapter['id']}/contents",
-        content="Once, on a cold morning.".encode(),
-        headers=CONTENT_TYPE,
+        f"/api/stories/file/{chapter['id']}/document",
+        json={"body": "Once, on a cold morning."},
     )
 
     tree = logged_in.get("/api/stories/tree").json()
@@ -971,9 +967,8 @@ def test_a_status_does_not_disturb_the_prose(
 ) -> None:
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
     logged_in.put(
-        f"/api/stories/file/{chapter}/contents",
-        content="Once, on a cold morning.".encode(),
-        headers=CONTENT_TYPE,
+        f"/api/stories/file/{chapter}/document",
+        json={"body": "Once, on a cold morning."},
     )
 
     logged_in.put(f"/api/stories/file/{chapter}", json={"status": "draft"})

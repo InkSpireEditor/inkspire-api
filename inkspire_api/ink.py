@@ -293,6 +293,24 @@ def with_header(document: Document, stem: str, fields: dict) -> str | None:
     return render(metadata, document.body, document.sections)
 
 
+def render_with(document: Document, body: str, name: str, text: str | None) -> str:
+    """`document`'s text with `body` as its prose and the section `name` set to `text`.
+
+    `text` of `None` removes that section. Everything else — the header, and every other
+    section — comes from `document`, which a caller reads from disk at the moment of the
+    write, so none of it is taken from a client.
+
+    Both roots write a document through here, which is what gives §7.1's rule one
+    implementation: a section derived from the body is written with it or not at all.
+    """
+    sections = dict(document.sections)
+    if text is None:
+        sections.pop(name, None)
+    else:
+        sections[name] = text
+    return render(document.metadata, body, sections)
+
+
 def read_header(path: Path) -> dict:
     """The `ink:meta` mapping of the file at `path`, without reading all of it.
 

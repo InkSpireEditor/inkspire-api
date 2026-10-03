@@ -381,27 +381,28 @@ def test_saving_a_file_keeps_its_header(logged_in: TestClient, workspace: Path) 
     folder = folder_id(logged_in, "research")
     identifier = note_id(logged_in, "Worldbuilding", folder)
 
-    response = logged_in.put(
-        f"/api/notes/file/{identifier}/contents", content="Twice.\n", headers=CONTENT_TYPE
-    )
+    response = logged_in.put(f"/api/notes/file/{identifier}/document", json={"body": "Twice.\n"})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     path = workspace / "research" / "worldbuilding.ink"
     assert path.read_text(encoding="utf-8") == (
         "===== ink:meta\ntitle: Worldbuilding\n===== ink:body\nTwice.\n"
     )
 
 
-def test_a_file_that_is_not_utf8_is_refused(
+def test_a_file_that_is_not_json_is_refused(
     logged_in: TestClient, workspace: Path
 ) -> None:
+    """A save sends JSON, so bytes that are not text fail to parse before reaching the
+    file. Same as the stories root, which is the point: one route, two roots."""
     identifier = note_id(logged_in, "scratch")
+    before = logged_in.get(f"/api/notes/file/{identifier}/contents").text
     response = logged_in.put(
-        f"/api/notes/file/{identifier}/contents", content=b"\xff\xfe", headers=CONTENT_TYPE
+        f"/api/notes/file/{identifier}/document", content=b"\xff\xfe", headers=CONTENT_TYPE
     )
 
     assert response.status_code == 400
-    assert "UTF-8" in response.json()["message"]
+    assert logged_in.get(f"/api/notes/file/{identifier}/contents").text == before
 
 
 def test_the_contents_of_an_unknown_file_are_not_found(
@@ -451,9 +452,8 @@ def test_a_folder_a_file_and_a_save(logged_in: TestClient, files_root: Path) -> 
     ).json()
 
     logged_in.put(
-        f"/api/notes/file/{note['id']}/contents",
-        content="Jane Doe. John Smith.\n",
-        headers=CONTENT_TYPE,
+        f"/api/notes/file/{note['id']}/document",
+        json={"body": "Jane Doe. John Smith.\n"},
     )
 
     assert logged_in.get(f"/api/notes/file/{note['id']}/contents").text == (

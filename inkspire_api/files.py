@@ -51,18 +51,15 @@ the tree, which is what it would do after any other change it did not make itsel
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, StringConstraints
 
 from .deps import CurrentUser, SettingsDep
 from .entries import File, Folder
 from .fs import (
-    MAX_FILE_BYTES,
     MAX_NAME_LENGTH,
     MAX_STATUS_LENGTH,
     MAX_SUMMARY_LENGTH,
@@ -343,15 +340,7 @@ def delete_file(file_id: str, scanner: ScannerDep) -> Response:
 @stories_router.get("/file/{file_id}/contents", response_class=PlainTextResponse)
 def read_contents(file_id: str, scanner: ScannerDep) -> PlainTextResponse:
     """A chapter's or a one-shot's prose, as `text/plain`, without its header."""
-    return PlainTextResponse(scanner.read_file(file_id))
-
-
-@stories_router.put("/file/{file_id}/contents", status_code=status.HTTP_204_NO_CONTENT)
-async def write_contents(
-    file_id: str, request: Request, scanner: ScannerDep
-) -> Response:
-    """Replaces a chapter's or a one-shot's prose, keeping its header."""
-    return await replace_contents(request, scanner.write_file, file_id)
+    return PlainTextResponse(scanner.read_document(file_id).body)
 
 
 # --- everything that is not a novel -----------------------------------------
@@ -453,49 +442,4 @@ def notes_delete_file(file_id: str, notes: NotesDep) -> Response:
 @notes_router.get("/file/{file_id}/contents", response_class=PlainTextResponse)
 def notes_read_contents(file_id: str, notes: NotesDep) -> PlainTextResponse:
     """A file's prose, as `text/plain`, without its header."""
-    return PlainTextResponse(notes.read_note(file_id))
-
-
-@notes_router.put("/file/{file_id}/contents", status_code=status.HTTP_204_NO_CONTENT)
-async def notes_write_contents(
-    file_id: str, request: Request, notes: NotesDep
-) -> Response:
-    """Replaces a file's prose with the request body, keeping its header."""
-    return await replace_contents(request, notes.write_note, file_id)
-
-
-# --- reading a body ---------------------------------------------------------
-
-TOO_LONG = f"A file must be at most {MAX_FILE_BYTES} bytes."
-
-
-def too_long(content_length: str | None) -> bool:
-    """Whether the declared length is over the cap, so the body is refused unread."""
-    try:
-        return int(content_length) > MAX_FILE_BYTES if content_length else False
-    except ValueError:
-        return False
-
-
-async def replace_contents(
-    request: Request, write: Callable[[str, str], None], file_id: str
-) -> Response:
-    """Reads the request body as text and hands it to `write`."""
-    if too_long(request.headers.get("content-length")):
-        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LONG)
-
-    body = await request.body()
-    if len(body) > MAX_FILE_BYTES:
-        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LONG)
-
-    try:
-        text = body.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "A file must be UTF-8 text."
-        ) from error
-
-    # Off the event loop: this endpoint has to be async to read the raw body, and the
-    # write would otherwise hold up every request being served alongside it.
-    await run_in_threadpool(write, file_id, text)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return PlainTextResponse(notes.read_document(file_id).body)

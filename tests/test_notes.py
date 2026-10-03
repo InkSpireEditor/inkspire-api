@@ -267,7 +267,7 @@ def test_writing_a_file_leaves_the_held_scan_alone(notes: NotesScanner, root: Pa
     make_note(root, "scratch.ink")
     before = notes.tree()
 
-    notes.write_note(next(iter(before.notes)), "Once.\n")
+    notes.write_document(next(iter(before.notes)), "Once.\n", None)
     assert notes.tree() is before
 
 
@@ -438,7 +438,7 @@ def test_renaming_a_file_writes_the_name_into_its_header(
     notes: NotesScanner, root: Path
 ) -> None:
     note = notes.create_note(None, "Scratch")
-    notes.write_note(note.id, "Once.\n")
+    notes.write_document(note.id, "Once.\n", None)
 
     renamed = notes.update_note(note.id, name="Scratch Pad", folder_id=None)
 
@@ -510,14 +510,14 @@ def test_deleting_an_unknown_file_is_not_found(notes: NotesScanner) -> None:
 
 def test_a_file_reads_back_what_was_written(notes: NotesScanner) -> None:
     note = notes.create_note(None, "Scratch")
-    notes.write_note(note.id, "A list.\n")
-    assert notes.read_note(note.id) == "A list.\n"
+    notes.write_document(note.id, "A list.\n", None)
+    assert notes.read_document(note.id).body == "A list.\n"
 
 
 def test_reading_a_file_leaves_out_its_header(notes: NotesScanner, root: Path) -> None:
     make_note(root, "scratch.ink", "===== ink:meta\ntitle: Scratch Pad\n===== ink:body\nA list.\n")
     note = next(iter(notes.tree().notes.values()))
-    assert notes.read_note(note.id) == "A list.\n"
+    assert notes.read_document(note.id).body == "A list.\n"
 
 
 def test_writing_a_file_keeps_its_header(notes: NotesScanner, root: Path) -> None:
@@ -528,7 +528,7 @@ def test_writing_a_file_keeps_its_header(notes: NotesScanner, root: Path) -> Non
     )
     note = next(iter(notes.tree().notes.values()))
 
-    notes.write_note(note.id, "Two.\n")
+    notes.write_document(note.id, "Two.\n", None)
 
     assert (root / "scratch.ink").read_text(encoding="utf-8") == (
         "===== ink:meta\ntitle: Scratch Pad\nstatus: draft\n===== ink:body\nTwo.\n"
@@ -542,7 +542,7 @@ def test_a_file_deleted_under_the_client_is_not_found(
     (root / "scratch.ink").unlink()
 
     with pytest.raises(NotFound):
-        notes.read_note(note.id)
+        notes.read_document(note.id)
 
 
 def test_a_file_that_is_not_utf8_says_so(notes: NotesScanner, root: Path) -> None:
@@ -551,4 +551,4 @@ def test_a_file_that_is_not_utf8_says_so(notes: NotesScanner, root: Path) -> Non
     note = next(iter(notes.tree().notes.values()))
 
     with pytest.raises(StorageError, match="UTF-8"):
-        notes.read_note(note.id)
+        notes.read_document(note.id)

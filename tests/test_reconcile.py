@@ -297,3 +297,73 @@ def test_the_walk_stops_after_the_revision_ceiling(
     answered, revision = repository.recover(committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS})
     assert answered == {NEW_HASH: []}
     assert revision is None
+
+
+# --- the section on disk ---------------------------------------------------
+
+
+def test_a_section_round_trips() -> None:
+    metadata = {OLD_HASH: OLD_RUNS, provenance.paragraph_hash("Two."): []}
+    text = provenance.render_section(metadata)
+    assert text == (
+        f'"{OLD_HASH}": [[18, 45, "gen"], [45, 54, "fix"], [54, 75, "gen"]]\n'
+        f'"{provenance.paragraph_hash("Two.")}": []\n'
+    )
+    assert provenance.parse_section(text) == {OLD_HASH: [tuple(r) for r in OLD_RUNS],
+                                              provenance.paragraph_hash("Two."): []}
+
+
+def test_an_empty_section_is_an_empty_mapping_not_nothing() -> None:
+    """`{}` says the editor saved this file and found nothing to record. `None` says it
+    has never been here."""
+    assert provenance.parse_section("") == {}
+    assert provenance.render_section({}) == ""
+
+
+def test_a_section_that_is_not_yaml_costs_only_the_provenance() -> None:
+    assert provenance.parse_section("[unclosed\n") is None
+
+
+def test_a_section_that_is_not_a_mapping_costs_only_the_provenance() -> None:
+    assert provenance.parse_section("- one\n- two\n") is None
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [
+        "1234567890123456",  # all digits: YAML would make this an integer
+        "0012345670123456",  # leading zero, all octal digits: YAML would read it as octal
+        "0123456789012345",  # leading zero, not octal
+        "47f57caaa4fb330e",  # ordinary
+    ],
+)
+def test_a_key_is_read_as_the_text_it_is_written_as(digest: str) -> None:
+    """Every way YAML resolves a bare scalar is wrong for a hash. The octal case is the
+    one that matters most: it reads back as a different number, so it is wrong rather
+    than unusable, and the quoted and bare spellings of one hash would become two."""
+    text = provenance.render_section({digest: [(0, 2, "gen")]})
+    assert provenance.parse_section(text) == {digest: [(0, 2, "gen")]}
+    assert provenance.parse_section(f'{digest}: [[0, 2, "gen"]]\n') == {digest: [(0, 2, "gen")]}
+
+
+def test_one_hash_written_both_ways_is_one_entry() -> None:
+    """Which it could not be if the bare spelling resolved to something else."""
+    digest = "0012345670123456"
+    both = f'"{digest}": [[0, 2, "gen"]]\n{digest}: [[2, 4, "fix"]]\n'
+    assert provenance.parse_section(both) == {digest: [(2, 4, "fix")]}
+
+
+def test_a_run_that_is_not_three_numbers_and_a_kind_is_dropped() -> None:
+    """A hand-edited file can say anything. What is left of the entry still stands."""
+    text = '"abc": [[0, 2, "gen"], [0, 2], "nonsense", [0, "x", "gen"], [2, 4, "fix"]]\n'
+    assert provenance.parse_section(text) == {"abc": [(0, 2, "gen"), (2, 4, "fix")]}
+
+
+def test_an_entry_that_is_not_a_list_of_runs_reads_as_no_runs() -> None:
+    assert provenance.parse_section('"abc": nonsense\n') == {"abc": []}
+
+
+def test_a_negative_offset_is_kept_and_clamped_later() -> None:
+    """`parse_section` records what the file says; `expand_runs` is what makes sense of
+    an offset outside the paragraph."""
+    assert provenance.parse_section('"abc": [[-3, 2, "gen"]]\n') == {"abc": [(-3, 2, "gen")]}

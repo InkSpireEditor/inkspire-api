@@ -371,8 +371,8 @@ def test_a_one_shots_prose_is_read_and_written_through_the_generic_file_methods(
     root: Path, scanner: Scanner
 ) -> None:
     one_shot = scanner.create_one_shot("Solo")
-    scanner.write_file(one_shot.id, "Once.\n")
-    assert scanner.read_file(one_shot.id) == "Once.\n"
+    scanner.write_document(one_shot.id, "Once.\n", None)
+    assert scanner.read_document(one_shot.id).body == "Once.\n"
 
 
 # --- containment -----------------------------------------------------------
@@ -447,7 +447,7 @@ def test_writing_a_chapter_leaves_the_held_scan_alone(root: Path, scanner: Scann
     make_story(root, "example-story", chapters={"first.ink": ""})
     before = scanner.tree()
 
-    scanner.write_file(next(iter(before.chapters)), "Once.")
+    scanner.write_document(next(iter(before.chapters)), "Once.", None)
     assert scanner.tree() is before
 
 
@@ -613,7 +613,7 @@ def test_two_chapters_may_share_a_name(scanner: Scanner) -> None:
 def test_renaming_a_chapter_renames_its_file_and_changes_its_id(scanner: Scanner, root: Path) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "Before")
-    scanner.write_file(chapter.id, "Once.")
+    scanner.write_document(chapter.id, "Once.", None)
 
     renamed = scanner.update_chapter(chapter.id, name="After")
 
@@ -621,7 +621,7 @@ def test_renaming_a_chapter_renames_its_file_and_changes_its_id(scanner: Scanner
     assert renamed.id != chapter.id
     assert renamed.filename == "after.ink"
     assert not (chapters_dir / "before.ink").exists()
-    assert scanner.read_file(renamed.id) == "Once."
+    assert scanner.read_document(renamed.id).body == "Once."
 
 
 def test_renaming_a_chapter_keeps_its_place_in_the_order(scanner: Scanner, root: Path) -> None:
@@ -663,7 +663,7 @@ def test_renaming_a_chapter_writes_the_name_into_its_header(
 ) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "One")
-    scanner.write_file(chapter.id, "Once.\n")
+    scanner.write_document(chapter.id, "Once.\n", None)
 
     renamed = scanner.update_chapter(chapter.id, name="One, Revised")
 
@@ -679,7 +679,7 @@ def test_renaming_a_chapter_to_its_own_filename_drops_the_title(
     """Nothing is left to record, so the file is left without a header at all."""
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "One, Revised")
-    scanner.write_file(chapter.id, "Once.\n")
+    scanner.write_document(chapter.id, "Once.\n", None)
 
     renamed = scanner.update_chapter(chapter.id, name="one-revised")
 
@@ -704,13 +704,13 @@ def test_moving_a_chapter_moves_its_file(scanner: Scanner, root: Path) -> None:
     source = scanner.create_story("Source")
     target = scanner.create_story("Target")
     chapter = scanner.create_chapter(source.id, "First Chapter")
-    scanner.write_file(chapter.id, "Once.")
+    scanner.write_document(chapter.id, "Once.", None)
 
     moved = scanner.update_chapter(chapter.id, story_id=target.id)
 
     assert moved.story_id == target.id
     assert moved.name == "First Chapter"
-    assert scanner.read_file(moved.id) == "Once."
+    assert scanner.read_document(moved.id).body == "Once."
     assert not (root / "stories" / "source" / "chapters" / "first-chapter.ink").exists()
     assert (root / "stories" / "target" / "chapters" / "first-chapter.ink").is_file()
 
@@ -816,8 +816,8 @@ def test_a_chapter_reads_back_what_was_written(scanner: Scanner) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "First Chapter")
 
-    scanner.write_file(chapter.id, "Once, on a cold morning.\n")
-    assert scanner.read_file(chapter.id) == "Once, on a cold morning.\n"
+    scanner.write_document(chapter.id, "Once, on a cold morning.\n", None)
+    assert scanner.read_document(chapter.id).body == "Once, on a cold morning.\n"
 
 
 def test_reading_a_chapter_leaves_out_its_header(root: Path, scanner: Scanner) -> None:
@@ -827,7 +827,7 @@ def test_reading_a_chapter_leaves_out_its_header(root: Path, scanner: Scanner) -
         chapters={"first.ink": "===== ink:meta\ntitle: The Letter\n===== ink:body\nOnce.\n"},
     )
     chapter = only_story(scanner).files[0]
-    assert scanner.read_file(chapter.id) == "Once.\n"
+    assert scanner.read_document(chapter.id).body == "Once.\n"
 
 
 def test_writing_a_chapter_keeps_the_header_on_disk(
@@ -843,7 +843,7 @@ def test_writing_a_chapter_keeps_the_header_on_disk(
     )
     chapter = only_story(scanner).files[0]
 
-    scanner.write_file(chapter.id, "Twice.\n")
+    scanner.write_document(chapter.id, "Twice.\n", None)
 
     assert (story_dir / "chapters" / "first.ink").read_text(encoding="utf-8") == (
         "===== ink:meta\ntitle: The Letter\nstatus: draft\n===== ink:body\nTwice.\n"
@@ -856,7 +856,7 @@ def test_writing_a_chapter_that_has_no_header_adds_none(
     story_dir = make_story(root, "example-story", chapters={"first.ink": "Once.\n"})
     chapter = only_story(scanner).files[0]
 
-    scanner.write_file(chapter.id, "Twice.\n")
+    scanner.write_document(chapter.id, "Twice.\n", None)
 
     assert (story_dir / "chapters" / "first.ink").read_text(encoding="utf-8") == "Twice.\n"
 
@@ -866,15 +866,15 @@ def test_a_chapter_keeps_accents_and_quotes(scanner: Scanner) -> None:
     chapter = scanner.create_chapter(story.id, "First Chapter")
 
     text = "Il rêva d'une « maison » — puis se réveilla.\n"
-    scanner.write_file(chapter.id, text)
-    assert scanner.read_file(chapter.id) == text
+    scanner.write_document(chapter.id, text, None)
+    assert scanner.read_document(chapter.id).body == text
 
 
 def test_a_write_leaves_no_temporary_file_behind(scanner: Scanner, root: Path) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "First Chapter")
 
-    scanner.write_file(chapter.id, "Once.")
+    scanner.write_document(chapter.id, "Once.", None)
     chapters_dir = root / "stories" / "example-story" / "chapters"
     assert sorted(p.name for p in chapters_dir.iterdir()) == [
         ".gitkeep",
@@ -888,9 +888,9 @@ def test_a_chapter_deleted_under_the_client_is_not_found(scanner: Scanner, root:
     (root / "stories" / "example-story" / "chapters" / "first-chapter.ink").unlink()
 
     with pytest.raises(NotFound):
-        scanner.read_file(chapter.id)
+        scanner.read_document(chapter.id)
     with pytest.raises(NotFound):
-        scanner.write_file(chapter.id, "Once.")
+        scanner.write_document(chapter.id, "Once.", None)
 
 
 def test_a_chapter_that_is_not_utf8_says_so(scanner: Scanner, root: Path) -> None:
@@ -901,7 +901,7 @@ def test_a_chapter_that_is_not_utf8_says_so(scanner: Scanner, root: Path) -> Non
     )
 
     with pytest.raises(StorageError, match="UTF-8"):
-        scanner.read_file(chapter.id)
+        scanner.read_document(chapter.id)
 
 
 # --- the order the chapters are read in --------------------------------------
@@ -1077,7 +1077,7 @@ def test_reordering_an_unknown_story_is_not_found(scanner: Scanner) -> None:
 def test_a_status_is_written_into_the_header(scanner: Scanner, root: Path) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "one")
-    scanner.write_file(chapter.id, "Once.")
+    scanner.write_document(chapter.id, "Once.", None)
 
     updated = scanner.update_chapter(chapter.id, status="draft")
 
@@ -1102,7 +1102,7 @@ def test_an_empty_status_removes_it(scanner: Scanner, root: Path) -> None:
 def test_a_rename_and_a_status_are_one_write(scanner: Scanner, root: Path) -> None:
     story = scanner.create_story("Example Story")
     chapter = scanner.create_chapter(story.id, "one")
-    scanner.write_file(chapter.id, "Once.")
+    scanner.write_document(chapter.id, "Once.", None)
 
     updated = scanner.update_chapter(chapter.id, name="The Letter", status="revised")
 
