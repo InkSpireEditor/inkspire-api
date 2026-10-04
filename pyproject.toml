@@ -1,6 +1,6 @@
 [project]
 name = "inkspire-api"
-version = "0.1.0"
+version = "1.0.0"
 description = "InkSpire REST API, and the lorebook and timeline commands beside it"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
