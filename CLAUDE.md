@@ -19,9 +19,9 @@ poetry run timeline ...      # events per character, rendered as Typst
 **Nothing in `inkspire_api/` imports `lorebook` or `timeline`, and neither imports the
 other.** They share this repository so the API can eventually call `lorebook` as a library —
 the same three calls its CLI makes (`load_vocabulary`, `store.load_graph`,
-`graph.query(prologue(...) + sparql)`). That is not wired, and `ARCHITECTURE.md` §8 says why
-it needs a design pass first: `core.ttl` has no temporal or narrative vocabulary, so linking
-timeline events to chapters to lorebook entities is unsolved.
+`graph.query(prologue(...) + sparql)`). That is not wired, and it needs a design pass first:
+`core.ttl` has no temporal or narrative vocabulary, so linking timeline events to chapters to
+lorebook entities is unsolved. Issue #16 is that question.
 
 Tests live in `tests/` (the API), `tests/lorebook/` and `tests/timeline/`. All three
 directories are packages — each suite has a `conftest.py` and a `test_cli.py`, so without

@@ -114,8 +114,8 @@ each scanner's own `_scan()`.
 A story's manifest is `story.yaml`; a notes folder's is `manifest.yaml`, and is
 optional in a way a story's manifest is not — a folder needs no file at all to exist.
 A story's files are ordered by that manifest; a notes folder's are always ordered by
-name. A chapter and a one-shot are committable; a note never is (`ARCHITECTURE.md`
-§3, *What is not a novel is not in here*, in the parent repository). None of
+name. A chapter and a one-shot are committable; a note never is (`filesystem.md`,
+*What git ever sees*). None of
 `_scan()`'s actual walking, ordering, or
 git-relevant logic is shared, only the dataclasses each `_scan()` builds — sharing the
 scanner itself would mean branching on which root it is throughout that logic, which

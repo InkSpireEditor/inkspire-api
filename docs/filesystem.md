@@ -185,5 +185,4 @@ be committed, and only some of those: `repository._committable()` recognises a
 story's own `story.yaml`, a chapter under `<story>/chapters/`, and a one-shot loose at
 the `stories/` root. A lorebook, a `timeline.yaml`, and anything under the files root
 are never staged by `POST /api/git/commit`, whatever else may have changed alongside
-them — see `ARCHITECTURE.md` §3, *What is not a novel is not in here*, in the parent
-repository, for why notes are excluded by design, not by oversight.
+them — see "The notes root" above for why notes are excluded by design, not by oversight.
