@@ -88,31 +88,38 @@ touched.
 ## The `.ink` file, in either root
 
 ```
----
+===== ink:meta
 title: The Letter in the Study
 status: draft
 summary: |
   She finally opens it, and it is not what she was told it was.
----
+===== ink:body
 She had not opened it. Three years of not opening it, and the wax still held.
+===== ink:provenance
+"47f57caaa4fb330e": [[18, 45, "gen"], [45, 54, "fix"]]
 ```
 
-A file has front matter if and only if its first line is `---`; the header runs to
-the next line that is exactly `---`, and the body is everything after that line,
-character for character (`inkspire_api/ink.py`). All three header keys are optional,
-and so is the header itself — a file with no header at all is entirely prose, and is
-named after its own filename rather than a `title` field.
+A file is a sequence of named sections, each opened by a fence line and running to the
+next fence or to the end of the file. Every section is optional, and **a file with no
+fence line anywhere is entirely prose** — which is what a writer gets by creating a
+file and typing in it, and which is named after its own filename rather than a `title`.
 
-A key this module does not know about (added by hand, or by a future feature) is kept
-as it is; a save never removes it. A header that cannot be parsed — an unterminated
-fence, a first line that is not valid YAML, YAML that is not a mapping — leaves the
-whole file as prose with no metadata, rather than removing the file from the tree;
-`inkspire ink check` is what reports a broken header, not the scan.
+`ink-format.md` in this same folder is the format in full: the grammar, what each
+section means, which rules reading enforces and which `ink check` reports instead, and
+why a body is never written without the sections derived from it. `provenance.md`
+describes `ink:provenance`, the one section `ink.py` carries without reading.
 
-`GET .../file/{id}/contents` returns the body alone, with the header stripped;
-`PUT .../file/{id}/contents` replaces the body and keeps whatever header the file has
-on disk at the moment of the write — not whatever header a client last read, so a
-status or title changed by hand while a client had the file open is not overwritten.
+What matters here, where this document is about what is on disk:
+
+- A key or a section this build does not know is **kept as it is**; a save never
+  removes it.
+- A broken `meta` section costs the metadata and nothing else — the fences say where
+  the prose starts — and a file that cannot be made sense of at all keeps every byte of
+  its text as prose. A malformed line never removes a file from the tree.
+- `GET .../file/{id}/contents` returns the prose alone. There is no route that writes
+  it alone: `PUT .../file/{id}/document` writes the prose and its provenance together,
+  keeping whatever header is on disk at the moment of the write — not whatever a client
+  last read, so a status or title changed by hand meanwhile is not overwritten.
 
 ## The notes root
 
