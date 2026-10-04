@@ -361,11 +361,15 @@ endpoint. Use `ollama` for an Ollama instance: its compatibility layer accepts `
 and ignores it, so reasoning cannot be turned off through it, and sampling options
 cannot be set either.
 
-`GET /api/llm/models` lists every provider's models. A provider that cannot be reached
-contributes nothing instead of failing the list. Results are held for an hour per
-provider, in the serving process.
+`GET /api/llm/models` lists every provider's models, each carrying its `protocol` so a
+client can tell which models can honour `think` at all. A provider that cannot be
+reached contributes nothing instead of failing the list. Results are held for an hour
+per provider, in the serving process.
 
-`POST /api/llm/generate` takes `{"model", "prompt"}` and answers `text/event-stream`:
+`POST /api/llm/generate` takes `{"model", "prompt", "think"}` and answers
+`text/event-stream`. `think` is optional and overrides `INKSPIRE_LLM_THINK` for that one
+request; omitted (or `null`), the setting applies. It reaches the provider only on the
+`ollama` protocol, the same restriction as the setting itself.
 
 | Event | Meaning |
 |---|---|

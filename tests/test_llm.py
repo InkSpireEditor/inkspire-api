@@ -278,6 +278,42 @@ async def test_think_is_sent_when_configured(tmp_path: Path, think: bool) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_per_request_think_overrides_the_setting(tmp_path: Path) -> None:
+    """A per-generation choice has to win over the server-wide default, or the
+    checkbox would only ever agree with whatever the setting already says."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
+
+    await collect(
+        llm_service(tmp_path, handler, protocol="ollama", think=True).stream(
+            "p/m", "t", think=False
+        )
+    )
+    assert seen["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_per_request_think_of_none_falls_back_to_the_setting(
+    tmp_path: Path,
+) -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
+
+    await collect(
+        llm_service(tmp_path, handler, protocol="ollama", think=True).stream(
+            "p/m", "t", think=None
+        )
+    )
+    assert seen["think"] is True
+
+
+@pytest.mark.asyncio
 async def test_num_ctx_is_sent_only_when_configured(tmp_path: Path) -> None:
     seen: dict = {}
 
@@ -366,8 +402,8 @@ async def test_models_are_prefixed_with_their_provider(tmp_path: Path) -> None:
         return httpx.Response(200, json={"data": [{"id": "one"}, {"id": "two"}]})
 
     assert await llm_service(tmp_path, handler).models() == [
-        {"name": "p/one"},
-        {"name": "p/two"},
+        {"name": "p/one", "protocol": "openai"},
+        {"name": "p/two", "protocol": "openai"},
     ]
 
 
@@ -378,7 +414,7 @@ async def test_native_models_come_from_api_tags(tmp_path: Path) -> None:
         return httpx.Response(200, json={"models": [{"model": "llama3:latest"}]})
 
     listed = await llm_service(tmp_path, handler, protocol="ollama").models()
-    assert listed == [{"name": "p/llama3:latest"}]
+    assert listed == [{"name": "p/llama3:latest", "protocol": "ollama"}]
 
 
 @pytest.mark.asyncio
@@ -476,7 +512,27 @@ def test_the_models_endpoint_returns_the_prefixed_list(llm_client) -> None:
     )
     response = llm_client.get("/api/llm/models")
     assert response.status_code == 200
-    assert response.json() == [{"name": "p/one"}]
+    assert response.json() == [{"name": "p/one", "protocol": "openai"}]
+
+
+def test_generate_think_reaches_the_provider_on_the_ollama_path(app, tmp_path: Path, user) -> None:
+    """The checkbox's value has to survive the route, not just `LLMService.stream`."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
+
+    built = llm_service(tmp_path, handler, protocol="ollama")
+    app.dependency_overrides[llm.get_service] = lambda: built
+
+    with TestClient(app) as client:
+        client.post("/auth", json={"username": EMAIL, "password": PASSWORD})
+        response = client.post(
+            "/api/llm/generate", json={"model": "p/m", "prompt": "x", "think": False}
+        )
+    assert response.status_code == 200
+    assert seen["think"] is False
 
 
 def test_generation_streams_deltas_then_done(llm_client) -> None:

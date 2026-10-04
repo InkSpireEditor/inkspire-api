@@ -207,14 +207,23 @@ class LLMService:
         # Ollama names a model under "models"/"model"; chat-completions under "data"/"id".
         entries = payload.get("models", []) if native else payload.get("data", [])
         field = "model" if native else "id"
+        # Carried so a client can tell which models can honour a request like `think`
+        # at all -- the chat-completions protocol has no equivalent, native or not.
+        protocol = config.protocol.value
         return [
-            {"name": f"{provider}/{entry[field]}"}
+            {"name": f"{provider}/{entry[field]}", "protocol": protocol}
             for entry in entries
             if isinstance(entry, dict) and entry.get(field)
         ]
 
-    async def stream(self, model: str, prompt: str) -> AsyncGenerator[str, None]:
+    async def stream(
+        self, model: str, prompt: str, *, think: bool | None = None
+    ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
+
+        `think` overrides the server-wide `INKSPIRE_LLM_THINK` setting for this one
+        request, and reaches the provider only on the ollama path -- the
+        chat-completions protocol has no equivalent, native or otherwise.
 
         Raises `LLMError` if the provider cannot be reached or rejects the request.
         Once chunks have started arriving, a failure raises mid-iteration.
@@ -235,7 +244,7 @@ class LLMService:
                     "POST",
                     url,
                     headers=headers(config),
-                    json=self._payload(name, prompt, native=native),
+                    json=self._payload(name, prompt, native=native, think=think),
                 ) as response:
                     if response.status_code != 200:
                         detail = (await response.aread()).decode("utf-8", "replace")
@@ -265,7 +274,9 @@ class LLMService:
         except httpx.HTTPError as error:
             raise LLMError(f"Provider is unreachable: {error}") from error
 
-    def _payload(self, model: str, prompt: str, *, native: bool) -> dict[str, Any]:
+    def _payload(
+        self, model: str, prompt: str, *, native: bool, think: bool | None = None
+    ) -> dict[str, Any]:
         messages = [{"role": "user", "content": render_prompt(prompt)}]
         if not native:
             payload: dict[str, Any] = {
@@ -278,7 +289,9 @@ class LLMService:
 
         # Ollama takes sampling settings under "options" rather than at the top level,
         # and `think` beside them. num_ctx is sent only when configured, so the model's
-        # own default applies otherwise.
+        # own default applies otherwise. A per-request `think` overrides the setting;
+        # with neither given the key is left out, which is what a model with no
+        # reasoning mode expects.
         options: dict[str, Any] = {"temperature": self.temperature}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
@@ -288,8 +301,9 @@ class LLMService:
             "stream": True,
             "options": options,
         }
-        if self.think is not None:
-            payload["think"] = self.think
+        effective_think = think if think is not None else self.think
+        if effective_think is not None:
+            payload["think"] = effective_think
         return payload
 
 
@@ -379,6 +393,9 @@ ServiceDep = Annotated[LLMService, Depends(get_service)]
 class GenerateRequest(BaseModel):
     model: str = Field(max_length=MAX_MODEL_LENGTH)
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
+    #: Overrides `INKSPIRE_LLM_THINK` for this request alone. `None` falls back to the
+    #: setting; either way the ollama path is the only one that reads it.
+    think: bool | None = None
 
 
 @router.get("/models")
@@ -412,7 +429,7 @@ async def generate(
 
     # Calling an async generator function runs none of its body, so both the model
     # check and the connection happen on this first step.
-    chunks = service.stream(body.model, body.prompt)
+    chunks = service.stream(body.model, body.prompt, think=body.think)
     try:
         first = await anext(chunks, None)
     except UnknownModel as error:
