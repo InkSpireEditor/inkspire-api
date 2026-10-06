@@ -3,7 +3,9 @@
 Every character of a chapter carries one of three states — written by hand, written by a model,
 or written by a model and then corrected by hand. This document describes how that is stored,
 how it reaches a client, and what happens when a file is edited outside the editor.
-`ink-format.md` in this same folder describes the file it lives in.
+`ink-format.md` in this same folder describes the file it lives in; `prompt.md` describes what
+is asked of a model and why marking a character's provenance stays the editor's job rather than
+moving to wherever a generation is assembled.
 
 ## Three kinds, one of them never stored
 

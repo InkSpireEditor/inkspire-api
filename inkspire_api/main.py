@@ -136,6 +136,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(timelines.router)
     api.include_router(lore.router)
     api.include_router(llm.router)
+    api.include_router(llm.stories_router)
+    api.include_router(llm.notes_router)
     api.include_router(repository.router)
     api.include_router(repository.history_router)
     application.include_router(api)

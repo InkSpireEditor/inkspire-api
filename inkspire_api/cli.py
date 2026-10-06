@@ -45,10 +45,10 @@ import typer
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from . import ink, provenance, repository
+from . import ink, prompt, provenance, repository
 from .db import get_sessionmaker
 from .fs import write_atomically
-from .llm import LLMError, LLMService, UnknownModel, render_prompt
+from .llm import LLMError, LLMService, UnknownModel
 from .models import MAX_EMAIL_LENGTH, RefreshToken, User, utcnow
 from .security import hash_password
 from .settings import SecretNotConfigured, Settings, get_settings
@@ -368,7 +368,8 @@ def generate(
         fail("No text on standard input. Pipe a file or type text and end with Ctrl-D.")
 
     if show_prompt:
-        typer.echo(render_prompt(text))
+        svc = service(think)
+        typer.echo(prompt.render(prompt.assemble(text, budget=svc.prompt_budget)))
         return
 
     asyncio.run(_stream(model, text, think))

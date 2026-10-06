@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     llm_providers_file: Path = Path("config/providers.yaml")
 
     llm_temperature: float = 1.0
+
+    # Characters of the writer's prose kept in a generation's prompt. A file longer
+    # than this is trimmed to its tail at a paragraph boundary (`prompt.py`); the trim
+    # is silent. Independent of the model's own context window -- see `llm_num_ctx`
+    # below, which should be set well above this.
+    llm_prompt_budget: int = Field(default=10000, gt=0)
 
     # Context window, sent to Ollama providers only, and only when set. A reasoning
     # model can spend a small window entirely on thinking and never answer.

@@ -1,3 +1,5 @@
+{# Retrieved lore and a story's synopsis render here, above these instructions
+   (api#15's retrieval, and api#6's "story synopsis + notes context" issue). -#}
 You are a skilled writer helping out a fellow writer.
 
 Continue the text below. What you write is appended directly onto the end of it,
@@ -20,9 +22,12 @@ with nothing inserted in between, so your first character has to join on cleanly
 - Write at most two sentences.
 - Output the continuation and nothing else: no preamble, no commentary, no
   quotation marks around it.
-
+{# A chapter or character summary renders here, between the instructions and the
+   existing text (api#6's "summarise the characters" issue, api#14's rolling summary).
+   The writer's own instruction, when there is one, renders last, immediately above
+   "Existing text:" (api#6's "instruction field" issue). #}
 Existing text:
 {# Both tags here strip the whitespace beside them: this comment leaves no blank line
    behind it, and the text below closes flush, so the prompt ends on the writer's own
    last character with nothing added before or after it. -#}
-{{ prompt -}}
+{{ ctx.text -}}

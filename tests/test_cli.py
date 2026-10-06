@@ -36,13 +36,20 @@ from tests.conftest import (
 )
 
 from inkspire_api import cli, provenance
-from inkspire_api.llm import LLMService, render_prompt
+from inkspire_api import prompt as prompt_lib
+from inkspire_api.llm import LLMService
 from inkspire_api.models import RefreshToken, User
 from inkspire_api.security import verify_password
 from inkspire_api.settings import Settings
 
 NEW_EMAIL = "new-user@example.com"
 GOOD_PASSWORD = "a-good-password"
+
+
+def render_prompt(text: str, budget: int = Settings().llm_prompt_budget) -> str:
+    """What `generate --show-prompt` and a real generation both send, now that
+    assembly is `prompt.py`'s two calls rather than one bare function."""
+    return prompt_lib.render(prompt_lib.assemble(text, budget=budget))
 
 runner = CliRunner()
 

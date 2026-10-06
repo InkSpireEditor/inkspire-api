@@ -2,14 +2,21 @@
 """Text generation.
 
 `GET /api/llm/models` lists what every configured provider offers, prefixed with
-the provider name, and `POST /api/llm/generate` streams a continuation of the
-writer's text back as server-sent events.
+the provider name. `POST /api/stories/file/{id}/generate` and the `/api/notes`
+equivalent stream a continuation of a chapter's or a note's own text back as
+server-sent events -- read fresh from disk, not uploaded by the client, so the
+file is always what is asked about rather than whatever a tab happens to hold.
+See `docs/prompt.md` for why assembly lives here and insertion stays with the
+editor.
 
 Two protocols are spoken, chosen per provider: the chat-completions API, and
 Ollama's own. See `Protocol` for why both are needed.
 
-The generated text is never written to disk here. The client owns the chapter it
-is editing and saves it, so nothing has to be reconciled between the two.
+The generated text is never written to disk here. The client inserts each delta
+through its own editing command, so it lands on the browser's undo stack and is
+marked as a model's at the moment it is inserted (`docs/prompt.md` has why); nothing
+has to be reconciled between a write here and one there, because there is only
+ever one.
 """
 
 from __future__ import annotations
@@ -22,35 +29,22 @@ from pathlib import Path
 from typing import Annotated, Any, NamedTuple
 
 import httpx
-import jinja2
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from . import prompt as prompt_lib
 from .deps import CurrentUser, SettingsDep
+from .files import NotesDep, ScannerDep
 from .settings import Settings
 
 #: Upper bound on a model identifier, across every provider.
 MAX_MODEL_LENGTH = 255
 
-#: Upper bound on one prompt. Well under the smallest context window a provider is
-#: expected to offer, so the rendered template still fits alongside it.
-MAX_PROMPT_LENGTH = 10000
-
 #: Listing models is a cheap metadata call and should fail fast rather than wait out
 #: a generation-sized budget.
 MODELS_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
-
-PROMPT_TEMPLATE = "prompt.j2"
-
-#: Autoescaping is off: the writer's apostrophes and quotes must reach the model as
-#: typed, not as HTML entities.
-JINJA = jinja2.Environment(
-    loader=jinja2.PackageLoader("inkspire_api", "templates"),
-    autoescape=False,
-    keep_trailing_newline=False,
-)
 
 
 class Protocol(StrEnum):
@@ -107,11 +101,6 @@ def load_providers(path: Path) -> dict[str, ProviderConfig]:
     return providers
 
 
-def render_prompt(text: str) -> str:
-    """Wraps the writer's text in the continuation instructions sent to the model."""
-    return JINJA.get_template(PROMPT_TEMPLATE).render(prompt=text)
-
-
 class ModelCache:
     """Per-provider model lists, held for `ttl` seconds.
 
@@ -151,6 +140,7 @@ class LLMService:
         self.transport = transport
         self.providers = load_providers(settings.llm_providers_file)
         self.temperature = settings.llm_temperature
+        self.prompt_budget = settings.llm_prompt_budget
         self.num_ctx = settings.llm_num_ctx
         self.think = settings.llm_think
         # The idle timeout: the longest acceptable gap between two chunks. Because the
@@ -217,9 +207,12 @@ class LLMService:
         ]
 
     async def stream(
-        self, model: str, prompt: str, *, think: bool | None = None
+        self, model: str, text: str, *, think: bool | None = None
     ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
+
+        `text` is the writer's own prose -- the whole file, trimmed to `prompt_budget`
+        and wrapped in the continuation instructions before anything is sent.
 
         `think` overrides the server-wide `INKSPIRE_LLM_THINK` setting for this one
         request, and reaches the provider only on the ollama path -- the
@@ -244,7 +237,7 @@ class LLMService:
                     "POST",
                     url,
                     headers=headers(config),
-                    json=self._payload(name, prompt, native=native, think=think),
+                    json=self._payload(name, text, native=native, think=think),
                 ) as response:
                     if response.status_code != 200:
                         detail = (await response.aread()).decode("utf-8", "replace")
@@ -275,9 +268,10 @@ class LLMService:
             raise LLMError(f"Provider is unreachable: {error}") from error
 
     def _payload(
-        self, model: str, prompt: str, *, native: bool, think: bool | None = None
+        self, model: str, text: str, *, native: bool, think: bool | None = None
     ) -> dict[str, Any]:
-        messages = [{"role": "user", "content": render_prompt(prompt)}]
+        rendered = prompt_lib.render(prompt_lib.assemble(text, budget=self.prompt_budget))
+        messages = [{"role": "user", "content": rendered}]
         if not native:
             payload: dict[str, Any] = {
                 "model": model,
@@ -373,6 +367,8 @@ DONE = "data: [DONE]\n\n"
 # --- routes ----------------------------------------------------------------
 
 router = APIRouter(prefix="/llm", tags=["llm"])
+stories_router = APIRouter(prefix="/stories", tags=["stories"])
+notes_router = APIRouter(prefix="/notes", tags=["notes"])
 
 
 def get_service(request: Request, settings: SettingsDep) -> LLMService:
@@ -391,8 +387,9 @@ ServiceDep = Annotated[LLMService, Depends(get_service)]
 
 
 class GenerateRequest(BaseModel):
+    """What a generation needs beyond the file itself, which the server reads fresh."""
+
     model: str = Field(max_length=MAX_MODEL_LENGTH)
-    prompt: str = Field(min_length=1, max_length=MAX_PROMPT_LENGTH)
     #: Overrides `INKSPIRE_LLM_THINK` for this request alone. `None` falls back to the
     #: setting; either way the ollama path is the only one that reads it.
     think: bool | None = None
@@ -408,14 +405,18 @@ async def list_models(service: ServiceDep) -> list[dict[str, str]]:
         ) from error
 
 
-@router.post("/generate")
-async def generate(
+EMPTY_FILE = "Nothing to continue: the file is empty."
+
+
+async def _stream_generation(
+    text: str,
     body: GenerateRequest,
     request: Request,
     user: CurrentUser,
-    service: ServiceDep,
+    service: LLMService,
 ) -> StreamingResponse:
-    """Streams a continuation of the writer's text as server-sent events.
+    """Shared by both spaces: rate-limits, starts the stream, and turns a failure
+    before the first chunk into an ordinary status code.
 
     Each event is `{"delta": "..."}` with text to append, `{"error": "..."}` if the
     provider fails once chunks have already been sent, and `[DONE]` at the end.
@@ -429,7 +430,7 @@ async def generate(
 
     # Calling an async generator function runs none of its body, so both the model
     # check and the connection happen on this first step.
-    chunks = service.stream(body.model, body.prompt, think=body.think)
+    chunks = service.stream(body.model, text, think=body.think)
     try:
         first = await anext(chunks, None)
     except UnknownModel as error:
@@ -463,3 +464,43 @@ async def generate(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@stories_router.post("/file/{file_id}/generate")
+async def generate_story(
+    file_id: str,
+    body: GenerateRequest,
+    *,
+    request: Request,
+    user: CurrentUser,
+    scanner: ScannerDep,
+    service: ServiceDep,
+) -> StreamingResponse:
+    """Streams a continuation of a chapter's or a one-shot's own text.
+
+    Read fresh from disk rather than taken from the request: the file is the source
+    of truth once the editor has saved, and the client no longer uploads its contents
+    for this. See `docs/prompt.md` for why saving before calling this is the editor's
+    responsibility, not something checked here.
+    """
+    text = scanner.read_document(file_id).body
+    if not text.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_FILE)
+    return await _stream_generation(text, body, request, user, service)
+
+
+@notes_router.post("/file/{file_id}/generate")
+async def generate_note(
+    file_id: str,
+    body: GenerateRequest,
+    *,
+    request: Request,
+    user: CurrentUser,
+    notes: NotesDep,
+    service: ServiceDep,
+) -> StreamingResponse:
+    """The same, for a note."""
+    text = notes.read_document(file_id).body
+    if not text.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_FILE)
+    return await _stream_generation(text, body, request, user, service)

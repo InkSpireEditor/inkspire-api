@@ -14,9 +14,20 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import EMAIL, PASSWORD, delta, llm_service, sse_body
+from tests.conftest import (
+    EMAIL,
+    PASSWORD,
+    chapter_id,
+    delta,
+    entry_named,
+    llm_service,
+    make_note,
+    make_story,
+    sse_body,
+)
 
 from inkspire_api import llm
+from inkspire_api import prompt as prompt_lib
 from inkspire_api.llm import (
     LLMError,
     LLMService,
@@ -26,7 +37,6 @@ from inkspire_api.llm import (
     endpoint,
     load_providers,
     native_event,
-    render_prompt,
     sse_event,
 )
 from inkspire_api.settings import Settings
@@ -36,6 +46,21 @@ from inkspire_api.settings import Settings
 PROMPTS: dict[str, dict[str, str]] = json.loads(
     (Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8")
 )
+
+#: `Settings`' own default, kept as a constant here so a test that trims against it
+#: shows its intent rather than a bare 10000.
+DEFAULT_BUDGET = Settings().llm_prompt_budget
+
+
+def render_prompt(text: str, budget: int = DEFAULT_BUDGET) -> str:
+    """What `LLMService._payload` sends: assembly, then the render.
+
+    A local wrapper rather than an import, now that assembly lives in `prompt.py` as
+    two calls instead of one bare function -- the ten pinned cases below exercise the
+    render alone, at a budget no real file of theirs comes close to.
+    """
+    return prompt_lib.render(prompt_lib.assemble(text, budget=budget))
+
 
 # --- the prompt ------------------------------------------------------------
 
@@ -502,7 +527,7 @@ def test_listing_models_requires_authentication(client: TestClient) -> None:
 
 
 def test_generating_requires_authentication(client: TestClient) -> None:
-    response = client.post("/api/llm/generate", json={"model": "p/m", "prompt": "x"})
+    response = client.post("/api/stories/file/x/generate", json={"model": "p/m"})
     assert response.status_code == 401
 
 
@@ -515,7 +540,9 @@ def test_the_models_endpoint_returns_the_prefixed_list(llm_client) -> None:
     assert response.json() == [{"name": "p/one", "protocol": "openai"}]
 
 
-def test_generate_think_reaches_the_provider_on_the_ollama_path(app, tmp_path: Path, user) -> None:
+def test_generate_think_reaches_the_provider_on_the_ollama_path(
+    app, tmp_path: Path, user, data_root: Path
+) -> None:
     """The checkbox's value has to survive the route, not just `LLMService.stream`."""
     seen: dict = {}
 
@@ -525,22 +552,33 @@ def test_generate_think_reaches_the_provider_on_the_ollama_path(app, tmp_path: P
 
     built = llm_service(tmp_path, handler, protocol="ollama")
     app.dependency_overrides[llm.get_service] = lambda: built
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
 
     with TestClient(app) as client:
         client.post("/auth", json={"username": EMAIL, "password": PASSWORD})
+        file_id = chapter_id(client, "Example Story", "first-chapter")
         response = client.post(
-            "/api/llm/generate", json={"model": "p/m", "prompt": "x", "think": False}
+            f"/api/stories/file/{file_id}/generate", json={"model": "p/m", "think": False}
         )
     assert response.status_code == 200
     assert seen["think"] is False
 
 
-def test_generation_streams_deltas_then_done(llm_client) -> None:
+def test_generation_streams_deltas_then_done(llm_client, data_root: Path) -> None:
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": "the house was"},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
     llm_client.handlers["handler"] = lambda request: httpx.Response(
         200, text=sse_body(delta("Hel"), delta("lo"))
     )
     response = llm_client.post(
-        "/api/llm/generate", json={"model": "p/m", "prompt": "the house was"}
+        f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -549,18 +587,104 @@ def test_generation_streams_deltas_then_done(llm_client) -> None:
     assert events(response) == ['{"delta": "Hel"}', '{"delta": "lo"}', "[DONE]"]
 
 
-def test_a_provider_failure_before_any_text_is_a_status_code(llm_client) -> None:
+def test_generation_works_through_the_notes_path_too(llm_client, files_root: Path) -> None:
+    make_note(files_root, "scratch.ink", "the house was")
+    note_id = entry_named(
+        llm_client.get("/api/notes/tree").json()["files"], "scratch"
+    )["id"]
+    llm_client.handlers["handler"] = lambda request: httpx.Response(
+        200, text=sse_body(delta("x"))
+    )
+    response = llm_client.post(
+        f"/api/notes/file/{note_id}/generate", json={"model": "p/m"}
+    )
+    assert response.status_code == 200
+    assert events(response)[-1] == "[DONE]"
+
+
+def test_an_unknown_file_id_is_not_found(llm_client) -> None:
+    response = llm_client.post(
+        "/api/stories/file/doesnotexist/generate", json={"model": "p/m"}
+    )
+    assert response.status_code == 404
+
+
+def test_an_empty_file_has_nothing_to_continue(llm_client, data_root: Path) -> None:
+    """There is no instruction field yet (#6's follow-up issue), so an empty chapter
+    is refused rather than asking a model to continue nothing."""
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"empty-chapter.ink": ""}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "empty-chapter")
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
+    )
+    assert response.status_code == 422
+    assert "empty" in response.json()["message"].lower()
+
+
+def test_a_long_chapter_is_trimmed_rather_than_rejected(
+    llm_client, data_root: Path
+) -> None:
+    """#6: the file is read fresh from disk and trimmed to the budget, rather than
+    uploaded by the client and rejected past a fixed length."""
+    paragraphs = [
+        f"Paragraph number {i}, filled with enough prose to take up real space."
+        for i in range(400)
+    ]
+    long_text = "\n\n".join(paragraphs)
+    assert len(long_text) > DEFAULT_BUDGET
+
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": long_text},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
+    )
+    assert response.status_code == 200
+
+    sent = seen["messages"][0]["content"]
+    assert sent == render_prompt(long_text)
+    assert paragraphs[0] not in sent  # the opening was dropped
+    assert sent.endswith(paragraphs[-1])  # the tail survived whole
+
+
+def test_a_provider_failure_before_any_text_is_a_status_code(
+    llm_client, data_root: Path
+) -> None:
     """Nothing has been sent yet, so this can still be an ordinary error response."""
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
     llm_client.handlers["handler"] = lambda request: httpx.Response(503, text="down")
     response = llm_client.post(
-        "/api/llm/generate", json={"model": "p/m", "prompt": "x"}
+        f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
     )
     assert response.status_code == 500
     assert "503" in response.json()["message"]
 
 
-def test_a_failure_after_text_has_started_becomes_an_error_event(llm_client) -> None:
+def test_a_failure_after_text_has_started_becomes_an_error_event(
+    llm_client, data_root: Path
+) -> None:
     """The status line is already sent by then, so the only way left is in the stream."""
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
 
     def handler(request: httpx.Request) -> httpx.Response:
         async def chunks():
@@ -571,7 +695,7 @@ def test_a_failure_after_text_has_started_becomes_an_error_event(llm_client) -> 
 
     llm_client.handlers["handler"] = handler
     response = llm_client.post(
-        "/api/llm/generate", json={"model": "p/m", "prompt": "x"}
+        f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
     )
     assert response.status_code == 200
     payloads = events(response)
@@ -580,36 +704,28 @@ def test_a_failure_after_text_has_started_becomes_an_error_event(llm_client) -> 
     assert payloads[-1] == "[DONE]"
 
 
-def test_an_unknown_model_is_unprocessable(llm_client) -> None:
+def test_an_unknown_model_is_unprocessable(llm_client, data_root: Path) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
     llm_client.handlers["handler"] = lambda request: httpx.Response(200, text=sse_body())
     response = llm_client.post(
-        "/api/llm/generate", json={"model": "absent/model", "prompt": "x"}
+        f"/api/stories/file/{file_id}/generate", json={"model": "absent/model"}
     )
     assert response.status_code == 422
     assert "absent" in response.json()["message"]
 
 
-def test_an_overlong_prompt_is_rejected(llm_client) -> None:
-    llm_client.handlers["handler"] = lambda request: httpx.Response(200, text=sse_body())
-    response = llm_client.post(
-        "/api/llm/generate",
-        json={"model": "p/m", "prompt": "x" * (llm.MAX_PROMPT_LENGTH + 1)},
-    )
-    assert response.status_code == 400
-    assert "prompt" in response.json()["message"]
-
-
-def test_an_empty_prompt_is_rejected(llm_client) -> None:
-    llm_client.handlers["handler"] = lambda request: httpx.Response(200, text=sse_body())
-    response = llm_client.post("/api/llm/generate", json={"model": "p/m", "prompt": ""})
-    assert response.status_code == 400
-
-
-def test_generation_is_rate_limited_per_account(llm_client, app) -> None:
+def test_generation_is_rate_limited_per_account(llm_client, app, data_root: Path) -> None:
     """A generation costs a token whether or not the client reads the whole stream."""
     from inkspire_api.throttle import RateLimiter
 
     app.state.llm_limiter = RateLimiter(limit=2, interval=60)
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
     llm_client.handlers["handler"] = lambda request: httpx.Response(
         200, text=sse_body(delta("x"))
     )
@@ -617,11 +733,13 @@ def test_generation_is_rate_limited_per_account(llm_client, app) -> None:
     for _ in range(2):
         assert (
             llm_client.post(
-                "/api/llm/generate", json={"model": "p/m", "prompt": "x"}
+                f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
             ).status_code
             == 200
         )
 
-    refused = llm_client.post("/api/llm/generate", json={"model": "p/m", "prompt": "x"})
+    refused = llm_client.post(
+        f"/api/stories/file/{file_id}/generate", json={"model": "p/m"}
+    )
     assert refused.status_code == 429
     assert "message" in refused.json()
