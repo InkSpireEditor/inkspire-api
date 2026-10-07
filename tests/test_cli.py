@@ -46,10 +46,18 @@ NEW_EMAIL = "new-user@example.com"
 GOOD_PASSWORD = "a-good-password"
 
 
-def render_prompt(text: str, budget: int = Settings().llm_prompt_budget) -> str:
+def render_prompt(
+    text: str,
+    budget: int = Settings().llm_prompt_budget,
+    *,
+    cursor: prompt_lib.Cursor | None = None,
+) -> str:
     """What `generate --show-prompt` and a real generation both send, now that
     assembly is `prompt.py`'s two calls rather than one bare function."""
-    return prompt_lib.render(prompt_lib.assemble(text, budget=budget))
+    prefix_share = Settings().llm_prefix_share
+    return prompt_lib.render(
+        prompt_lib.assemble(text, budget=budget, cursor=cursor, prefix_share=prefix_share)
+    )
 
 runner = CliRunner()
 
@@ -519,6 +527,25 @@ def test_show_prompt_generates_nothing(ask) -> None:
     result, seen = ask(handler, "generate", "-m", "p/model", "--show-prompt", stdin=TEXT)
     assert result.exit_code == 0, result.output
     assert result.stdout.rstrip("\n") == render_prompt(TEXT)
+    assert seen == []
+
+
+def test_show_prompt_with_a_cursor_renders_fill_in_the_middle(ask) -> None:
+    """#14: `--cursor` is a flat offset into stdin, converted the same way the API
+    would resolve one reported against a paragraph and an offset."""
+    offset = TEXT.index("Below")
+
+    def handler(request):  # pragma: no cover - must not be reached
+        raise AssertionError("no request should be made")
+
+    result, seen = ask(
+        handler, "generate", "-m", "p/model", "--show-prompt", "--cursor", str(offset), stdin=TEXT
+    )
+    assert result.exit_code == 0, result.output
+    at_cursor = prompt_lib.cursor_from_offset(TEXT, offset)
+    assert result.stdout.rstrip("\n") == render_prompt(TEXT, cursor=at_cursor)
+    assert "Text before:" in result.stdout
+    assert "Text after:" in result.stdout
     assert seen == []
 
 

@@ -66,10 +66,16 @@ class Settings(BaseSettings):
     llm_temperature: float = 1.0
 
     # Characters of the writer's prose kept in a generation's prompt. A file longer
-    # than this is trimmed to its tail at a paragraph boundary (`prompt.py`); the trim
-    # is silent. Independent of the model's own context window -- see `llm_num_ctx`
-    # below, which should be set well above this.
+    # than this is trimmed at a paragraph boundary (`prompt.py`); the trim is silent.
+    # Independent of the model's own context window -- see `llm_num_ctx` below, which
+    # should be set well above this.
     llm_prompt_budget: int = Field(default=10000, gt=0)
+
+    # How the budget above splits between the text before the caret and the text
+    # after it, once there is a caret -- see api#14. Unused for a continuation (no
+    # caret, or one at the very end of the file), which gets the whole budget: a
+    # continuation's quality depends mostly on what precedes it.
+    llm_prefix_share: float = Field(default=0.75, ge=0.0, le=1.0)
 
     # Context window, sent to Ollama providers only, and only when set. A reasoning
     # model can spend a small window entirely on thinking and never answer.

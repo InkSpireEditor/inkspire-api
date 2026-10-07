@@ -21,6 +21,7 @@ ever one.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -37,6 +38,7 @@ from pydantic import BaseModel, Field
 from . import prompt as prompt_lib
 from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
+from .fs import MAX_FILE_BYTES
 from .settings import Settings
 
 #: Upper bound on a model identifier, across every provider.
@@ -129,6 +131,43 @@ class ModelCache:
         self._entries.clear()
 
 
+@dataclasses.dataclass(frozen=True)
+class GenerationOptions:
+    """Everything one generation needs beyond the model and the text itself, resolved
+    once per request rather than held on `LLMService`.
+
+    `LLMService` is a singleton on `app.state` (`get_service`), so these cannot be its
+    instance attributes the way they were before this existed: setting one from a
+    request's override would leak that request's choice into the next one to use the
+    same service. `LLMService.defaults` is the server's own configuration as one of
+    these; `overlay` is how a request's per-call choices are layered onto it, and the
+    result is what `stream`/`_payload` actually read.
+    """
+
+    temperature: float
+    prompt_budget: int
+    prefix_share: float
+    num_ctx: int | None
+    think: bool | None
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> GenerationOptions:
+        return cls(
+            temperature=settings.llm_temperature,
+            prompt_budget=settings.llm_prompt_budget,
+            prefix_share=settings.llm_prefix_share,
+            num_ctx=settings.llm_num_ctx,
+            think=settings.llm_think,
+        )
+
+    def overlay(self, **overrides: Any) -> GenerationOptions:
+        """`self`, with every field named in `overrides` whose value is not `None`
+        replaced by that value. Omitting a field, or giving it `None`, leaves the
+        server's own default -- or a previous override -- in place."""
+        given = {name: value for name, value in overrides.items() if value is not None}
+        return dataclasses.replace(self, **given)
+
+
 class LLMService:
     def __init__(
         self,
@@ -139,10 +178,9 @@ class LLMService:
         #: Where requests are sent, when they should not go over the network.
         self.transport = transport
         self.providers = load_providers(settings.llm_providers_file)
-        self.temperature = settings.llm_temperature
-        self.prompt_budget = settings.llm_prompt_budget
-        self.num_ctx = settings.llm_num_ctx
-        self.think = settings.llm_think
+        #: The server's own configuration, as one request's worth of settings. Never
+        #: mutated after construction -- see `GenerationOptions`.
+        self.defaults = GenerationOptions.from_settings(settings)
         # The idle timeout: the longest acceptable gap between two chunks. Because the
         # response is streamed, it does not have to cover a whole generation.
         self.timeout = httpx.Timeout(settings.llm_timeout, connect=10.0)
@@ -207,18 +245,30 @@ class LLMService:
         ]
 
     async def stream(
-        self, model: str, text: str, *, think: bool | None = None
+        self,
+        model: str,
+        text: str,
+        *,
+        cursor: prompt_lib.Cursor | None = None,
+        options: GenerationOptions | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
 
-        `text` is the writer's own prose -- the whole file, trimmed to `prompt_budget`
-        and wrapped in the continuation instructions before anything is sent.
+        `text` is the writer's own prose -- the whole file, split at `cursor` into a
+        prefix and a suffix (or, with none, a prefix alone), each trimmed to its share
+        of the budget, and wrapped in the continuation or fill-in-the-middle
+        instructions before anything is sent.
 
-        `think` overrides the server-wide `INKSPIRE_LLM_THINK` setting for this one
-        request, and reaches the provider only on the ollama path -- the
-        chat-completions protocol has no equivalent, native or otherwise.
+        `options` is this one generation's settings -- temperature, the budget and
+        its split, `num_ctx`, and whether to think -- defaulting to `self.defaults`,
+        the server's own configuration, when not given. A caller with a request that
+        may have overridden any of them resolves `self.defaults.overlay(...)` first
+        and passes the result here; `think` reaches the provider only on the ollama
+        path -- the chat-completions protocol has no equivalent, native or otherwise.
 
-        Raises `LLMError` if the provider cannot be reached or rejects the request.
+        Raises `LLMError` if the provider cannot be reached or rejects the request,
+        `UnknownModel` for a model naming no configured provider, and
+        `CursorOutOfRange` for a cursor that does not address a character of `text`.
         Once chunks have started arriving, a failure raises mid-iteration.
         """
         config, name = self.parse_model(model)
@@ -228,6 +278,7 @@ class LLMService:
             if native
             else endpoint(config.url, "chat/completions")
         )
+        resolved = options if options is not None else self.defaults
 
         try:
             async with httpx.AsyncClient(
@@ -237,67 +288,53 @@ class LLMService:
                     "POST",
                     url,
                     headers=headers(config),
-                    json=self._payload(name, text, native=native, think=think),
+                    json=self._payload(name, text, native=native, cursor=cursor, options=resolved),
                 ) as response:
-                    if response.status_code != 200:
-                        detail = (await response.aread()).decode("utf-8", "replace")
-                        raise LLMError(
-                            f"Provider returned HTTP {response.status_code}: {detail[:500]}"
-                        )
-
-                    produced = False
-                    reason = None
-                    async for line in response.aiter_lines():
-                        event = native_event(line) if native else sse_event(line)
-                        if event is None:
-                            continue
-                        reason = event.done_reason or reason
-                        if event.content:
-                            produced = True
-                            yield event.content
-
-                    if not produced and reason == "length":
-                        # The model spent its whole context window on reasoning and never
-                        # answered. Reporting nothing would look like a working provider
-                        # returning an empty continuation.
-                        raise LLMError(
-                            "The model reached its context limit while thinking and wrote "
-                            "nothing. Disable thinking for it, or raise INKSPIRE_LLM_NUM_CTX."
-                        )
+                    await _raise_for_status(response)
+                    async for chunk in _events(response, native=native):
+                        yield chunk
         except httpx.HTTPError as error:
             raise LLMError(f"Provider is unreachable: {error}") from error
 
     def _payload(
-        self, model: str, text: str, *, native: bool, think: bool | None = None
+        self,
+        model: str,
+        text: str,
+        *,
+        native: bool,
+        options: GenerationOptions,
+        cursor: prompt_lib.Cursor | None = None,
     ) -> dict[str, Any]:
-        rendered = prompt_lib.render(prompt_lib.assemble(text, budget=self.prompt_budget))
+        context = prompt_lib.assemble(
+            text, budget=options.prompt_budget, cursor=cursor, prefix_share=options.prefix_share
+        )
+        rendered = prompt_lib.render(context)
         messages = [{"role": "user", "content": rendered}]
         if not native:
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
                 "stream": True,
-                "temperature": self.temperature,
+                "temperature": options.temperature,
             }
             return payload
 
         # Ollama takes sampling settings under "options" rather than at the top level,
         # and `think` beside them. num_ctx is sent only when configured, so the model's
-        # own default applies otherwise. A per-request `think` overrides the setting;
-        # with neither given the key is left out, which is what a model with no
-        # reasoning mode expects.
-        options: dict[str, Any] = {"temperature": self.temperature}
-        if self.num_ctx is not None:
-            options["num_ctx"] = self.num_ctx
+        # own default applies otherwise. `think` left unset (neither a per-request
+        # override nor a server default) is left out of the payload entirely, which is
+        # what a model with no reasoning mode expects.
+        sampling: dict[str, Any] = {"temperature": options.temperature}
+        if options.num_ctx is not None:
+            sampling["num_ctx"] = options.num_ctx
         payload = {
             "model": model,
             "messages": messages,
             "stream": True,
-            "options": options,
+            "options": sampling,
         }
-        effective_think = think if think is not None else self.think
-        if effective_think is not None:
-            payload["think"] = effective_think
+        if options.think is not None:
+            payload["think"] = options.think
         return payload
 
 
@@ -310,6 +347,42 @@ class Event(NamedTuple):
 
     content: str = ""
     done_reason: str | None = None
+
+
+async def _raise_for_status(response: httpx.Response) -> None:
+    """Raises `LLMError` for a non-200 response, naming the provider's own detail."""
+    if response.status_code != 200:
+        detail = (await response.aread()).decode("utf-8", "replace")
+        raise LLMError(f"Provider returned HTTP {response.status_code}: {detail[:500]}")
+
+
+async def _events(response: httpx.Response, *, native: bool) -> AsyncGenerator[str, None]:
+    """Decodes `response`'s lines into content chunks, in whichever protocol `native`
+    selects, raising if the model spent its whole context window thinking.
+
+    Extracted out of `stream` so the decode loop's own locals -- the line, the
+    decoded event, and the two flags tracking whether anything was produced and why
+    it stopped -- are not also `stream`'s locals.
+    """
+    produced = False
+    reason = None
+    async for line in response.aiter_lines():
+        event = native_event(line) if native else sse_event(line)
+        if event is None:
+            continue
+        reason = event.done_reason or reason
+        if event.content:
+            produced = True
+            yield event.content
+
+    if not produced and reason == "length":
+        # The model spent its whole context window on reasoning and never answered.
+        # Reporting nothing would look like a working provider returning an empty
+        # continuation.
+        raise LLMError(
+            "The model reached its context limit while thinking and wrote "
+            "nothing. Disable thinking for it, or raise INKSPIRE_LLM_NUM_CTX."
+        )
 
 
 def sse_event(line: str) -> Event | None:
@@ -387,12 +460,38 @@ ServiceDep = Annotated[LLMService, Depends(get_service)]
 
 
 class GenerateRequest(BaseModel):
-    """What a generation needs beyond the file itself, which the server reads fresh."""
+    """What a generation needs beyond the file itself, which the server reads fresh.
+
+    `think`, `temperature`, `prompt_budget`, `prefix_share` and `num_ctx` each
+    override the server's own default (`GenerationOptions`, `/api/llm/defaults`) for
+    this request alone, when given; `None` -- the default for every one of them --
+    leaves whichever default stands. None of this reaches `throttle.py`'s rate limit
+    or the provider timeout: those are infrastructure, not a writing choice, and are
+    not settings a request gets to raise for itself.
+    """
 
     model: str = Field(max_length=MAX_MODEL_LENGTH)
-    #: Overrides `INKSPIRE_LLM_THINK` for this request alone. `None` falls back to the
-    #: setting; either way the ollama path is the only one that reads it.
     think: bool | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    prompt_budget: int | None = Field(default=None, gt=0, le=MAX_FILE_BYTES)
+    prefix_share: float | None = Field(default=None, ge=0.0, le=1.0)
+    num_ctx: int | None = Field(default=None, gt=0)
+    #: The caret: which paragraph it is in, and the offset within it (api#14). Both
+    #: absent means the end of the file -- today's only behaviour, and a continuation
+    #: either way. One without the other is rejected by `_cursor_from_request` rather
+    #: than silently treated as "no caret".
+    cursor_para: int | None = Field(default=None, ge=0)
+    cursor_offset: int | None = Field(default=None, ge=0)
+
+    def options(self, defaults: GenerationOptions) -> GenerationOptions:
+        """`defaults` overlaid with whichever of this request's fields are not `None`."""
+        return defaults.overlay(
+            temperature=self.temperature,
+            prompt_budget=self.prompt_budget,
+            prefix_share=self.prefix_share,
+            num_ctx=self.num_ctx,
+            think=self.think,
+        )
 
 
 @router.get("/models")
@@ -405,7 +504,33 @@ async def list_models(service: ServiceDep) -> list[dict[str, str]]:
         ) from error
 
 
+@router.get("/defaults")
+async def get_defaults(service: ServiceDep) -> GenerationOptions:
+    """The server's own generation settings, so a client can initialise a settings
+    panel against them and has something to reset to.
+
+    Named *defaults* rather than *settings*: nothing here is stored per writer, and a
+    per-request override in `GenerateRequest` never changes what this answers.
+    """
+    return service.defaults
+
+
 EMPTY_FILE = "Nothing to continue: the file is empty."
+SPLIT_CURSOR = "cursor_para and cursor_offset must be given together, or not at all."
+
+
+def _cursor_from_request(body: GenerateRequest) -> prompt_lib.Cursor | None:
+    """The request's caret, or `None` for the end of the file.
+
+    Raises a 422 for one of the pair without the other -- silently treating that as
+    "no caret" would generate at the end of the file for a request that named a
+    position, which is not what was asked.
+    """
+    if body.cursor_para is None and body.cursor_offset is None:
+        return None
+    if body.cursor_para is None or body.cursor_offset is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, SPLIT_CURSOR)
+    return prompt_lib.Cursor(para=body.cursor_para, offset=body.cursor_offset)
 
 
 async def _stream_generation(
@@ -428,12 +553,18 @@ async def _stream_generation(
     if not request.app.state.llm_limiter.consume(user.email):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
 
-    # Calling an async generator function runs none of its body, so both the model
-    # check and the connection happen on this first step.
-    chunks = service.stream(body.model, text, think=body.think)
+    cursor = _cursor_from_request(body)
+    options = body.options(service.defaults)
+
+    # Calling an async generator function runs none of its body, so the model check,
+    # the cursor check and the connection all happen on this first step.
+    chunks = service.stream(body.model, text, cursor=cursor, options=options)
     try:
         first = await anext(chunks, None)
     except UnknownModel as error:
+        await chunks.aclose()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+    except prompt_lib.CursorOutOfRange as error:
         await chunks.aclose()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
     except LLMError as error:

@@ -354,6 +354,17 @@ def generate(
         bool,
         typer.Option("--show-prompt", help="Print the rendered prompt and generate nothing."),
     ] = False,
+    cursor: Annotated[
+        int | None,
+        typer.Option(
+            "--cursor",
+            help=(
+                "A flat character offset into standard input, marking where the "
+                "caret is -- generates a fill-in-the-middle prompt instead of a "
+                "continuation. Left unset, generation continues at the end."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Continue the text read from standard input, printing chunks as they arrive.
 
@@ -367,21 +378,37 @@ def generate(
     if not text.strip():
         fail("No text on standard input. Pipe a file or type text and end with Ctrl-D.")
 
+    at_cursor = prompt.cursor_from_offset(text, cursor) if cursor is not None else None
+
     if show_prompt:
         svc = service(think)
-        typer.echo(prompt.render(prompt.assemble(text, budget=svc.prompt_budget)))
+        try:
+            rendered = prompt.render(
+                prompt.assemble(
+                    text,
+                    budget=svc.defaults.prompt_budget,
+                    cursor=at_cursor,
+                    prefix_share=svc.defaults.prefix_share,
+                )
+            )
+        except prompt.CursorOutOfRange as error:
+            fail(str(error))
+        else:
+            typer.echo(rendered)
         return
 
-    asyncio.run(_stream(model, text, think))
+    asyncio.run(_stream(model, text, think, at_cursor))
 
 
-async def _stream(model: str, text: str, think: bool | None) -> None:
+async def _stream(
+    model: str, text: str, think: bool | None, cursor: prompt.Cursor | None = None
+) -> None:
     started = time.monotonic()
     first_chunk_at: float | None = None
     characters = 0
 
     try:
-        async for chunk in service(think).stream(model, text):
+        async for chunk in service(think).stream(model, text, cursor=cursor):
             if first_chunk_at is None:
                 first_chunk_at = time.monotonic()
             characters += len(chunk)
@@ -389,7 +416,7 @@ async def _stream(model: str, text: str, think: bool | None) -> None:
             # streaming, since nothing would appear until the generation finished.
             sys.stdout.write(chunk)
             sys.stdout.flush()
-    except (UnknownModel, LLMError) as error:
+    except (UnknownModel, LLMError, prompt.CursorOutOfRange) as error:
         sys.stdout.flush()
         fail(str(error))
 

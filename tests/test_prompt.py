@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""`trim_to_tail`, the one piece of policy in `inkspire_api/prompt.py`.
+"""Assembly and the trim, the policy in `inkspire_api/prompt.py`.
 
 The render itself is pinned character for character in `tests/test_llm.py`, against
 `tests/data/prompts.json`; these tests are about what reaches the render, not what it
@@ -10,7 +10,18 @@ from __future__ import annotations
 
 import pytest
 
-from inkspire_api.prompt import PromptContext, assemble, render, trim_to_tail
+from inkspire_api.prompt import (
+    Cursor,
+    CursorOutOfRange,
+    PromptContext,
+    assemble,
+    cursor_from_offset,
+    render,
+    split_at_cursor,
+    trim_to_head,
+    trim_to_tail,
+)
+from inkspire_api import provenance
 
 
 def test_under_budget_the_body_is_returned_unchanged() -> None:
@@ -91,11 +102,172 @@ def test_a_hard_cut_still_keeps_the_tail_when_the_budget_is_tiny() -> None:
 
 
 def test_assemble_wraps_the_trimmed_text_in_a_context() -> None:
-    assert assemble("hello", budget=10) == PromptContext(text="hello")
+    assert assemble("hello", budget=10) == PromptContext(prefix="hello", suffix="")
     assert assemble("hello world, this is long", budget=5) != PromptContext(
-        text="hello world, this is long"
+        prefix="hello world, this is long", suffix=""
     )
 
 
 def test_render_ends_on_the_contexts_last_character() -> None:
-    assert render(PromptContext(text="the house was")).endswith("the house was")
+    assert render(PromptContext(prefix="the house was")).endswith("the house was")
+
+
+# --- trim_to_head, the mirror of trim_to_tail -------------------------------
+
+
+def test_trim_to_head_under_budget_is_unchanged() -> None:
+    body = "First paragraph.\n\nSecond paragraph.\n"
+    assert trim_to_head(body, budget=len(body)) == body
+
+
+def test_trim_to_head_keeps_whole_paragraphs_from_the_start() -> None:
+    body = "One.\n\nTwo.\n\nThree.\n\nFour.\n"
+    # "One." (4) + "\n\nTwo." (6) more = 10, fits; + "\n\nThree." (8) more = 18, still
+    # fits; + "\n\nFour." (7) more = 25, which would not -- so Four. must be dropped,
+    # and with it the separator that would have joined it on, per the next test.
+    trimmed = trim_to_head(body, budget=20)
+    assert trimmed == "One.\n\nTwo.\n\nThree."
+
+
+def test_trim_to_head_never_ends_on_a_blank_line() -> None:
+    """The separator that would join on the next paragraph is dropped outright, not
+    partially kept, even where there would be room for part of it."""
+    body = "One.\n\nTwo.\n\nThree.\n"
+    trimmed = trim_to_head(body, budget=len("One.\n\n") + 1)
+    assert trimmed == "One."
+    assert not trimmed.endswith("\n")
+
+
+def test_trim_to_head_keeps_the_bodys_own_leading_blank_lines() -> None:
+    body = "\n\nOne.\n\nTwo.\n"
+    trimmed = trim_to_head(body, budget=len("\n\nOne."))
+    assert trimmed == "\n\nOne."
+
+
+def test_a_single_paragraph_over_budget_falls_to_whole_lines_from_the_head() -> None:
+    body = "Line one is here.\nLine two is here.\nLine three is here.\n"
+    budget = len("Line one is here.\nLine two is here.\n")
+    trimmed = trim_to_head(body, budget=budget)
+    assert trimmed == "Line one is here.\nLine two is here."
+
+
+def test_a_single_line_over_budget_falls_to_a_hard_character_cut_from_the_head() -> None:
+    body = "x" * 500 + "\n"
+    trimmed = trim_to_head(body, budget=50)
+    assert trimmed.startswith("x" * 49)
+    assert len(trimmed) == 50
+
+
+# --- the cursor --------------------------------------------------------------
+
+
+def test_split_at_cursor_at_a_paragraphs_start() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n\nThree.\n")
+    p_paras, p_seps, s_paras, s_seps = split_at_cursor(paras, seps, Cursor(para=1, offset=0))
+    assert provenance.join_paragraphs(p_paras, p_seps) == "One.\n\n"
+    assert provenance.join_paragraphs(s_paras, s_seps) == "Two.\n\nThree.\n"
+
+
+def test_split_at_cursor_in_the_middle_of_a_paragraph() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n\nThree.\n")
+    p_paras, p_seps, s_paras, s_seps = split_at_cursor(paras, seps, Cursor(para=1, offset=2))
+    assert provenance.join_paragraphs(p_paras, p_seps) == "One.\n\nTw"
+    assert provenance.join_paragraphs(s_paras, s_seps) == "o.\n\nThree.\n"
+
+
+def test_split_at_cursor_at_a_paragraphs_end() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n\nThree.\n")
+    p_paras, p_seps, s_paras, s_seps = split_at_cursor(paras, seps, Cursor(para=0, offset=4))
+    assert provenance.join_paragraphs(p_paras, p_seps) == "One."
+    assert provenance.join_paragraphs(s_paras, s_seps) == "\n\nTwo.\n\nThree.\n"
+
+
+def test_split_at_cursor_rejects_an_out_of_range_paragraph() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n")
+    with pytest.raises(CursorOutOfRange):
+        split_at_cursor(paras, seps, Cursor(para=5, offset=0))
+    with pytest.raises(CursorOutOfRange):
+        split_at_cursor(paras, seps, Cursor(para=-1, offset=0))
+
+
+def test_split_at_cursor_rejects_an_out_of_range_offset() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n")
+    with pytest.raises(CursorOutOfRange):
+        split_at_cursor(paras, seps, Cursor(para=0, offset=99))
+    with pytest.raises(CursorOutOfRange):
+        split_at_cursor(paras, seps, Cursor(para=0, offset=-1))
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    [
+        (0, Cursor(para=0, offset=0)),
+        (3, Cursor(para=0, offset=3)),  # inside "One."
+        (4, Cursor(para=0, offset=4)),  # exactly at its end
+        (5, Cursor(para=0, offset=4)),  # inside the separator -- the end of "One."
+        (6, Cursor(para=1, offset=0)),  # exactly at the start of "Two."
+        (100, Cursor(para=1, offset=4)),  # past the end -- the end of the last paragraph
+    ],
+)
+def test_cursor_from_offset(offset: int, expected: Cursor) -> None:
+    assert cursor_from_offset("One.\n\nTwo.\n", offset) == expected
+
+
+def test_cursor_from_offset_before_the_first_paragraph_is_the_very_start() -> None:
+    assert cursor_from_offset("\n\nOne.\n", 1) == Cursor(para=0, offset=0)
+
+
+def test_cursor_from_offset_on_a_blank_only_body_is_the_origin() -> None:
+    assert cursor_from_offset("\n\n\n", 1) == Cursor(para=0, offset=0)
+
+
+# --- assemble with a cursor ---------------------------------------------------
+
+
+def test_assemble_with_no_cursor_is_a_continuation() -> None:
+    body = "One.\n\nTwo.\n\nThree.\n\nFour.\n"
+    context = assemble(body, budget=20)
+    assert context.prefix == trim_to_tail(body, 20)
+    assert context.suffix == ""
+
+
+def test_a_cursor_at_the_very_end_degenerates_to_no_cursor_at_all() -> None:
+    """Caret at the end of the file means an empty suffix (#14) -- byte-identical to
+    not reporting a caret, not a fill-in-the-middle prompt with nothing to fill."""
+    body = "One.\n\nTwo.\n\nThree.\n\nFour.\n"
+    paragraphs, _ = provenance.split_paragraphs(body)
+    end = Cursor(para=len(paragraphs) - 1, offset=len(paragraphs[-1]))
+    context = assemble(body, budget=20, cursor=end)
+    assert context == assemble(body, budget=20)
+
+
+def test_a_cursor_mid_file_reconstructs_the_body_around_it_under_budget() -> None:
+    body = "One.\n\nTwo.\n\nThree.\n\nFour.\n"
+    context = assemble(body, budget=1000, cursor=Cursor(para=1, offset=2))
+    assert context.prefix == "One.\n\nTw"
+    assert context.suffix == "o.\n\nThree.\n\nFour.\n"
+
+
+def test_the_whole_budget_goes_to_the_prefix_when_the_suffix_is_empty() -> None:
+    body = "One.\n\nTwo.\n"
+    context = assemble(body, budget=5, cursor=Cursor(para=1, offset=4), prefix_share=0.1)
+    assert context.prefix == trim_to_tail(body, 5)
+    assert context.suffix == ""
+
+
+def test_the_budget_splits_by_prefix_share_once_there_is_a_suffix() -> None:
+    body = "One.\n\nTwo.\n"
+    context = assemble(body, budget=10, cursor=Cursor(para=1, offset=2), prefix_share=0.75)
+    # prefix_budget = floor(10 * 0.75) = 7, suffix_budget = 3.
+    assert context.prefix == trim_to_tail("One.\n\nTw", 7)
+    assert context.suffix == trim_to_head("o.\n", 3)
+
+
+def test_assemble_rejects_a_cursor_out_of_range() -> None:
+    with pytest.raises(CursorOutOfRange):
+        assemble("One.\n\nTwo.\n", budget=100, cursor=Cursor(para=99, offset=0))
+
+
+def test_assemble_rejects_any_cursor_on_an_empty_body() -> None:
+    with pytest.raises(CursorOutOfRange):
+        assemble("", budget=100, cursor=Cursor(para=0, offset=0))

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -42,24 +43,39 @@ from inkspire_api.llm import (
 from inkspire_api.settings import Settings
 
 #: The prompt sent for a set of inputs, recorded so a change to the template shows up
-#: as a failure here rather than as a change in what the models are asked.
-PROMPTS: dict[str, dict[str, str]] = json.loads(
+#: as a failure here rather than as a change in what the models are asked. `fim` is a
+#: nested dict of its own cases -- the continuation branch and the fill-in-the-middle
+#: branch pin separately, since they are different instructions, not different data
+#: inside one (`docs/prompt.md`).
+_PROMPTS: dict[str, Any] = json.loads(
     (Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8")
 )
+CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
+    name: case for name, case in _PROMPTS.items() if name != "fim"
+}
+FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
 
 #: `Settings`' own default, kept as a constant here so a test that trims against it
 #: shows its intent rather than a bare 10000.
 DEFAULT_BUDGET = Settings().llm_prompt_budget
 
 
-def render_prompt(text: str, budget: int = DEFAULT_BUDGET) -> str:
+def render_prompt(
+    text: str,
+    budget: int = DEFAULT_BUDGET,
+    *,
+    cursor: prompt_lib.Cursor | None = None,
+    prefix_share: float = 0.75,
+) -> str:
     """What `LLMService._payload` sends: assembly, then the render.
 
     A local wrapper rather than an import, now that assembly lives in `prompt.py` as
-    two calls instead of one bare function -- the ten pinned cases below exercise the
+    two calls instead of one bare function -- the pinned cases below exercise the
     render alone, at a budget no real file of theirs comes close to.
     """
-    return prompt_lib.render(prompt_lib.assemble(text, budget=budget))
+    return prompt_lib.render(
+        prompt_lib.assemble(text, budget=budget, cursor=cursor, prefix_share=prefix_share)
+    )
 
 
 # --- the prompt ------------------------------------------------------------
@@ -78,7 +94,7 @@ def test_the_prompt_ends_on_the_writers_last_character() -> None:
     assert render_prompt("the house was").endswith("the house was")
 
 
-@pytest.mark.parametrize("case", sorted(PROMPTS))
+@pytest.mark.parametrize("case", sorted(CONTINUATION_PROMPTS))
 def test_the_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
     """Pins the whole prompt, character for character, for ten kinds of input.
 
@@ -88,8 +104,17 @@ def test_the_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
     space or on a blank line. Editing the template changes what every model is asked
     to do, so it fails here until the recorded prompt is updated with it.
     """
-    recorded = PROMPTS[case]
+    recorded = CONTINUATION_PROMPTS[case]
     assert render_prompt(recorded["text"]) == recorded["prompt"]
+
+
+@pytest.mark.parametrize("case", sorted(FIM_PROMPTS))
+def test_the_fim_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
+    """The fill-in-the-middle branch, pinned the same way: quotes and HTML a model
+    could escape, and CJK, each either side of the marker."""
+    recorded = FIM_PROMPTS[case]
+    context = prompt_lib.PromptContext(prefix=recorded["prefix"], suffix=recorded["suffix"])
+    assert prompt_lib.render(context) == recorded["prompt"]
 
 
 def test_markdown_is_preserved_verbatim() -> None:
@@ -312,10 +337,9 @@ async def test_a_per_request_think_overrides_the_setting(tmp_path: Path) -> None
         seen.update(json.loads(request.content))
         return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
 
+    service = llm_service(tmp_path, handler, protocol="ollama", think=True)
     await collect(
-        llm_service(tmp_path, handler, protocol="ollama", think=True).stream(
-            "p/m", "t", think=False
-        )
+        service.stream("p/m", "t", options=service.defaults.overlay(think=False))
     )
     assert seen["think"] is False
 
@@ -330,10 +354,9 @@ async def test_a_per_request_think_of_none_falls_back_to_the_setting(
         seen.update(json.loads(request.content))
         return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
 
+    service = llm_service(tmp_path, handler, protocol="ollama", think=True)
     await collect(
-        llm_service(tmp_path, handler, protocol="ollama", think=True).stream(
-            "p/m", "t", think=None
-        )
+        service.stream("p/m", "t", options=service.defaults.overlay(think=None))
     )
     assert seen["think"] is True
 
@@ -540,6 +563,98 @@ def test_the_models_endpoint_returns_the_prefixed_list(llm_client) -> None:
     assert response.json() == [{"name": "p/one", "protocol": "openai"}]
 
 
+def test_the_defaults_endpoint_answers_the_servers_own_settings(llm_client) -> None:
+    response = llm_client.get("/api/llm/defaults")
+    assert response.status_code == 200
+    assert response.json() == {
+        "temperature": 1.0,
+        "prompt_budget": DEFAULT_BUDGET,
+        "prefix_share": 0.75,
+        "num_ctx": None,
+        "think": None,
+    }
+
+
+def test_listing_defaults_requires_authentication(client: TestClient) -> None:
+    assert client.get("/api/llm/defaults").status_code == 401
+
+
+def test_a_per_request_temperature_reaches_the_provider(
+    llm_client, data_root: Path
+) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "temperature": 0.2},
+    )
+    assert response.status_code == 200
+    assert seen["temperature"] == 0.2
+
+
+def test_a_per_request_prompt_budget_reaches_the_trim(
+    llm_client, data_root: Path
+) -> None:
+    body = "\n\n".join(f"Paragraph {i}." for i in range(50))
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": body}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "prompt_budget": 20},
+    )
+    assert response.status_code == 200
+    sent = seen["messages"][0]["content"]
+    assert render_prompt(body, budget=20) == sent
+    assert render_prompt(body) != sent  # the default budget would not have trimmed this far
+
+
+def test_an_override_does_not_persist_into_a_second_request(
+    llm_client, data_root: Path
+) -> None:
+    """`LLMService` is a singleton across requests -- an override has to be this
+    request's `GenerationOptions`, never a mutation of the service's own defaults."""
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "temperature": 0.1},
+    )
+    llm_client.post(f"/api/stories/file/{file_id}/generate", json={"model": "p/m"})
+
+    assert seen[0]["temperature"] == 0.1
+    assert seen[1]["temperature"] == 1.0  # the server's own default, not 0.1
+
+
 def test_generate_think_reaches_the_provider_on_the_ollama_path(
     app, tmp_path: Path, user, data_root: Path
 ) -> None:
@@ -659,6 +774,80 @@ def test_a_long_chapter_is_trimmed_rather_than_rejected(
     assert sent == render_prompt(long_text)
     assert paragraphs[0] not in sent  # the opening was dropped
     assert sent.endswith(paragraphs[-1])  # the tail survived whole
+
+
+def test_a_cursor_mid_file_puts_text_either_side_of_it_in_the_prompt(
+    llm_client, data_root: Path
+) -> None:
+    """#14: the caret splits the file, and both sides reach the provider."""
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": "One.\n\nTwo.\n\nThree.\n"},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "cursor_para": 1, "cursor_offset": 2},
+    )
+    assert response.status_code == 200
+
+    sent = seen["messages"][0]["content"]
+    assert "Text before:" in sent
+    assert "Text after:" in sent
+    assert sent.endswith("o.\n\nThree.\n")  # the tail of "Two.", then what follows it
+
+
+def test_cursor_para_without_cursor_offset_is_unprocessable(
+    llm_client, data_root: Path
+) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "cursor_para": 0},
+    )
+    assert response.status_code == 422
+    assert "together" in response.json()["message"]
+
+
+def test_cursor_offset_without_cursor_para_is_unprocessable(
+    llm_client, data_root: Path
+) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "cursor_offset": 0},
+    )
+    assert response.status_code == 422
+    assert "together" in response.json()["message"]
+
+
+def test_an_out_of_range_cursor_is_unprocessable(llm_client, data_root: Path) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+    llm_client.handlers["handler"] = lambda request: httpx.Response(200, text=sse_body())
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "cursor_para": 5, "cursor_offset": 0},
+    )
+    assert response.status_code == 422
 
 
 def test_a_provider_failure_before_any_text_is_a_status_code(
