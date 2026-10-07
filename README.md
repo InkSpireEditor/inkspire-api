@@ -22,8 +22,9 @@ and the continuations a language model streams back.
 - **Serves the stories from a git working tree.** The filesystem decides what exists, so a
   chapter added by `git pull` or by an editor appears, and one deleted that way stops
   being served. See [Stories on disk](#stories-on-disk).
-- **Streams generated text.** `POST /api/llm/generate` forwards a model's output chunk by
-  chunk over server-sent events, from any of several providers.
+- **Streams generated text.** `POST /api/stories|notes/file/{id}/generate` forwards a
+  model's output chunk by chunk over server-sent events, from any of several providers —
+  continuing past the end of the chapter, or filling in a caret reported mid-file.
 - **Records who wrote each character.** A chapter keeps, beside its prose, which stretches a
   model wrote and which of those the writer has since corrected — and recovers that record
   from git when the file is edited outside the editor. See [The `.ink` file](#the-ink-file).
@@ -364,12 +365,31 @@ cannot be set either.
 `GET /api/llm/models` lists every provider's models, each carrying its `protocol` so a
 client can tell which models can honour `think` at all. A provider that cannot be
 reached contributes nothing instead of failing the list. Results are held for an hour
-per provider, in the serving process.
+per provider, in the serving process. `GET /api/llm/defaults` answers the server's own
+generation settings — see below — so a client has something to show before it overrides
+anything.
 
-`POST /api/llm/generate` takes `{"model", "prompt", "think"}` and answers
-`text/event-stream`. `think` is optional and overrides `INKSPIRE_LLM_THINK` for that one
-request; omitted (or `null`), the setting applies. It reaches the provider only on the
-`ollama` protocol, the same restriction as the setting itself.
+`POST /api/stories/file/{id}/generate` and its `/api/notes` counterpart take
+`{"model", ...}` and answer `text/event-stream`. The request carries no text: the server
+reads `id`'s file fresh from disk, so a pending edit has to be saved first — the editor
+does this itself before every generation. Optional fields:
+
+| Field | Overrides | Omitted means |
+|---|---|---|
+| `think` | `INKSPIRE_LLM_THINK` | the setting applies; reaches the provider only on the `ollama` protocol |
+| `cursor_para`, `cursor_offset` | — | continue at the end of the file (both are required together, or not at all) |
+| `temperature` | `INKSPIRE_LLM_TEMPERATURE` | the setting applies |
+| `prompt_budget` | `INKSPIRE_LLM_PROMPT_BUDGET` | the setting applies |
+| `prefix_share` | `INKSPIRE_LLM_PREFIX_SHARE` | the setting applies |
+| `num_ctx` | `INKSPIRE_LLM_NUM_CTX` | the setting applies (unset by default — the model's own default) |
+
+A caret splits the file into a prefix and a suffix and asks the model to write what
+belongs between them; with no caret, or one at the very end of the file, the whole
+file is the prefix and the model continues past it instead — the common case, and
+identical to what this endpoint always did before the caret existed. Either way, each
+side is trimmed to its share of the prompt budget at a paragraph boundary, silently.
+See `docs/prompt.md` for the full assembly, the trim, and why `num_ctx` has to sit above
+the budget.
 
 | Event | Meaning |
 |---|---|
@@ -378,10 +398,10 @@ request; omitted (or `null`), the setting applies. It reaches the provider only 
 | `[DONE]` | End of generation. |
 
 A failure *before* any text is an ordinary status code instead — 422 for an unknown
-model, 429 over the rate limit (20 generations per minute per account), 500 for an
-unreachable provider — so a client only has to handle an error event once it is already
-displaying text. The generated text is not written to disk: the client owns the chapter
-and saves it.
+model, an out-of-range caret, or a caret with only one of its two fields given; 429 over
+the rate limit (20 generations per minute per account); 500 for an unreachable provider
+— so a client only has to handle an error event once it is already displaying text. The
+generated text is not written to disk: the client owns the chapter and saves it.
 
 Thinking is worth knowing about. A reasoning model produces its reasoning on a separate
 field, which is dropped and never appended to the chapter, but it still delays the
@@ -399,10 +419,13 @@ poetry run inkspire llm models
 poetry run inkspire llm generate -m local-ollama/llama3 < chapter.ink
 poetry run inkspire llm generate -m local-ollama/llama3 --no-think < chapter.ink
 poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt --cursor 500 < chapter.ink
 ```
 
 It sends the same prompt the API sends, so a model that behaves badly here behaves
-badly in the editor. `--show-prompt` prints what would be sent and generates nothing.
+badly in the editor. `--show-prompt` prints what would be sent and generates nothing;
+`--cursor` is a flat character offset into standard input, converted to a paragraph and
+an offset the same way the route resolves one reported directly.
 
 ---
 
