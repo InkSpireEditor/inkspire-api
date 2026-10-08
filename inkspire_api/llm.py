@@ -149,6 +149,7 @@ class GenerationOptions:
     prefix_share: float
     num_ctx: int | None
     think: bool | None
+    send_selection: bool
 
     @classmethod
     def from_settings(cls, settings: Settings) -> GenerationOptions:
@@ -158,6 +159,7 @@ class GenerationOptions:
             prefix_share=settings.llm_prefix_share,
             num_ctx=settings.llm_num_ctx,
             think=settings.llm_think,
+            send_selection=settings.llm_send_selection,
         )
 
     def overlay(self, **overrides: Any) -> GenerationOptions:
@@ -250,17 +252,21 @@ class LLMService:
         text: str,
         *,
         cursor: prompt_lib.Cursor | None = None,
+        selection: prompt_lib.CursorRange | None = None,
         options: GenerationOptions | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
 
-        `text` is the writer's own prose -- the whole file, split at `cursor` into a
-        prefix and a suffix (or, with none, a prefix alone), each trimmed to its share
-        of the budget, and wrapped in the continuation or fill-in-the-middle
-        instructions before anything is sent.
+        `text` is the writer's own prose -- the whole file, split at `cursor` or
+        `selection` into a prefix and a suffix (or, with neither, a prefix alone),
+        each trimmed to its share of the budget, and wrapped in the continuation,
+        fill-in-the-middle or rewrite instructions before anything is sent. At most
+        one of `cursor`/`selection` may be given; `prompt_lib.assemble` is what
+        raises if both are.
 
         `options` is this one generation's settings -- temperature, the budget and
-        its split, `num_ctx`, and whether to think -- defaulting to `self.defaults`,
+        its split, `num_ctx`, whether to think, and whether a rewrite sends the
+        selected passage's own text -- defaulting to `self.defaults`,
         the server's own configuration, when not given. A caller with a request that
         may have overridden any of them resolves `self.defaults.overlay(...)` first
         and passes the result here; `think` reaches the provider only on the ollama
@@ -268,8 +274,9 @@ class LLMService:
 
         Raises `LLMError` if the provider cannot be reached or rejects the request,
         `UnknownModel` for a model naming no configured provider, and
-        `CursorOutOfRange` for a cursor that does not address a character of `text`.
-        Once chunks have started arriving, a failure raises mid-iteration.
+        `CursorOutOfRange` (or its `InvertedRange` subclass) for a cursor or a
+        selection that does not address a character of `text`. Once chunks have
+        started arriving, a failure raises mid-iteration.
         """
         config, name = self.parse_model(model)
         native = config.protocol is Protocol.ollama
@@ -288,7 +295,14 @@ class LLMService:
                     "POST",
                     url,
                     headers=headers(config),
-                    json=self._payload(name, text, native=native, cursor=cursor, options=resolved),
+                    json=self._payload(
+                        name,
+                        text,
+                        native=native,
+                        cursor=cursor,
+                        selection=selection,
+                        options=resolved,
+                    ),
                 ) as response:
                     await _raise_for_status(response)
                     async for chunk in _events(response, native=native):
@@ -304,9 +318,15 @@ class LLMService:
         native: bool,
         options: GenerationOptions,
         cursor: prompt_lib.Cursor | None = None,
+        selection: prompt_lib.CursorRange | None = None,
     ) -> dict[str, Any]:
         context = prompt_lib.assemble(
-            text, budget=options.prompt_budget, cursor=cursor, prefix_share=options.prefix_share
+            text,
+            budget=options.prompt_budget,
+            cursor=cursor,
+            selection=selection,
+            prefix_share=options.prefix_share,
+            send_selection=options.send_selection,
         )
         rendered = prompt_lib.render(context)
         messages = [{"role": "user", "content": rendered}]
@@ -476,12 +496,23 @@ class GenerateRequest(BaseModel):
     prompt_budget: int | None = Field(default=None, gt=0, le=MAX_FILE_BYTES)
     prefix_share: float | None = Field(default=None, ge=0.0, le=1.0)
     num_ctx: int | None = Field(default=None, gt=0)
-    #: The caret: which paragraph it is in, and the offset within it (api#14). Both
-    #: absent means the end of the file -- today's only behaviour, and a continuation
-    #: either way. One without the other is rejected by `_cursor_from_request` rather
-    #: than silently treated as "no caret".
+    #: The caret, or a selection's start: which paragraph it is in, and the offset
+    #: within it (api#14). Both absent means the end of the file -- today's only
+    #: behaviour, and a continuation either way. One without the other is rejected by
+    #: `_anchor_from_request` rather than silently treated as "no caret".
     cursor_para: int | None = Field(default=None, ge=0)
     cursor_offset: int | None = Field(default=None, ge=0)
+    #: A selection's end (api#20) -- given together, `cursor_para`/`cursor_offset`
+    #: become its start instead of a caret, and the model is asked to rewrite what is
+    #: between the two rather than continue or fill in around a single point. Absent
+    #: with `cursor_para`/`cursor_offset` present is a caret, which is most requests.
+    cursor_end_para: int | None = Field(default=None, ge=0)
+    cursor_end_offset: int | None = Field(default=None, ge=0)
+    #: Whether a rewrite sends the selected passage's own text, rather than only its
+    #: word count. `None` -- the default -- leaves the server's own setting
+    #: (`INKSPIRE_LLM_SEND_SELECTION`, on by default) in place; ignored outright for a
+    #: continuation or a fill-in-the-middle, which have no passage to send.
+    send_selection: bool | None = None
 
     def options(self, defaults: GenerationOptions) -> GenerationOptions:
         """`defaults` overlaid with whichever of this request's fields are not `None`."""
@@ -491,6 +522,7 @@ class GenerateRequest(BaseModel):
             prefix_share=self.prefix_share,
             num_ctx=self.num_ctx,
             think=self.think,
+            send_selection=self.send_selection,
         )
 
 
@@ -517,20 +549,45 @@ async def get_defaults(service: ServiceDep) -> GenerationOptions:
 
 EMPTY_FILE = "Nothing to continue: the file is empty."
 SPLIT_CURSOR = "cursor_para and cursor_offset must be given together, or not at all."
+SPLIT_CURSOR_END = (
+    "cursor_end_para and cursor_end_offset must be given together, or not at all."
+)
+DANGLING_CURSOR_END = (
+    "cursor_end_para/cursor_end_offset were given without cursor_para/cursor_offset, "
+    "which would be a selection with no start."
+)
 
 
-def _cursor_from_request(body: GenerateRequest) -> prompt_lib.Cursor | None:
-    """The request's caret, or `None` for the end of the file.
+class Anchor(NamedTuple):
+    """Either half of a request's anchor, resolved to one shape for `assemble`."""
 
-    Raises a 422 for one of the pair without the other -- silently treating that as
-    "no caret" would generate at the end of the file for a request that named a
-    position, which is not what was asked.
+    cursor: prompt_lib.Cursor | None
+    selection: prompt_lib.CursorRange | None
+
+
+def _anchor_from_request(body: GenerateRequest) -> Anchor:
+    """The request's caret or selection, or neither for the end of the file.
+
+    Raises a 422 for either pair split across one field -- silently treating that as
+    "no caret"/"no selection" would generate somewhere other than what was asked --
+    and for an end given with no start, which would otherwise describe a selection
+    with nowhere to begin.
     """
     if body.cursor_para is None and body.cursor_offset is None:
-        return None
+        if body.cursor_end_para is not None or body.cursor_end_offset is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, DANGLING_CURSOR_END)
+        return Anchor(cursor=None, selection=None)
     if body.cursor_para is None or body.cursor_offset is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, SPLIT_CURSOR)
-    return prompt_lib.Cursor(para=body.cursor_para, offset=body.cursor_offset)
+
+    start = prompt_lib.Cursor(para=body.cursor_para, offset=body.cursor_offset)
+    if body.cursor_end_para is None and body.cursor_end_offset is None:
+        return Anchor(cursor=start, selection=None)
+    if body.cursor_end_para is None or body.cursor_end_offset is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, SPLIT_CURSOR_END)
+
+    end = prompt_lib.Cursor(para=body.cursor_end_para, offset=body.cursor_end_offset)
+    return Anchor(cursor=None, selection=prompt_lib.CursorRange(start, end))
 
 
 async def _stream_generation(
@@ -553,12 +610,14 @@ async def _stream_generation(
     if not request.app.state.llm_limiter.consume(user.email):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
 
-    cursor = _cursor_from_request(body)
+    anchor = _anchor_from_request(body)
     options = body.options(service.defaults)
 
     # Calling an async generator function runs none of its body, so the model check,
-    # the cursor check and the connection all happen on this first step.
-    chunks = service.stream(body.model, text, cursor=cursor, options=options)
+    # the cursor/selection check and the connection all happen on this first step.
+    chunks = service.stream(
+        body.model, text, cursor=anchor.cursor, selection=anchor.selection, options=options
+    )
     try:
         first = await anext(chunks, None)
     except UnknownModel as error:

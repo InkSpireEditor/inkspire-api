@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     # continuation's quality depends mostly on what precedes it.
     llm_prefix_share: float = Field(default=0.75, ge=0.0, le=1.0)
 
+    # Whether a rewrite (api#20) sends the selected passage's own text along with its
+    # word count, so the model has something to preserve rather than only a length to
+    # match. On by default: tested against a real model, asking for a rewrite of text
+    # it cannot see produces something of roughly the right length that does not
+    # belong where it goes. Charged against llm_prompt_budget before the prefix and
+    # the suffix split what remains (`prompt.py`'s `assemble`), and never itself
+    # trimmed.
+    llm_send_selection: bool = True
+
     # Context window, sent to Ollama providers only, and only when set. A reasoning
     # model can spend a small window entirely on thinking and never answer.
     llm_num_ctx: int | None = None

@@ -1,11 +1,12 @@
 # The generation prompt: assembled on the server, inserted by the editor
 
-`POST /api/stories/file/{id}/generate` and its `/api/notes` counterpart stream a continuation —
-or, with a caret reported mid-file, a fill-in-the-middle — of a chapter's or a note's own text.
-This document describes what is sent to the model, in what order, and why the server builds it
-while the editor stays the only thing that writes a character into the file. `provenance.md` in
-this same folder describes how a generated character is marked once it lands; this document
-stops at the moment it is handed to the editor.
+`POST /api/stories/file/{id}/generate` and its `/api/notes` counterpart stream one of three
+shapes: a continuation; with a caret reported mid-file, a fill-in-the-middle; with a selection
+reported instead, a rewrite of the passage inside it. This document describes what is sent to
+the model, in what order, and why the server builds it while the editor stays the only thing
+that writes a character into the file. `provenance.md` in this same folder describes how a
+generated character is marked once it lands; this document stops at the moment it is handed to
+the editor.
 
 ## One request, the file read fresh
 
@@ -16,14 +17,14 @@ sequenceDiagram
     participant API as the generate route
     participant FS as the file on disk
 
-    W->>E: clicks Generate
-    E->>E: read the caret, flush any pending save -- refuse to continue if it fails
-    E->>API: POST file/{id}/generate { model, cursor_para?, cursor_offset?, think?, ... }
+    W->>E: clicks Generate (or Rewrite, with a passage selected)
+    E->>E: read the caret or the selection, flush any pending save -- refuse to continue if it fails
+    E->>API: POST file/{id}/generate { model, cursor_para?, cursor_offset?, cursor_end_para?, cursor_end_offset?, think?, ... }
     API->>FS: read_document(id)
-    API->>API: prompt.assemble(body, budget, cursor, prefix_share) -- split, trim, render
+    API->>API: prompt.assemble(body, budget, cursor, selection, prefix_share, send_selection) -- split, trim, render
     API-->>E: stream: {"delta": "..."} events, then [DONE]
     loop each delta
-        E->>E: appendGenerated(delta) -- execCommand('insertText') at the caret, marked "gen"
+        E->>E: appendGenerated(delta) -- execCommand('insertText') at the caret or over the selection, marked "gen"
     end
     E->>FS: one save, once the stream ends
 ```
@@ -33,22 +34,27 @@ through the scanner's own `read_document`, so what is asked about is always what
 not whatever an open tab happens to hold. That is only true, though, if the tab's own edits are
 on disk *before* the request is sent: the editor flushes its pending save first and refuses to
 generate if that save fails, rather than silently asking about text one sentence out of date. A
-cursor is read from the editor at the same moment, for the same reason: it is only meaningful
-against the text that is about to be on disk.
+cursor or a selection is read from the editor at the same moment, for the same reason: it is
+only meaningful against the text that is about to be on disk.
 
 ## Assembly
 
 ```mermaid
 flowchart LR
-    B["the file's body"] --> X{"a cursor?"}
-    X -->|no, or at the very end| T["trim_to_tail(body, budget)<br/>a continuation"]
-    X -->|yes, mid-file| P["split at the cursor"]
+    B["the file's body"] --> X{"a cursor or a selection?"}
+    X -->|neither, or a cursor at the very end| T["trim_to_tail(body, budget)<br/>a continuation"]
+    X -->|a cursor, mid-file| P["split_at_cursor"]
+    X -->|a selection, non-whitespace| S["split_at_range<br/>+ count_words(selection)"]
     P --> TP["trim_to_tail(prefix, prefix_budget)"]
     P --> TS["trim_to_head(suffix, suffix_budget)"]
-    T --> C["PromptContext<br/>prefix, suffix"]
+    S --> PB{"send_selection?"}
+    PB -->|"yes: charged against budget first"| TP
+    PB -->|"no"| TP
+    PB --> TS
+    T --> C["PromptContext<br/>prefix, suffix, selection_words, selection"]
     TP --> C
     TS --> C
-    C --> R["render(context)<br/>templates/prompt.j2 -- branches on suffix"]
+    C --> R["render(context)<br/>templates/prompt.j2 -- branches on selection_words, then on suffix;<br/>within the rewrite branch, selection present or absent chooses the passage or the bare marker"]
     R --> M["sent to the model"]
 
     Y["a story's synopsis -- not built"] -.-> C
@@ -57,11 +63,11 @@ flowchart LR
     I["the writer's instruction -- not built"] -.-> C
 ```
 
-`PromptContext` (`inkspire_api/prompt.py`) is every section the template can render: `prefix`
-and `suffix` today, nothing else. Each later section is a new field here and a guarded block in
-the template — never a change to an existing field — which is why the prompts pinned in
-`tests/data/prompts.json` are untouched by a later section existing at all: nothing renders that
-was not already rendering.
+`PromptContext` (`inkspire_api/prompt.py`) is every section the template can render: `prefix`,
+`suffix`, `selection_words` and `selection` today, nothing else. Each later section is a new field here and a
+guarded block in the template — never a change to an existing field — which is why the prompts
+pinned in `tests/data/prompts.json` are untouched by a later section existing at all: nothing
+renders that was not already rendering.
 
 ### The caret, and why its absence is not a special case written twice
 
@@ -88,6 +94,53 @@ suffix — within its own share of the budget:
   offset within it (`frontend#21`, `cursor.ts`'s `cursorFromOffset`) rather than a flat offset,
   resolved against the same `split_paragraphs` the provenance key already uses — the one
   paragraph rule this codebase has, matched byte for byte on both sides (`provenance.md`).
+
+### The selection, and whether the model sees it
+
+A rewrite (api#20) anchors on a range instead of a point: `CursorRange(start, end)`. Structurally
+it reuses the caret's own split — `split_at_range` is two calls to `split_at_cursor`, one at each
+end, so both ends are validated by the function that already validates one — but the text
+*inside* the range is handled differently from everything either side of it: whether it is
+*sent* is a setting, while its word count always is. `PromptContext.selection_words` carries
+`count_words(selection)` unconditionally, and `prompt.j2`'s rewrite branch asks for "roughly `N`
+words, give or take a few" either way; `PromptContext.selection` carries the passage's own text
+only when `assemble`'s `send_selection` says so, and the template shows it in place of the bare
+`[REPLACE THIS]` marker when it is present.
+
+- **Why this is a setting rather than a rule.** The original design withheld the passage
+  entirely — api#20's own sketch used a bare marker, `<REPLACE THIS>`, with nothing inside it,
+  reasoning that a continuation and a fill-in-the-middle already work without seeing what they
+  are writing into. **Tested against a real model, that did not hold for a rewrite**: asked to
+  replace text it cannot see, a model has nothing to preserve — not the subject of the sentence,
+  not a name in it — and writes something of roughly the right length that does not belong where
+  it goes. `INKSPIRE_LLM_SEND_SELECTION` (`llm.py`'s `GenerationOptions.send_selection`,
+  `GenerateRequest.send_selection` per request) is on by default because of this; the CLI's
+  `--no-send-selection` and the settings panel's checkbox exist for the case that still wants the
+  freer, less anchored original behaviour.
+- **The passage, when shown, is charged against `prompt_budget` first**, and the prefix and the
+  suffix split whatever remains — `prompt_budget` keeps meaning the whole of the prose sent,
+  rather than only the prose either side of a passage of unbounded size. The passage itself is
+  **never trimmed**: a partial passage with an instruction to replace all of it is worse than no
+  passage at all.
+- **`count_words`** is `len(text.split())` — whitespace-based, and wrong for a script with no
+  spaces between words. The same English-calibration gap the character budget below has,
+  stated once there and not re-derived here.
+- **No ceiling on how much may be rewritten at once.** A selection of a whole chapter asks for
+  "roughly four thousand words"; no model delivers that, and the editor replaces the entire
+  selection with whatever shorter text came back — recoverable through Ctrl+Z, one streamed
+  chunk at a time, and only until the file is saved and reloaded. This is a way to lose prose.
+  Decided against building a limit for it, rather than not having decided. Its consequence
+  changed shape rather than going away once the passage could be shown: a passage large enough
+  to exhaust `prompt_budget` on its own leaves **nothing** for the prefix and the suffix — the
+  model is sent the passage and the instructions with no surrounding context at all, both guarded
+  sections simply not rendering. `prompt_budget` still does not bound the passage itself, by the
+  same decision.
+- **Three degenerate cases**, all resolved in `_resolve_sides` before any trimming happens:
+  a collapsed range (`start == end`) is the caret case verbatim; a selection whose end sits at
+  the very end of the file gives an empty suffix, for the same reason a caret there does — the
+  body's own closing separator must not be handed to a side that is not supposed to have it; and
+  a selection of nothing but whitespace (`count_words` of `0`) degenerates to a caret at its own
+  start, so a rewrite can never be asked to produce zero words.
 
 ### The trim
 
@@ -147,8 +200,9 @@ not built.
 ## Per-request settings, and where they live
 
 `GenerateRequest` carries `temperature`, `prompt_budget`, `prefix_share` and `num_ctx` alongside
-`think`, each overriding the server's own configuration for that one request when given, and
-falling back to it otherwise (`GenerationOptions.overlay`). `GET /api/llm/defaults` answers the
+`think` and `send_selection`, each overriding the server's own configuration for that one request
+when given, and falling back to it otherwise (`GenerationOptions.overlay`). `GET
+/api/llm/defaults` answers the
 server's own values, so a client has something to initialise a settings panel against and
 something to reset to.
 
@@ -212,5 +266,5 @@ instead of the whole document.
 - **A story's synopsis, a notes folder's context, a chapter or character summary, retrieved
   lore, the writer's own instruction.** Each is a field on `PromptContext` and a block in
   `prompt.j2`; none exist yet. See api#17, api#18, api#19/frontend#24, api#15.
-- **Rewriting a selected passage** instead of a continuation or a mid-file insertion — a third
-  shape, not a special case of the other two (api#20/frontend#25).
+- **A ceiling on how much may be rewritten at once.** Decided against, not merely unbuilt —
+  see "The selection" above.

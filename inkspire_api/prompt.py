@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
 """What a generation asks a model, assembled server-side from the file on disk.
 
-`PromptContext` is every section the template can render: `prefix` and `suffix`, the
-text either side of the caret, and nothing else today. A story's synopsis, a chapter
-or character summary, retrieved lore and the writer's own instruction are each a
-future field here plus a guarded block in `templates/prompt.j2`, and nothing else
-changes: see `docs/prompt.md` for the order they are meant to land in.
+`PromptContext` is every section the template can render: `prefix`, `suffix` and
+`selection_words`, and nothing else today. A story's synopsis, a chapter or character
+summary, retrieved lore and the writer's own instruction are each a future field here
+plus a guarded block in `templates/prompt.j2`, and nothing else changes: see
+`docs/prompt.md` for the order they are meant to land in.
 
 A caret splits the body into a prefix and a suffix; with no caret the whole body is
 the prefix and the suffix is empty, which is a continuation -- today's only mode and
-still the common one. `trim_to_tail`/`trim_to_head` are the policy: a side longer than
-its share of the budget is cut at a paragraph boundary, using
-`provenance.split_paragraphs` -- the same rule the provenance key is built on and the
-one the frontend matches byte for byte. Writing a second paragraph rule here would
-disagree with the record a `.ink` file already keeps.
+still the common one. A selection -- a range rather than a point -- splits the body
+into a prefix, a suffix and the selection itself; the selection's own text reaches
+the prompt only when `assemble`'s `send_selection` says so -- its word count always
+does (`docs/prompt.md` has why) -- which is what turns a rewrite into a third mode
+rather than a wider fill-in-the-middle.
+`trim_to_tail`/`trim_to_head` are the policy: a side longer than its share of the
+budget is cut at a paragraph boundary, using `provenance.split_paragraphs` -- the same
+rule the provenance key is built on and the one the frontend matches byte for byte.
+Writing a second paragraph rule here would disagree with the record a `.ink` file
+already keeps.
 """
 
 from __future__ import annotations
@@ -40,14 +45,23 @@ class CursorOutOfRange(ValueError):
     """A caret does not address the body it is reported against."""
 
 
+class InvertedRange(CursorOutOfRange):
+    """A selection's end comes before its start."""
+
+
 @dataclasses.dataclass(frozen=True)
 class PromptContext:
     """Every section the prompt template can render.
 
-    `prefix` and `suffix` are the only fields populated today -- the writer's prose
-    either side of the caret, already trimmed to their share of the budget. An empty
-    `suffix` is a continuation (no caret, or a caret at the end of the file); the
-    template renders the two differently rather than one instruction set for both
+    `prefix` and `suffix` are the writer's prose either side of the caret or the
+    selection, already trimmed to their share of the budget. `selection_words` is
+    `None` for a continuation or a fill-in-the-middle, and the selected passage's own
+    word count for a rewrite. `selection` is the passage's own text when `assemble`
+    was asked to send it (`send_selection=True`), and `None` otherwise -- including a
+    rewrite whose caller declined to send it, which still has `selection_words` set
+    (`docs/prompt.md` has why both exist). An empty `suffix` with no `selection_words`
+    is a continuation (no caret, or a caret at the end of the file); the template
+    renders each of the three differently rather than one instruction set for all
     (`docs/prompt.md`). Each later section is a field added here, never a change to an
     existing one, so the template and its pinned cases (`tests/data/prompts.json`) are
     affected only by the section actually being rendered.
@@ -55,6 +69,8 @@ class PromptContext:
 
     prefix: str
     suffix: str = ""
+    selection_words: int | None = None
+    selection: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,6 +85,35 @@ class Cursor:
 
     para: int
     offset: int
+
+
+@dataclasses.dataclass(frozen=True)
+class CursorRange:
+    """A selection's anchor: where it starts and where it ends.
+
+    `start == end` is a collapsed range -- a caret -- and `assemble` treats it exactly
+    as `cursor=` would; `split_at_range` is only ever reached for a real range. Built
+    from two `Cursor`s so the paragraph-and-offset addressing a single caret already
+    uses is reused rather than invented a second time.
+    """
+
+    start: Cursor
+    end: Cursor
+
+
+#: One side's paragraphs and the separators around them -- the shape `split_paragraphs`,
+#: `split_at_cursor` and `split_at_range` all return one piece of.
+Side = tuple[list[str], list[str]]
+
+
+def count_words(text: str) -> int:
+    """`text`'s word count, split on whitespace.
+
+    Wrong for a script with no spaces between words -- CJK, chiefly -- the same way
+    `INKSPIRE_LLM_PROMPT_BUDGET`'s characters-per-token assumption already is
+    (`docs/prompt.md`). Not corrected for here.
+    """
+    return len(text.split())
 
 
 def _trim_paragraph_tail(paragraph: str, trailing_separator: str, budget: int) -> str:
@@ -251,6 +296,48 @@ def split_at_cursor(
     return prefix_paragraphs, prefix_separators, suffix_paragraphs, suffix_separators
 
 
+def split_at_range(
+    paragraphs: list[str], separators: list[str], anchor: CursorRange
+) -> tuple[Side, Side, Side]:
+    """`paragraphs`/`separators` split at `anchor` into a prefix, the selection itself
+    and a suffix, each as a `(paragraphs, separators)` pair.
+
+    The prefix and the suffix are built by calling `split_at_cursor` at `anchor.start`
+    and `anchor.end` respectively and keeping only the half each call needs -- so both
+    ends are validated by the one function that already validates one, rather than a
+    second copy of the same range checks. Only the middle -- the selection -- is new:
+    the paragraph(s) between the two cursors, cut at each one's offset the same way
+    `split_at_cursor` cuts at one.
+
+    Raises `InvertedRange` if `anchor.end` comes before `anchor.start`, and
+    `CursorOutOfRange` (via `split_at_cursor`) if either end does not address a
+    character of `paragraphs`.
+    """
+    start, end = anchor.start, anchor.end
+    if (end.para, end.offset) < (start.para, start.offset):
+        raise InvertedRange("the selection's end comes before its start.")
+
+    prefix_paragraphs, prefix_separators, _, _ = split_at_cursor(paragraphs, separators, start)
+    _, _, suffix_paragraphs, suffix_separators = split_at_cursor(paragraphs, separators, end)
+
+    if start.para == end.para:
+        selection_paragraphs = [paragraphs[start.para][start.offset : end.offset]]
+        selection_separators = ["", ""]
+    else:
+        selection_paragraphs = (
+            [paragraphs[start.para][start.offset :]]
+            + paragraphs[start.para + 1 : end.para]
+            + [paragraphs[end.para][: end.offset]]
+        )
+        selection_separators = [""] + separators[start.para + 1 : end.para + 1] + [""]
+
+    return (
+        (prefix_paragraphs, prefix_separators),
+        (selection_paragraphs, selection_separators),
+        (suffix_paragraphs, suffix_separators),
+    )
+
+
 def cursor_from_offset(body: str, offset: int) -> Cursor:
     """The paragraph and in-paragraph offset a flat character `offset` lands at.
 
@@ -280,36 +367,110 @@ def cursor_from_offset(body: str, offset: int) -> Cursor:
     return Cursor(para=len(paragraphs) - 1, offset=len(paragraphs[-1]))
 
 
-#: One side's paragraphs and the separators around them -- the shape `split_paragraphs`
-#: and `split_at_cursor` both return one half of.
-Side = tuple[list[str], list[str]]
+def _ends_body(paragraphs: list[str], cursor: Cursor) -> bool:
+    """Whether `cursor` sits at the very end of the last paragraph -- nothing after it
+    but the body's own closing separator."""
+    return cursor.para == len(paragraphs) - 1 and cursor.offset == len(paragraphs[cursor.para])
 
 
 def _resolve_sides(
-    paragraphs: list[str], separators: list[str], cursor: Cursor | None
-) -> tuple[Side, Side]:
-    """The prefix and suffix sides for `cursor`, as `(paragraphs, separators)` pairs.
+    paragraphs: list[str], separators: list[str], anchor: CursorRange | None
+) -> tuple[Side, Side, str | None]:
+    """The prefix, suffix and selected passage for `anchor`, as
+    `(prefix, suffix, passage)`.
 
-    No cursor, or one at the very end of the last paragraph, gives the whole body as
-    the prefix and an empty suffix -- a continuation. The end-of-file case has to be
-    detected here rather than left to `split_at_cursor`: physically, the body's own
-    closing separator sits after the cursor, so a literal split would hand it to the
-    suffix and the template would send fill-in-the-middle instructions for a file
-    that merely ends with a blank line. `split_at_cursor` still runs in that case, so
-    an otherwise-invalid cursor there still raises -- its result is only discarded.
+    `passage` is the selected text itself, not its word count -- `assemble` counts it
+    and decides separately whether to forward the text or just the count
+    (`send_selection`, `docs/prompt.md`).
+
+    No anchor, or one collapsed to a single point sitting at the very end of the last
+    paragraph, gives the whole body as the prefix, an empty suffix and no passage --
+    a continuation. The end-of-file case has to be detected here rather than left to
+    `split_at_cursor`/`split_at_range`: physically, the body's own closing separator
+    sits after the cursor, so a literal split would hand it to the suffix and the
+    template would send fill-in-the-middle or rewrite instructions for a file that
+    merely ends with a blank line. The split still runs in that case, so an otherwise
+    invalid cursor there still raises -- its result is only discarded.
+
+    A selection of nothing but whitespace (`count_words` of its own text is `0`)
+    degenerates to a collapsed anchor at its own start, so a rewrite can never be
+    asked for zero words -- it becomes the caret case instead.
     """
-    if cursor is None:
-        return (paragraphs, separators), ([], [""])
+    if anchor is None:
+        return (paragraphs, separators), ([], [""]), None
     if not paragraphs:
         raise CursorOutOfRange("the body is empty; there is no paragraph to address.")
 
-    split = split_at_cursor(paragraphs, separators, cursor)
-    at_the_end = cursor.para == len(paragraphs) - 1 and cursor.offset == len(
-        paragraphs[cursor.para]
-    )
-    if at_the_end:
-        return (paragraphs, separators), ([], [""])
-    return (split[0], split[1]), (split[2], split[3])
+    if anchor.start == anchor.end:
+        cursor = anchor.start
+        split = split_at_cursor(paragraphs, separators, cursor)
+        if _ends_body(paragraphs, cursor):
+            return (paragraphs, separators), ([], [""]), None
+        return (split[0], split[1]), (split[2], split[3]), None
+
+    prefix_side, selection_side, suffix_side = split_at_range(paragraphs, separators, anchor)
+    passage = provenance.join_paragraphs(*selection_side)
+    if count_words(passage) == 0:
+        return _resolve_sides(paragraphs, separators, CursorRange(anchor.start, anchor.start))
+
+    if _ends_body(paragraphs, anchor.end):
+        suffix_side = ([], [""])
+    return prefix_side, suffix_side, passage
+
+
+def _anchor(cursor: Cursor | None, selection: CursorRange | None) -> CursorRange | None:
+    """`cursor` and `selection`, normalised to the one shape `_resolve_sides` takes.
+
+    Raises `ValueError` if both are given -- a programming error, not something a
+    request can cause: `llm.py`'s `_anchor_from_request` never produces both.
+    """
+    if cursor is not None and selection is not None:
+        raise ValueError("assemble() takes a cursor or a selection, not both.")
+    if selection is not None:
+        return selection
+    if cursor is not None:
+        return CursorRange(cursor, cursor)
+    return None
+
+
+def _prefix_budget(budget: int, prefix_share: float, suffix_body: str) -> int:
+    """How many of `budget` characters go to the prefix.
+
+    The whole budget, when there is no suffix to apportion it to -- the common case,
+    and the one that must not lose a quarter of its budget to a suffix that is empty
+    anyway. Otherwise `prefix_share`'s share of it, floored; the suffix gets whatever
+    is left.
+    """
+    if not suffix_body:
+        return budget
+    return math.floor(budget * prefix_share)
+
+
+def _prose_budget(budget: int, shown: str | None) -> int:
+    """`budget`, less a passage being shown to the model -- `budget` unchanged when
+    none is, or none is being sent.
+
+    A shown passage is never itself trimmed (`docs/prompt.md` has why: a partial
+    passage with a request to replace all of it is worse than no passage at all), so
+    it is charged against the budget before the prefix and the suffix split whatever
+    is left, floored at `0` rather than going negative when the passage alone exceeds
+    `budget` -- in which case both sides end up empty.
+    """
+    if not shown:
+        return budget
+    return max(budget - len(shown), 0)
+
+
+def _trim_sides(
+    prefix_side: Side, suffix_side: Side, budget: int, prefix_share: float
+) -> tuple[str, str]:
+    """The prefix and the suffix, each already joined and trimmed to its share of
+    `budget` characters, as `(prefix, suffix)`."""
+    suffix_body = provenance.join_paragraphs(*suffix_side)
+    prefix_budget = _prefix_budget(budget, prefix_share, suffix_body)
+    trimmed_prefix = trim_to_tail(provenance.join_paragraphs(*prefix_side), prefix_budget)
+    trimmed_suffix = trim_to_head(suffix_body, budget - prefix_budget) if suffix_body else ""
+    return trimmed_prefix, trimmed_suffix
 
 
 def assemble(
@@ -317,35 +478,52 @@ def assemble(
     *,
     budget: int,
     cursor: Cursor | None = None,
+    selection: CursorRange | None = None,
     prefix_share: float = 0.75,
+    send_selection: bool = False,
 ) -> PromptContext:
-    """The context for one generation: `body` split at `cursor`, each side trimmed to
-    its share of `budget` characters.
+    """The context for one generation: `body` split at `cursor` or `selection`, each
+    side trimmed to its share of `budget` characters.
 
-    With no `cursor`, the whole body is the prefix and the suffix is empty -- a
-    continuation, byte-identical to assembling with no caret at all existed. The
-    budget is apportioned only once there is a suffix to apportion it to: a caret at
-    the very end of the file degenerates to the same case, so the common path never
-    loses a quarter of its budget to a suffix that is empty anyway.
+    With neither `cursor` nor `selection` given, the whole body is the prefix and the
+    suffix is empty -- a continuation, byte-identical to assembling with no caret at
+    all existed. The budget is apportioned only once there is a suffix to apportion
+    it to: a cursor or a selection ending at the very end of the file degenerates to
+    the same case, so the common path never loses a quarter of its budget to a suffix
+    that is empty anyway.
 
-    Raises `CursorOutOfRange` if `cursor` does not address a character of `body`.
+    `send_selection` decides whether a real selection's own text reaches the prompt as
+    `PromptContext.selection`, or only its word count does, on `selection_words`
+    (`docs/prompt.md` has why both exist and why this defaults to off here while the
+    server's own default is on -- `llm.py`'s `GenerationOptions`). When it is sent, it
+    is charged against `budget` before the prefix and the suffix split what remains,
+    and it is never itself trimmed: a passage large enough to exhaust the budget
+    leaves both sides empty rather than losing part of the text being replaced.
+
+    Raises `ValueError` if both `cursor` and `selection` are given, and
+    `CursorOutOfRange` (or its `InvertedRange` subclass) if either does not address
+    `body`.
     """
+    anchor = _anchor(cursor, selection)
     paragraphs, separators = provenance.split_paragraphs(body)
-    prefix_side, suffix_side = _resolve_sides(paragraphs, separators, cursor)
-    suffix_body = provenance.join_paragraphs(*suffix_side)
+    prefix_side, suffix_side, passage = _resolve_sides(paragraphs, separators, anchor)
+    shown = passage if send_selection else None
 
-    if not suffix_body:
-        prefix_budget, suffix_budget = budget, 0
-    else:
-        prefix_budget = math.floor(budget * prefix_share)
-        suffix_budget = budget - prefix_budget
-
-    trimmed_prefix = trim_to_tail(provenance.join_paragraphs(*prefix_side), prefix_budget)
-    trimmed_suffix = trim_to_head(suffix_body, suffix_budget) if suffix_body else ""
-    return PromptContext(prefix=trimmed_prefix, suffix=trimmed_suffix)
+    trimmed_prefix, trimmed_suffix = _trim_sides(
+        prefix_side, suffix_side, _prose_budget(budget, shown), prefix_share
+    )
+    return PromptContext(
+        prefix=trimmed_prefix,
+        suffix=trimmed_suffix,
+        selection_words=count_words(passage) if passage is not None else None,
+        selection=shown,
+    )
 
 
 def render(context: PromptContext) -> str:
-    """Wraps the context's sections in the continuation or fill-in-the-middle
-    instructions sent to the model, chosen by whether `context.suffix` is empty."""
+    """Wraps the context's sections in the rewrite, fill-in-the-middle or
+    continuation instructions sent to the model, chosen by `context.selection_words`
+    and then by whether `context.suffix` is empty. Within the rewrite branch,
+    `context.selection` present or absent chooses between showing the passage and the
+    bare `[REPLACE THIS]` marker."""
     return JINJA.get_template(PROMPT_TEMPLATE).render(ctx=context)

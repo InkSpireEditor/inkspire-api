@@ -1,6 +1,41 @@
 {# Retrieved lore and a story's synopsis render here, above these instructions
    (api#15's retrieval, and api#17's story synopsis + notes context). -#}
+{% if ctx.selection_words -%}
+You are a skilled writer helping out a fellow writer.
+
+Rewrite the passage marked below, so what you write flows from the text before it
+directly into the text after it.
+
+- Write roughly {{ ctx.selection_words }} words, give or take a few: about the length
+  of what is being replaced. Do not pad it out to reach that number, and do not cut
+  it short to stay under it.
+- Never repeat, quote or restate any part of either side. Do not open by echoing
+  words from the text before, and do not pre-empt or duplicate the text after.
+- Write only the replacement: no preamble, no commentary, no quotation marks
+  around it, and nothing repeated from either side.
+- Write plain text and Markdown only. Never emit HTML: break a line with a real
+  newline character, never with a <br> tag.
+- Match the existing voice, tense and formatting exactly, including any Markdown.
+  If the text is verse, keep the line breaks and metre of the lines around it.
+{# A chapter or character summary renders here, between the instructions and the
+   surrounding text (api#18's summarised dropped text, api#14's rolling summary).
+   The writer's own instruction, when there is one, renders last, immediately
+   above "Text before:" (api#19's instruction field). #}
+{% if ctx.prefix -%}
+Text before:
+{{ ctx.prefix }}
+{% endif -%}
+Passage to replace:
+{% if ctx.selection -%}
+{{ ctx.selection }}
+{% else -%}
+[REPLACE THIS]
+{% endif -%}
 {% if ctx.suffix -%}
+Text after:
+{{ ctx.suffix -}}
+{% endif -%}
+{%- elif ctx.suffix -%}
 You are a skilled writer helping out a fellow writer.
 
 Write the text that belongs where the marker below is, so it flows from the text

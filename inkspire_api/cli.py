@@ -304,15 +304,20 @@ def reset_password(
 # --- llm -------------------------------------------------------------------
 
 
-def service(think: bool | None = None) -> LLMService:
+def service(think: bool | None = None, send_selection: bool | None = None) -> LLMService:
     """The same service the API uses, reading the same provider file.
 
     The default path is relative, so run these commands from the project directory or
     set INKSPIRE_LLM_PROVIDERS_FILE.
     """
     settings = get_settings()
+    overrides: dict[str, bool] = {}
     if think is not None:
-        settings = settings.model_copy(update={"llm_think": think})
+        overrides["llm_think"] = think
+    if send_selection is not None:
+        overrides["llm_send_selection"] = send_selection
+    if overrides:
+        settings = settings.model_copy(update=overrides)
     try:
         return LLMService(settings)
     except ValueError as error:  # an unreadable or misshapen provider file
@@ -340,6 +345,7 @@ def generate(
     model: Annotated[
         str, typer.Option("--model", "-m", help="Model to generate with, as listed by `llm models`.")
     ],
+    *,
     think: Annotated[
         bool | None,
         typer.Option(
@@ -361,7 +367,31 @@ def generate(
             help=(
                 "A flat character offset into standard input, marking where the "
                 "caret is -- generates a fill-in-the-middle prompt instead of a "
-                "continuation. Left unset, generation continues at the end."
+                "continuation. Left unset, generation continues at the end. Not "
+                "combinable with --select."
+            ),
+        ),
+    ] = None,
+    select_range: Annotated[
+        str | None,
+        typer.Option(
+            "--select",
+            help=(
+                "Two flat character offsets into standard input, as START:END, "
+                "marking a passage to rewrite instead of continuing or filling in. "
+                "Not combinable with --cursor."
+            ),
+        ),
+    ] = None,
+    send_selection: Annotated[
+        bool | None,
+        typer.Option(
+            "--send-selection/--no-send-selection",
+            help=(
+                "For --select, send the passage's own text along with its word "
+                "count, rather than the word count alone. Left unset, the server's "
+                "own setting (INKSPIRE_LLM_SEND_SELECTION) applies. Has no effect "
+                "without --select."
             ),
         ),
     ] = None,
@@ -374,21 +404,27 @@ def generate(
     what it does for a writer in the editor. Output is the continuation alone, which
     can be redirected; progress and timings go to standard error.
     """
+    if cursor is not None and select_range is not None:
+        fail("--cursor and --select cannot both be given.")
+
     text = sys.stdin.read()
     if not text.strip():
         fail("No text on standard input. Pipe a file or type text and end with Ctrl-D.")
 
     at_cursor = prompt.cursor_from_offset(text, cursor) if cursor is not None else None
+    at_selection = _parse_select(select_range, text) if select_range is not None else None
 
     if show_prompt:
-        svc = service(think)
+        svc = service(think, send_selection)
         try:
             rendered = prompt.render(
                 prompt.assemble(
                     text,
                     budget=svc.defaults.prompt_budget,
                     cursor=at_cursor,
+                    selection=at_selection,
                     prefix_share=svc.defaults.prefix_share,
+                    send_selection=svc.defaults.send_selection,
                 )
             )
         except prompt.CursorOutOfRange as error:
@@ -397,18 +433,53 @@ def generate(
             typer.echo(rendered)
         return
 
-    asyncio.run(_stream(model, text, think, at_cursor))
+    asyncio.run(
+        _stream(
+            model,
+            text,
+            think,
+            cursor=at_cursor,
+            selection=at_selection,
+            send_selection=send_selection,
+        )
+    )
+
+
+def _parse_select(select_range: str, text: str) -> prompt.CursorRange:
+    """`--select`'s `START:END` into a `CursorRange`, each offset resolved the same
+    way `--cursor` resolves one."""
+    raw_start, separator, raw_end = select_range.partition(":")
+    if not separator:
+        fail('--select must be two offsets separated by a colon, as in "500:720".')
+        raise AssertionError  # unreachable: fail() exits
+    try:
+        start, end = int(raw_start), int(raw_end)
+    except ValueError as error:
+        fail(f'--select\'s offsets must be integers; got "{select_range}".')
+        raise AssertionError from error  # unreachable: fail() exits
+    return prompt.CursorRange(
+        start=prompt.cursor_from_offset(text, start),
+        end=prompt.cursor_from_offset(text, end),
+    )
 
 
 async def _stream(
-    model: str, text: str, think: bool | None, cursor: prompt.Cursor | None = None
+    model: str,
+    text: str,
+    think: bool | None,
+    *,
+    cursor: prompt.Cursor | None = None,
+    selection: prompt.CursorRange | None = None,
+    send_selection: bool | None = None,
 ) -> None:
     started = time.monotonic()
     first_chunk_at: float | None = None
     characters = 0
 
     try:
-        async for chunk in service(think).stream(model, text, cursor=cursor):
+        async for chunk in service(think, send_selection).stream(
+            model, text, cursor=cursor, selection=selection
+        ):
             if first_chunk_at is None:
                 first_chunk_at = time.monotonic()
             characters += len(chunk)

@@ -51,12 +51,25 @@ def render_prompt(
     budget: int = Settings().llm_prompt_budget,
     *,
     cursor: prompt_lib.Cursor | None = None,
+    selection: prompt_lib.CursorRange | None = None,
+    send_selection: bool = Settings().llm_send_selection,
 ) -> str:
     """What `generate --show-prompt` and a real generation both send, now that
-    assembly is `prompt.py`'s two calls rather than one bare function."""
+    assembly is `prompt.py`'s two calls rather than one bare function.
+
+    `send_selection` defaults to the server's own setting, matching `service()`'s own
+    behaviour when `generate` is given no `--send-selection`/`--no-send-selection`.
+    """
     prefix_share = Settings().llm_prefix_share
     return prompt_lib.render(
-        prompt_lib.assemble(text, budget=budget, cursor=cursor, prefix_share=prefix_share)
+        prompt_lib.assemble(
+            text,
+            budget=budget,
+            cursor=cursor,
+            selection=selection,
+            prefix_share=prefix_share,
+            send_selection=send_selection,
+        )
     )
 
 runner = CliRunner()
@@ -546,6 +559,93 @@ def test_show_prompt_with_a_cursor_renders_fill_in_the_middle(ask) -> None:
     assert result.stdout.rstrip("\n") == render_prompt(TEXT, cursor=at_cursor)
     assert "Text before:" in result.stdout
     assert "Text after:" in result.stdout
+    assert seen == []
+
+
+def test_show_prompt_with_a_select_renders_a_rewrite(ask) -> None:
+    """#20: `--select` is two flat offsets into stdin, each resolved the same way
+    `--cursor` resolves one. With neither `--send-selection` nor `--no-send-selection`
+    given, the server's own setting applies -- on by default -- so the passage itself
+    renders."""
+    start = TEXT.index("Below")
+    end = start + len("Below")
+
+    def handler(request):  # pragma: no cover - must not be reached
+        raise AssertionError("no request should be made")
+
+    result, seen = ask(
+        handler,
+        "generate",
+        "-m",
+        "p/model",
+        "--show-prompt",
+        "--select",
+        f"{start}:{end}",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    at_selection = prompt_lib.CursorRange(
+        start=prompt_lib.cursor_from_offset(TEXT, start),
+        end=prompt_lib.cursor_from_offset(TEXT, end),
+    )
+    assert result.stdout.rstrip("\n") == render_prompt(TEXT, selection=at_selection)
+    assert "Passage to replace:" in result.stdout
+    assert "Below" in result.stdout
+    assert seen == []
+
+
+def test_show_prompt_with_a_select_and_no_send_selection_withholds_the_passage(
+    ask,
+) -> None:
+    """`--no-send-selection` overrides the server's own (on) default, so the bare
+    marker renders instead of the passage."""
+    start = TEXT.index("Below")
+    end = start + len("Below")
+
+    def handler(request):  # pragma: no cover - must not be reached
+        raise AssertionError("no request should be made")
+
+    result, seen = ask(
+        handler,
+        "generate",
+        "-m",
+        "p/model",
+        "--show-prompt",
+        "--select",
+        f"{start}:{end}",
+        "--no-send-selection",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    at_selection = prompt_lib.CursorRange(
+        start=prompt_lib.cursor_from_offset(TEXT, start),
+        end=prompt_lib.cursor_from_offset(TEXT, end),
+    )
+    assert result.stdout.rstrip("\n") == render_prompt(
+        TEXT, selection=at_selection, send_selection=False
+    )
+    assert "[REPLACE THIS]" in result.stdout
+    assert "Below" not in result.stdout
+    assert seen == []
+
+
+def test_cursor_and_select_together_is_an_error(ask) -> None:
+    def handler(request):  # pragma: no cover - must not be reached
+        raise AssertionError("no request should be made")
+
+    result, seen = ask(
+        handler,
+        "generate",
+        "-m",
+        "p/model",
+        "--show-prompt",
+        "--cursor",
+        "5",
+        "--select",
+        "0:5",
+        stdin=TEXT,
+    )
+    assert result.exit_code != 0
     assert seen == []
 
 

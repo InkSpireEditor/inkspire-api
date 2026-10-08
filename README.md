@@ -24,7 +24,8 @@ and the continuations a language model streams back.
   being served. See [Stories on disk](#stories-on-disk).
 - **Streams generated text.** `POST /api/stories|notes/file/{id}/generate` forwards a
   model's output chunk by chunk over server-sent events, from any of several providers —
-  continuing past the end of the chapter, or filling in a caret reported mid-file.
+  continuing past the end of the chapter, filling in a caret reported mid-file, or rewriting
+  a selected passage.
 - **Records who wrote each character.** A chapter keeps, beside its prose, which stretches a
   model wrote and which of those the writer has since corrected — and recovers that record
   from git when the file is edited outside the editor. See [The `.ink` file](#the-ink-file).
@@ -378,18 +379,36 @@ does this itself before every generation. Optional fields:
 |---|---|---|
 | `think` | `INKSPIRE_LLM_THINK` | the setting applies; reaches the provider only on the `ollama` protocol |
 | `cursor_para`, `cursor_offset` | — | continue at the end of the file (both are required together, or not at all) |
+| `cursor_end_para`, `cursor_end_offset` | — | `cursor_para`/`cursor_offset` is a caret, not a selection's start (both are required together, or not at all; requires `cursor_para`/`cursor_offset` to also be given) |
 | `temperature` | `INKSPIRE_LLM_TEMPERATURE` | the setting applies |
 | `prompt_budget` | `INKSPIRE_LLM_PROMPT_BUDGET` | the setting applies |
 | `prefix_share` | `INKSPIRE_LLM_PREFIX_SHARE` | the setting applies |
 | `num_ctx` | `INKSPIRE_LLM_NUM_CTX` | the setting applies (unset by default — the model's own default) |
+| `send_selection` | `INKSPIRE_LLM_SEND_SELECTION` | the setting applies (on by default); only matters for a rewrite |
 
-A caret splits the file into a prefix and a suffix and asks the model to write what
-belongs between them; with no caret, or one at the very end of the file, the whole
-file is the prefix and the model continues past it instead — the common case, and
-identical to what this endpoint always did before the caret existed. Either way, each
-side is trimmed to its share of the prompt budget at a paragraph boundary, silently.
-See `docs/prompt.md` for the full assembly, the trim, and why `num_ctx` has to sit above
-the budget.
+Three shapes, chosen by which of the four cursor fields are given:
+
+- **Neither pair, or a caret at the very end of the file** — a continuation. The whole file is
+  the prefix and the model continues past it, identical to what this endpoint always did before
+  a caret existed.
+- **A caret alone, mid-file** — a fill-in-the-middle. The file splits into a prefix and a suffix
+  at the caret, and the model writes what belongs between them.
+- **Both pairs** — a rewrite. The first pair is the selection's start, the second its end; the
+  model is told roughly how many words the selected passage has and asked to replace it.
+  **Whether the passage's own text is also sent is `send_selection`**, on by default: asked to
+  replace text it cannot see, a model has nothing to preserve and writes something of roughly
+  the right length that does not belong where it goes. A selection of nothing but whitespace is
+  read as a caret at its own start, not as a rewrite of zero words.
+
+Either way, the prefix and the suffix are each trimmed to their share of the prompt budget at a
+paragraph boundary, silently. A rewrite's selection, when sent, is charged against the budget
+*first* — `prompt_budget` keeps meaning the whole of the prose sent — and is never itself
+trimmed: a selection large enough to exhaust the budget on its own leaves nothing for the prefix
+and the suffix, rather than losing part of the passage being replaced. There is no limit on how
+large a selection may be rewritten — asking for several thousand words back, and getting far
+fewer, replaces the whole selection with whatever came back; recoverable with Ctrl+Z in the
+editor, one streamed chunk at a time. See `docs/prompt.md` for the full assembly, the trim, and
+why `num_ctx` has to sit above the budget.
 
 | Event | Meaning |
 |---|---|
@@ -397,9 +416,9 @@ the budget.
 | `{"error": "..."}` | The provider failed after the stream had started. |
 | `[DONE]` | End of generation. |
 
-A failure *before* any text is an ordinary status code instead — 422 for an unknown
-model, an out-of-range caret, or a caret with only one of its two fields given; 429 over
-the rate limit (20 generations per minute per account); 500 for an unreachable provider
+A failure *before* any text is an ordinary status code instead — 422 for an unknown model, an
+out-of-range or inverted cursor/selection, or either pair with only one of its two fields given;
+429 over the rate limit (20 generations per minute per account); 500 for an unreachable provider
 — so a client only has to handle an error event once it is already displaying text. The
 generated text is not written to disk: the client owns the chapter and saves it.
 
@@ -420,12 +439,17 @@ poetry run inkspire llm generate -m local-ollama/llama3 < chapter.ink
 poetry run inkspire llm generate -m local-ollama/llama3 --no-think < chapter.ink
 poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt < chapter.ink
 poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt --cursor 500 < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt --select 500:720 < chapter.ink
+poetry run inkspire llm generate -m local-ollama/llama3 --show-prompt --select 500:720 --no-send-selection < chapter.ink
 ```
 
-It sends the same prompt the API sends, so a model that behaves badly here behaves
-badly in the editor. `--show-prompt` prints what would be sent and generates nothing;
-`--cursor` is a flat character offset into standard input, converted to a paragraph and
-an offset the same way the route resolves one reported directly.
+It sends the same prompt the API sends, so a model that behaves badly here behaves badly in the
+editor. `--show-prompt` prints what would be sent and generates nothing; `--cursor` is a flat
+character offset into standard input, converted to a paragraph and an offset the same way the
+route resolves one reported directly. `--select START:END` is the same conversion applied to
+both ends of a range, for the rewrite shape; it cannot be combined with `--cursor`.
+`--send-selection`/`--no-send-selection` overrides `INKSPIRE_LLM_SEND_SELECTION` for this
+generation alone, left unset applies the server's own setting.
 
 ---
 

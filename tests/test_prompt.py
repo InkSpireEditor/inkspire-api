@@ -13,11 +13,15 @@ import pytest
 from inkspire_api.prompt import (
     Cursor,
     CursorOutOfRange,
+    CursorRange,
+    InvertedRange,
     PromptContext,
     assemble,
+    count_words,
     cursor_from_offset,
     render,
     split_at_cursor,
+    split_at_range,
     trim_to_head,
     trim_to_tail,
 )
@@ -271,3 +275,208 @@ def test_assemble_rejects_a_cursor_out_of_range() -> None:
 def test_assemble_rejects_any_cursor_on_an_empty_body() -> None:
     with pytest.raises(CursorOutOfRange):
         assemble("", budget=100, cursor=Cursor(para=0, offset=0))
+
+
+# --- word counting -------------------------------------------------------------
+
+
+def test_count_words_splits_on_whitespace() -> None:
+    assert count_words("He was angry. Very angry.") == 5
+
+
+def test_count_words_of_an_empty_string_is_zero() -> None:
+    assert count_words("") == 0
+
+
+def test_count_words_ignores_runs_of_whitespace() -> None:
+    assert count_words("One   Two\n\nThree") == 3
+
+
+# --- the selection -------------------------------------------------------------
+
+
+def test_split_at_range_within_one_paragraph() -> None:
+    paras, seps = provenance.split_paragraphs("One two three.\n\nFour.\n")
+    prefix, selection, suffix = split_at_range(
+        paras, seps, CursorRange(Cursor(para=0, offset=4), Cursor(para=0, offset=7))
+    )
+    assert provenance.join_paragraphs(*prefix) == "One "
+    assert provenance.join_paragraphs(*selection) == "two"
+    assert provenance.join_paragraphs(*suffix) == " three.\n\nFour.\n"
+
+
+def test_split_at_range_across_several_paragraphs() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n\nThree.\n\nFour.\n")
+    prefix, selection, suffix = split_at_range(
+        paras, seps, CursorRange(Cursor(para=0, offset=2), Cursor(para=2, offset=2))
+    )
+    assert provenance.join_paragraphs(*prefix) == "On"
+    assert provenance.join_paragraphs(*selection) == "e.\n\nTwo.\n\nTh"
+    assert provenance.join_paragraphs(*suffix) == "ree.\n\nFour.\n"
+
+
+def test_split_at_range_rejects_an_inverted_pair() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n")
+    with pytest.raises(InvertedRange):
+        split_at_range(paras, seps, CursorRange(Cursor(para=1, offset=0), Cursor(para=0, offset=0)))
+
+
+def test_split_at_range_rejects_an_out_of_range_end() -> None:
+    paras, seps = provenance.split_paragraphs("One.\n\nTwo.\n")
+    with pytest.raises(CursorOutOfRange):
+        split_at_range(paras, seps, CursorRange(Cursor(para=0, offset=0), Cursor(para=99, offset=0)))
+
+
+def test_a_collapsed_selection_is_byte_identical_to_the_same_cursor() -> None:
+    body = "One.\n\nTwo.\n\nThree.\n"
+    cursor = Cursor(para=1, offset=2)
+    by_cursor = assemble(body, budget=1000, cursor=cursor)
+    by_selection = assemble(body, budget=1000, selection=CursorRange(cursor, cursor))
+    assert by_cursor == by_selection
+
+
+def test_a_selection_mid_file_puts_text_either_side_of_it() -> None:
+    body = "One.\n\nTwo.\n\nThree.\n\nFour.\n"
+    context = assemble(
+        body,
+        budget=1000,
+        selection=CursorRange(Cursor(para=1, offset=0), Cursor(para=1, offset=4)),
+    )
+    assert context.prefix == "One.\n\n"
+    assert context.suffix == "\n\nThree.\n\nFour.\n"
+    assert context.selection_words == 1
+
+
+def test_the_selected_text_itself_is_never_in_the_context() -> None:
+    body = "One.\n\nSecretWord.\n\nThree.\n"
+    context = assemble(
+        body,
+        budget=1000,
+        selection=CursorRange(Cursor(para=1, offset=0), Cursor(para=1, offset=11)),
+    )
+    assert "SecretWord" not in context.prefix
+    assert "SecretWord" not in context.suffix
+
+
+def test_a_selection_reaching_the_end_of_the_file_gives_an_empty_suffix() -> None:
+    """The same end-of-file bug #14 fixed for a caret, in a second place: the body's
+    own closing separator must not be handed to the suffix."""
+    body = "One.\n\nTwo.\n"
+    paragraphs, _ = provenance.split_paragraphs(body)
+    end = Cursor(para=len(paragraphs) - 1, offset=len(paragraphs[-1]))
+    context = assemble(
+        body, budget=1000, selection=CursorRange(Cursor(para=0, offset=0), end)
+    )
+    assert context.suffix == ""
+    assert context.selection_words == 2
+
+
+def test_a_selection_starting_at_the_very_beginning_gives_an_empty_prefix() -> None:
+    body = "One.\n\nTwo.\n"
+    context = assemble(
+        body,
+        budget=1000,
+        selection=CursorRange(Cursor(para=0, offset=0), Cursor(para=1, offset=0)),
+    )
+    assert context.prefix == ""
+
+
+def test_a_whitespace_only_selection_degenerates_to_the_caret_at_its_start() -> None:
+    body = "One.\n\nTwo.\n"
+    start = Cursor(para=0, offset=4)  # end of "One."
+    end = Cursor(para=1, offset=0)  # start of "Two." -- nothing but the separator between
+    by_selection = assemble(body, budget=1000, selection=CursorRange(start, end))
+    by_cursor = assemble(body, budget=1000, cursor=start)
+    assert by_selection == by_cursor
+    assert by_selection.selection_words is None
+
+
+def test_the_budget_split_is_unaffected_by_a_selection_being_present() -> None:
+    body = "One.\n\nTwo.\n\nThree.\n"
+    cursor = Cursor(para=1, offset=2)
+    by_cursor = assemble(body, budget=10, cursor=cursor, prefix_share=0.75)
+    by_selection = assemble(
+        body, budget=10, selection=CursorRange(cursor, cursor), prefix_share=0.75
+    )
+    assert by_cursor.prefix == by_selection.prefix
+    assert by_cursor.suffix == by_selection.suffix
+
+
+def test_assemble_rejects_both_a_cursor_and_a_selection() -> None:
+    body = "One.\n\nTwo.\n"
+    cursor = Cursor(para=0, offset=0)
+    with pytest.raises(ValueError):
+        assemble(body, budget=100, cursor=cursor, selection=CursorRange(cursor, cursor))
+
+
+def test_assemble_rejects_an_inverted_selection() -> None:
+    body = "One.\n\nTwo.\n"
+    with pytest.raises(InvertedRange):
+        assemble(
+            body,
+            budget=100,
+            selection=CursorRange(Cursor(para=1, offset=0), Cursor(para=0, offset=0)),
+        )
+
+
+def test_send_selection_defaults_to_off() -> None:
+    """`assemble`'s own default is conservative; the server's (`llm.py`'s
+    `GenerationOptions`) is the one that is on."""
+    body = "One.\n\nSecretWord.\n\nThree.\n"
+    context = assemble(
+        body,
+        budget=1000,
+        selection=CursorRange(Cursor(para=1, offset=0), Cursor(para=1, offset=11)),
+    )
+    assert context.selection is None
+    assert context.selection_words == 1
+
+
+def test_send_selection_true_carries_the_passage_text() -> None:
+    body = "One.\n\nSecretWord.\n\nThree.\n"
+    context = assemble(
+        body,
+        budget=1000,
+        selection=CursorRange(Cursor(para=1, offset=0), Cursor(para=1, offset=11)),
+        send_selection=True,
+    )
+    assert context.selection == "SecretWord."
+    assert context.selection_words == 1
+
+
+def test_send_selection_true_with_no_selection_changes_nothing() -> None:
+    """The flag only ever matters once there is a real selection -- a continuation or
+    a fill-in-the-middle has no passage to show."""
+    body = "One.\n\nTwo.\n\nThree.\n"
+    cursor = Cursor(para=1, offset=2)
+    without = assemble(body, budget=1000, cursor=cursor, send_selection=False)
+    with_flag = assemble(body, budget=1000, cursor=cursor, send_selection=True)
+    assert without == with_flag
+
+
+def test_the_passage_is_charged_against_the_budget_before_the_sides_split() -> None:
+    """Decision taken when extending #20: a shown passage costs budget, so the prefix
+    and the suffix are shorter than the same call with it withheld."""
+    body = "One two three four.\n\nFive six seven eight nine ten.\n\nEleven twelve.\n"
+    selection = CursorRange(Cursor(para=1, offset=0), Cursor(para=1, offset=len(
+        "Five six seven eight nine ten."
+    )))
+    withheld = assemble(body, budget=20, selection=selection, send_selection=False)
+    shown = assemble(body, budget=20, selection=selection, send_selection=True)
+    assert len(shown.prefix) + len(shown.suffix) < len(withheld.prefix) + len(withheld.suffix)
+
+
+def test_a_passage_larger_than_the_budget_leaves_both_sides_with_no_real_content() -> None:
+    """No ceiling on the passage's own size (decided against building one): charging
+    it against the budget first can leave nothing but trimming residue for either
+    side -- a trailing or leading separator, never the writer's own words -- rather
+    than trimming the passage itself to make room."""
+    body = "Short.\n\nA much, much longer passage than the tiny budget allows for.\n\nEnd.\n"
+    selection = CursorRange(
+        Cursor(para=1, offset=0),
+        Cursor(para=1, offset=len("A much, much longer passage than the tiny budget allows for.")),
+    )
+    context = assemble(body, budget=5, selection=selection, send_selection=True)
+    assert context.prefix.strip() == ""
+    assert context.suffix.strip() == ""
+    assert context.selection is not None

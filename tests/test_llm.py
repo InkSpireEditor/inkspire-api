@@ -43,17 +43,18 @@ from inkspire_api.llm import (
 from inkspire_api.settings import Settings
 
 #: The prompt sent for a set of inputs, recorded so a change to the template shows up
-#: as a failure here rather than as a change in what the models are asked. `fim` is a
-#: nested dict of its own cases -- the continuation branch and the fill-in-the-middle
-#: branch pin separately, since they are different instructions, not different data
-#: inside one (`docs/prompt.md`).
+#: as a failure here rather than as a change in what the models are asked. `fim` and
+#: `rewrite` are nested dicts of their own cases -- the continuation, fill-in-the-middle
+#: and rewrite branches pin separately, since each is a different instruction set, not
+#: different data inside one (`docs/prompt.md`).
 _PROMPTS: dict[str, Any] = json.loads(
     (Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8")
 )
 CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
-    name: case for name, case in _PROMPTS.items() if name != "fim"
+    name: case for name, case in _PROMPTS.items() if name not in ("fim", "rewrite")
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
+REWRITE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["rewrite"]
 
 #: `Settings`' own default, kept as a constant here so a test that trims against it
 #: shows its intent rather than a bare 10000.
@@ -65,16 +66,28 @@ def render_prompt(
     budget: int = DEFAULT_BUDGET,
     *,
     cursor: prompt_lib.Cursor | None = None,
+    selection: prompt_lib.CursorRange | None = None,
     prefix_share: float = 0.75,
+    send_selection: bool = False,
 ) -> str:
     """What `LLMService._payload` sends: assembly, then the render.
 
     A local wrapper rather than an import, now that assembly lives in `prompt.py` as
     two calls instead of one bare function -- the pinned cases below exercise the
-    render alone, at a budget no real file of theirs comes close to.
+    render alone, at a budget no real file of theirs comes close to. `send_selection`
+    defaults to off here, matching `assemble`'s own conservative default rather than
+    the server's (`LLMService.defaults.send_selection` is on) -- callers exercising
+    the server's own default pass it explicitly.
     """
     return prompt_lib.render(
-        prompt_lib.assemble(text, budget=budget, cursor=cursor, prefix_share=prefix_share)
+        prompt_lib.assemble(
+            text,
+            budget=budget,
+            cursor=cursor,
+            selection=selection,
+            prefix_share=prefix_share,
+            send_selection=send_selection,
+        )
     )
 
 
@@ -114,6 +127,22 @@ def test_the_fim_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
     could escape, and CJK, each either side of the marker."""
     recorded = FIM_PROMPTS[case]
     context = prompt_lib.PromptContext(prefix=recorded["prefix"], suffix=recorded["suffix"])
+    assert prompt_lib.render(context) == recorded["prompt"]
+
+
+@pytest.mark.parametrize("case", sorted(REWRITE_PROMPTS))
+def test_the_rewrite_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
+    """The rewrite branch, pinned the same way: quotes and HTML a model could escape,
+    CJK, a selection touching either end of the file (an empty prefix or suffix), and
+    -- since the passage can now be shown rather than withheld -- one spanning a
+    single paragraph and one spanning two, pinning the separator between them too."""
+    recorded = REWRITE_PROMPTS[case]
+    context = prompt_lib.PromptContext(
+        prefix=recorded["prefix"],
+        suffix=recorded["suffix"],
+        selection_words=recorded["selection_words"],
+        selection=recorded.get("selection"),
+    )
     assert prompt_lib.render(context) == recorded["prompt"]
 
 
@@ -572,6 +601,7 @@ def test_the_defaults_endpoint_answers_the_servers_own_settings(llm_client) -> N
         "prefix_share": 0.75,
         "num_ctx": None,
         "think": None,
+        "send_selection": True,
     }
 
 
@@ -846,6 +876,171 @@ def test_an_out_of_range_cursor_is_unprocessable(llm_client, data_root: Path) ->
     response = llm_client.post(
         f"/api/stories/file/{file_id}/generate",
         json={"model": "p/m", "cursor_para": 5, "cursor_offset": 0},
+    )
+    assert response.status_code == 422
+
+
+def test_a_selection_asks_for_a_rewrite_with_a_word_count(
+    llm_client, data_root: Path
+) -> None:
+    """#20: a range anchor asks for a rewrite, not a continuation or fill-in-the-middle,
+    and carries the selected passage's own word count."""
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": "One.\n\nHe was angry. Very angry.\n\nThree.\n"},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={
+            "model": "p/m",
+            "cursor_para": 1,
+            "cursor_offset": 0,
+            "cursor_end_para": 1,
+            "cursor_end_offset": len("He was angry. Very angry."),
+        },
+    )
+    assert response.status_code == 200
+
+    sent = seen["messages"][0]["content"]
+    assert "Passage to replace:" in sent
+    assert "roughly 5 words" in sent
+
+
+def test_the_selected_text_never_reaches_the_provider(
+    llm_client, data_root: Path
+) -> None:
+    """Decision taken when planning #20: with `send_selection` explicitly off, the
+    passage's own text stays out of the prompt and only its word count travels. The
+    server's own default is now on (a follow-up to #20, once this was tried against a
+    real model), so this is the explicit-off case rather than the only one -- see
+    `test_the_selected_text_reaches_the_provider_by_default` below for the other."""
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": "One.\n\nSecretPassage here.\n\nThree.\n"},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={
+            "model": "p/m",
+            "cursor_para": 1,
+            "cursor_offset": 0,
+            "cursor_end_para": 1,
+            "cursor_end_offset": len("SecretPassage here."),
+            "send_selection": False,
+        },
+    )
+    assert response.status_code == 200
+    assert "SecretPassage" not in seen["messages"][0]["content"]
+
+
+def test_the_selected_text_reaches_the_provider_by_default(
+    llm_client, data_root: Path
+) -> None:
+    """The server's own default is on (a follow-up to #20): a rewrite with no
+    `send_selection` field sends the passage's own text, not just its word count --
+    tested against a real model, the opposite behaviour produced something of
+    roughly the right length that did not belong where it was asked to go."""
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": "One.\n\nSecretPassage here.\n\nThree.\n"},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={
+            "model": "p/m",
+            "cursor_para": 1,
+            "cursor_offset": 0,
+            "cursor_end_para": 1,
+            "cursor_end_offset": len("SecretPassage here."),
+        },
+    )
+    assert response.status_code == 200
+    assert "SecretPassage" in seen["messages"][0]["content"]
+
+
+def test_cursor_end_without_a_start_is_unprocessable(
+    llm_client, data_root: Path
+) -> None:
+    """An end with no start would describe a selection with nowhere to begin."""
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={"model": "p/m", "cursor_end_para": 0, "cursor_end_offset": 0},
+    )
+    assert response.status_code == 422
+
+
+def test_cursor_end_para_without_cursor_end_offset_is_unprocessable(
+    llm_client, data_root: Path
+) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={
+            "model": "p/m",
+            "cursor_para": 0,
+            "cursor_offset": 0,
+            "cursor_end_para": 0,
+        },
+    )
+    assert response.status_code == 422
+    assert "together" in response.json()["message"]
+
+
+def test_an_inverted_selection_is_unprocessable(llm_client, data_root: Path) -> None:
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": "x"}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+    llm_client.handlers["handler"] = lambda request: httpx.Response(200, text=sse_body())
+    response = llm_client.post(
+        f"/api/stories/file/{file_id}/generate",
+        json={
+            "model": "p/m",
+            "cursor_para": 0,
+            "cursor_offset": 2,
+            "cursor_end_para": 0,
+            "cursor_end_offset": 0,
+        },
     )
     assert response.status_code == 422
 
