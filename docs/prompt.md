@@ -141,6 +141,13 @@ only when `assemble`'s `send_selection` says so, and the template shows it in pl
   body's own closing separator must not be handed to a side that is not supposed to have it; and
   a selection of nothing but whitespace (`count_words` of `0`) degenerates to a caret at its own
   start, so a rewrite can never be asked to produce zero words.
+- **The instructions name whichever sides are actually present.** `prompt.j2`'s rewrite branch
+  used to say "flows from the text before it directly into the text after it" and "do not
+  pre-empt or duplicate the text after" regardless of whether `ctx.prefix`/`ctx.suffix` were
+  empty — wrong for exactly the two degenerate cases above, reachable today by selecting the
+  first or last paragraph and pressing Rewrite. Branched on `ctx.prefix and ctx.suffix` into four
+  wordings (both sides, prefix only, suffix only, neither) rather than guarding the one sentence
+  that happened to be reachable first.
 
 ### The trim
 
@@ -239,9 +246,14 @@ that the only workable split:
    writes the file and then tells the client to reload either drops that streaming experience
    entirely, or streams the deltas anyway — in which case the editor is already inserting them,
    and a server-side write of the same text is redundant.
-3. **Reroll** (api#5) deletes the trailing model-written run through the browser's own editing
-   command, so the reroll itself is undoable. That requires the generation it is replacing to
-   already be on the undo stack, which only client-side insertion puts there.
+3. **Reroll** (api#5) deletes the `gen` run at the caret through the browser's own editing
+   command, so the reroll itself is undoable, then generates again with a caret where that run
+   started — a second sample of the same request, assembled the same way it was the first time,
+   not a rewrite of the deleted span. That requires the generation it is replacing to already be
+   on the undo stack, which only client-side insertion puts there. Only the client knows which
+   run is the one to reroll: provenance records who wrote each character, not when, and the API
+   never parses the provenance section on the generate path at all (`llm.py`'s route reads only
+   `StoredDocument.body`) — reroll needed no change here.
 4. **One writer, not two.** A generation lasts seconds, and the writer may keep typing, or
    press Stop and keep whatever arrived. Today only the editor ever writes the file during
    that window, so there is nothing to reconcile. A second writer — the server, mid-stream —

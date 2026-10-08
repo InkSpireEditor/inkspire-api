@@ -133,9 +133,11 @@ def test_the_fim_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
 @pytest.mark.parametrize("case", sorted(REWRITE_PROMPTS))
 def test_the_rewrite_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
     """The rewrite branch, pinned the same way: quotes and HTML a model could escape,
-    CJK, a selection touching either end of the file (an empty prefix or suffix), and
-    -- since the passage can now be shown rather than withheld -- one spanning a
-    single paragraph and one spanning two, pinning the separator between them too."""
+    CJK, a selection touching either end of the file (an empty prefix or suffix, each
+    with its own wording for the absent side -- api#5's reroll made this the common
+    case), one touching neither end, and -- since the passage can now be shown rather
+    than withheld -- one spanning a single paragraph and one spanning two, pinning the
+    separator between them too."""
     recorded = REWRITE_PROMPTS[case]
     context = prompt_lib.PromptContext(
         prefix=recorded["prefix"],
