@@ -1,5 +1,8 @@
-{# Retrieved lore and a story's synopsis render here, above these instructions
-   (api#15's retrieval, and api#17's story synopsis + notes context). -#}
+{# Retrieved lore renders here too, above this (api#15's retrieval). -#}
+{% if ctx.synopsis -%}
+{{ ctx.synopsis }}
+
+{% endif -%}
 {% if ctx.selection_words -%}
 You are a skilled writer helping out a fellow writer.
 

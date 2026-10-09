@@ -40,6 +40,7 @@ from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
 from .fs import MAX_FILE_BYTES
 from .settings import Settings
+from .storage import Chapter
 
 #: Upper bound on a model identifier, across every provider.
 MAX_MODEL_LENGTH = 255
@@ -254,6 +255,7 @@ class LLMService:
         cursor: prompt_lib.Cursor | None = None,
         selection: prompt_lib.CursorRange | None = None,
         options: GenerationOptions | None = None,
+        synopsis: str = "",
     ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
 
@@ -263,6 +265,11 @@ class LLMService:
         fill-in-the-middle or rewrite instructions before anything is sent. At most
         one of `cursor`/`selection` may be given; `prompt_lib.assemble` is what
         raises if both are.
+
+        `synopsis` (api#17) is the containing story's synopsis or notes folder's
+        context, if the caller found one -- passed straight through to
+        `prompt_lib.assemble`, which renders it above everything else when it is
+        not empty.
 
         `options` is this one generation's settings -- temperature, the budget and
         its split, `num_ctx`, whether to think, and whether a rewrite sends the
@@ -298,6 +305,7 @@ class LLMService:
                         cursor=cursor,
                         selection=selection,
                         options=resolved,
+                        synopsis=synopsis,
                     ),
                 ) as response:
                     await _raise_for_status(response)
@@ -355,6 +363,7 @@ class LLMService:
         options: GenerationOptions,
         cursor: prompt_lib.Cursor | None = None,
         selection: prompt_lib.CursorRange | None = None,
+        synopsis: str = "",
     ) -> dict[str, Any]:
         context = prompt_lib.assemble(
             text,
@@ -363,6 +372,7 @@ class LLMService:
             selection=selection,
             prefix_share=options.prefix_share,
             send_selection=options.send_selection,
+            synopsis=synopsis,
         )
         rendered = prompt_lib.render(context)
         return self._chat_payload(model, rendered, native=native, options=options, stream=True)
@@ -684,9 +694,15 @@ async def _stream_generation(
     request: Request,
     user: CurrentUser,
     service: LLMService,
+    *,
+    synopsis: str = "",
 ) -> StreamingResponse:
     """Shared by both spaces: rate-limits, starts the stream, and turns a failure
     before the first chunk into an ordinary status code.
+
+    `synopsis` (api#17) is the containing story's synopsis or notes folder's
+    context, looked up by the caller -- this function knows nothing about either
+    root, so it only ever passes the string along.
 
     Each event is `{"delta": "..."}` with text to append, `{"error": "..."}` if the
     provider fails once chunks have already been sent, and `[DONE]` at the end.
@@ -704,7 +720,12 @@ async def _stream_generation(
     # Calling an async generator function runs none of its body, so the model check,
     # the cursor/selection check and the connection all happen on this first step.
     chunks = service.stream(
-        body.model, text, cursor=anchor.cursor, selection=anchor.selection, options=options
+        body.model,
+        text,
+        cursor=anchor.cursor,
+        selection=anchor.selection,
+        options=options,
+        synopsis=synopsis,
     )
     try:
         first = await anext(chunks, None)
@@ -761,10 +782,14 @@ async def generate_story(
     for this. See `docs/prompt.md` for why saving before calling this is the editor's
     responsibility, not something checked here.
     """
+    file = scanner.file(file_id)
     text = scanner.read_document(file_id).body
     if not text.strip():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_FILE)
-    return await _stream_generation(text, body, request, user, service)
+    # A one-shot is a bare File, never a Chapter -- it belongs to no story, so it
+    # has no synopsis to offer (api#17).
+    synopsis = scanner.story(file.story_id).summary if isinstance(file, Chapter) else ""
+    return await _stream_generation(text, body, request, user, service, synopsis=synopsis)
 
 
 @notes_router.post("/file/{file_id}/generate")
@@ -778,7 +803,10 @@ async def generate_note(
     service: ServiceDep,
 ) -> StreamingResponse:
     """The same, for a note."""
+    note = notes.note(file_id)
     text = notes.read_document(file_id).body
     if not text.strip():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_FILE)
-    return await _stream_generation(text, body, request, user, service)
+    # A root-level note belongs to no folder, so it has no context to offer (api#17).
+    synopsis = notes.folder(note.folder_id).summary if note.folder_id is not None else ""
+    return await _stream_generation(text, body, request, user, service, synopsis=synopsis)

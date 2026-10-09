@@ -480,3 +480,23 @@ def test_a_passage_larger_than_the_budget_leaves_both_sides_with_no_real_content
     assert context.prefix.strip() == ""
     assert context.suffix.strip() == ""
     assert context.selection is not None
+
+
+# --- the synopsis (api#17) ----------------------------------------------------
+
+
+def test_synopsis_defaults_to_empty() -> None:
+    assert assemble("hello", budget=10).synopsis == ""
+
+
+def test_synopsis_passes_straight_through() -> None:
+    context = assemble("hello", budget=10, synopsis="A letter nobody has opened in three years.")
+    assert context.synopsis == "A letter nobody has opened in three years."
+
+
+def test_synopsis_is_never_trimmed_or_charged_against_the_budget() -> None:
+    """Deliberate: short by construction at the source (the frontend's own
+    MAX_SUMMARY_LENGTH), unlike the prefix/suffix/selection."""
+    long_synopsis = "Word " * 1000
+    context = assemble("hello", budget=10, synopsis=long_synopsis)
+    assert context.synopsis == long_synopsis

@@ -21,7 +21,8 @@ sequenceDiagram
     E->>E: read the caret or the selection, flush any pending save -- refuse to continue if it fails
     E->>API: POST file/{id}/generate { model, cursor_para?, cursor_offset?, cursor_end_para?, cursor_end_offset?, think?, ... }
     API->>FS: read_document(id)
-    API->>API: prompt.assemble(body, budget, cursor, selection, prefix_share, send_selection) -- split, trim, render
+    API->>FS: the containing story's synopsis, or notes folder's context, if either exists (api#17)
+    API->>API: prompt.assemble(body, budget, cursor, selection, prefix_share, send_selection, synopsis) -- split, trim, render
     API-->>E: stream: {"delta": "..."} events, then [DONE]
     loop each delta
         E->>E: appendGenerated(delta) -- execCommand('insertText') at the caret or over the selection, marked "gen"
@@ -51,23 +52,37 @@ flowchart LR
     PB -->|"yes: charged against budget first"| TP
     PB -->|"no"| TP
     PB --> TS
-    T --> C["PromptContext<br/>prefix, suffix, selection_words, selection"]
+    T --> C["PromptContext<br/>prefix, suffix, selection_words, selection, synopsis"]
     TP --> C
     TS --> C
     C --> R["render(context)<br/>templates/prompt.j2 -- branches on selection_words, then on suffix;<br/>within the rewrite branch, selection present or absent chooses the passage or the bare marker"]
     R --> M["sent to the model"]
 
-    Y["a story's synopsis -- not built"] -.-> C
+    Y["a story's synopsis, or a notes folder's context<br/>(Folder.summary, api#17)"] --> C
     H["a chapter/character summary -- not built"] -.-> C
     L["retrieved lore -- not built"] -.-> C
     I["the writer's instruction -- not built"] -.-> C
 ```
 
 `PromptContext` (`inkspire_api/prompt.py`) is every section the template can render: `prefix`,
-`suffix`, `selection_words` and `selection` today, nothing else. Each later section is a new field here and a
-guarded block in the template — never a change to an existing field — which is why the prompts
-pinned in `tests/data/prompts.json` are untouched by a later section existing at all: nothing
-renders that was not already rendering.
+`suffix`, `selection_words`, `selection` and `synopsis` (api#17) today, nothing else. Each later
+section is a new field here and a guarded block in the template — never a change to an existing
+field — which is why the prompts pinned in `tests/data/prompts.json` are untouched by a later
+section existing at all: nothing renders that was not already rendering.
+
+`synopsis` is a story's own synopsis or a notes folder's own context — two on-disk names
+(`story.yaml`'s `synopsis`, a notes folder manifest's `context`) for the one in-memory field
+both scanners already agree on, `Folder.summary` (`entries.py`), so there was only ever one
+value to thread through here rather than two. The route looks it up once, from whichever
+containing folder applies — `scanner.story(chapter.story_id)` for a chapter,
+`notes.folder(note.folder_id)` for a note in one, `""` for a one-shot or a root-level note,
+neither of which has a containing folder at all — and passes it to `LLMService.stream` as a
+plain string; `assemble` never trims it and never charges it against the budget, unlike the
+prefix, the suffix or a shown selection, since it is short by construction at the source (the
+frontend's own `MAX_SUMMARY_LENGTH`). Renders in the one slot marked for it, above the
+continuation/fill-in-the-middle/rewrite instructions and therefore identical across all three,
+and only when it is not empty — an empty one leaves the prompt byte-identical to before this
+field existed.
 
 ### The caret, and why its absence is not a special case written twice
 
@@ -165,8 +180,11 @@ record a `.ink` file already keeps.
   relevant end, then a hard character cut if even one line alone is too long — always keeping
   that end, the same ladder the chunked-reading design (api#12) specifies for the same reason.
 - **The trim is silent.** The writer is not told the opening of a long chapter was dropped.
-  Carrying context beyond the window is later work — a rolling summary (api#14's own "later"
-  section), a story's synopsis (api#17) — not a warning on every generation past the budget.
+  Summarising what the trim actually removed is later work — a rolling summary (api#14's own
+  "later" section), or api#18's narrower one keyed on what one trim just dropped — not a
+  warning on every generation past the budget. A story's synopsis (api#17, above) is not this:
+  it is independent of the trim boundary, sent in full regardless of how much of the body was
+  cut.
 
 ### The budget, and the three numbers around it
 
@@ -359,10 +377,11 @@ it.
   per-model tokenizer.
 - **Auto-detecting a model's real context window.** `num_ctx` is set (or left unset) by hand;
   nothing reads what a model can actually do and suggests or enforces a ceiling from it.
-- **A story's synopsis, a notes folder's context, a chapter or character summary, retrieved
-  lore, the writer's own instruction.** Each is a field on `PromptContext` and a block in
-  `prompt.j2`; none exist yet. See api#17, api#18, api#19/frontend#24, api#15. A story's synopsis
-  is the natural second field on `TitleContext` too, by the same reasoning, once something
-  needs it there.
+- **A chapter or character summary, retrieved lore, the writer's own instruction on
+  Generate.** Each is a field on `PromptContext` and a block in `prompt.j2`, the way a
+  story's synopsis or a notes folder's context (api#17, above) already is; none of these
+  three exist yet. See api#18, api#19/frontend#24, api#15. A story's synopsis is the natural
+  second field on `titles.py`'s own, separate `TitleContext` too, by the same reasoning, once
+  something needs it there — api#25 is a different prompt, not this one.
 - **A ceiling on how much may be rewritten at once.** Decided against, not merely unbuilt —
   see "The selection" above.

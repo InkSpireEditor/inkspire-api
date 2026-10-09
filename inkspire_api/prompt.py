@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """What a generation asks a model, assembled server-side from the file on disk.
 
-`PromptContext` is every section the template can render: `prefix`, `suffix` and
-`selection_words`, and nothing else today. A story's synopsis, a chapter or character
-summary, retrieved lore and the writer's own instruction are each a future field here
-plus a guarded block in `templates/prompt.j2`, and nothing else changes: see
-`docs/prompt.md` for the order they are meant to land in.
+`PromptContext` is every section the template can render: `prefix`, `suffix`,
+`selection_words` and a story's synopsis or a notes folder's context (`synopsis`,
+api#17). A chapter or character summary, retrieved lore and the writer's own
+instruction are each a future field here plus a guarded block in
+`templates/prompt.j2`, and nothing else changes: see `docs/prompt.md` for the order
+they are meant to land in.
 
 A caret splits the body into a prefix and a suffix; with no caret the whole body is
 the prefix and the suffix is empty, which is a continuation -- today's only mode and
@@ -62,15 +63,21 @@ class PromptContext:
     (`docs/prompt.md` has why both exist). An empty `suffix` with no `selection_words`
     is a continuation (no caret, or a caret at the end of the file); the template
     renders each of the three differently rather than one instruction set for all
-    (`docs/prompt.md`). Each later section is a field added here, never a change to an
-    existing one, so the template and its pinned cases (`tests/data/prompts.json`) are
-    affected only by the section actually being rendered.
+    (`docs/prompt.md`). `synopsis` (api#17) is a story's own synopsis or a notes
+    folder's own context -- both the same `Folder.summary` in memory, whichever
+    applies to the file being generated from, or `""` for a one-shot or a root-level
+    note, neither of which has one. Unlike the other fields, it is never trimmed or
+    charged against the budget: short by construction at the source. Each later
+    section is a field added here, never a change to an existing one, so the
+    template and its pinned cases (`tests/data/prompts.json`) are affected only by
+    the section actually being rendered.
     """
 
     prefix: str
     suffix: str = ""
     selection_words: int | None = None
     selection: str | None = None
+    synopsis: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -481,6 +488,7 @@ def assemble(
     selection: CursorRange | None = None,
     prefix_share: float = 0.75,
     send_selection: bool = False,
+    synopsis: str = "",
 ) -> PromptContext:
     """The context for one generation: `body` split at `cursor` or `selection`, each
     side trimmed to its share of `budget` characters.
@@ -500,6 +508,11 @@ def assemble(
     and it is never itself trimmed: a passage large enough to exhaust the budget
     leaves both sides empty rather than losing part of the text being replaced.
 
+    `synopsis` (api#17) passes straight through to `PromptContext.synopsis` --
+    unlike the selection, never charged against `budget` and never trimmed, since
+    it is short by construction at the source (the frontend's own
+    `MAX_SUMMARY_LENGTH`).
+
     Raises `ValueError` if both `cursor` and `selection` are given, and
     `CursorOutOfRange` (or its `InvertedRange` subclass) if either does not address
     `body`.
@@ -517,6 +530,7 @@ def assemble(
         suffix=trimmed_suffix,
         selection_words=count_words(passage) if passage is not None else None,
         selection=shown,
+        synopsis=synopsis,
     )
 
 

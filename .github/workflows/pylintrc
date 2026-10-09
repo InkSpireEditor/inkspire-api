@@ -18,6 +18,11 @@ min-public-methods=0
 # Maximum number of arguments for function / method
 max-args=12
 
+# Maximum number of local variables. prompt.py's assemble() and llm.py's stream()
+# each gain one more with every later prompt section (api#17 et seq.) -- the
+# intended extension pattern per docs/prompt.md, not a one-off.
+max-locals=18
+
 # Maximum number of attributes for a class (see R0902).
 max-attributes=20
 

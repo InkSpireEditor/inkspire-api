@@ -21,8 +21,10 @@ from tests.conftest import (
     answer_body,
     chapter_id,
     delta,
+    dir_named,
     entry_named,
     llm_service,
+    make_folder,
     make_note,
     make_story,
     sse_body,
@@ -52,13 +54,19 @@ _PROMPTS: dict[str, Any] = json.loads(
     (Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8")
 )
 CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
-    name: case for name, case in _PROMPTS.items() if name not in ("fim", "rewrite", "title")
+    name: case
+    for name, case in _PROMPTS.items()
+    if name not in ("fim", "rewrite", "title", "synopsis")
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
 REWRITE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["rewrite"]
 #: Pinned here, alongside every other prompt shape, but rendered by
 #: `titles.render_title` rather than `prompt_lib.render` -- see test_titles.py.
 TITLE_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["title"]
+#: A single case (api#17): a continuation with a synopsis above it. One is enough
+#: to prove the new section renders correctly without disturbing the other nine --
+#: it is not a new prompt shape the way fim/rewrite/title each are.
+SYNOPSIS_PROMPT: dict[str, str] = _PROMPTS["synopsis"]
 
 #: `Settings`' own default, kept as a constant here so a test that trims against it
 #: shows its intent rather than a bare 10000.
@@ -73,6 +81,7 @@ def render_prompt(
     selection: prompt_lib.CursorRange | None = None,
     prefix_share: float = 0.75,
     send_selection: bool = False,
+    synopsis: str = "",
 ) -> str:
     """What `LLMService._payload` sends: assembly, then the render.
 
@@ -91,6 +100,7 @@ def render_prompt(
             selection=selection,
             prefix_share=prefix_share,
             send_selection=send_selection,
+            synopsis=synopsis,
         )
     )
 
@@ -123,6 +133,23 @@ def test_the_prompt_is_rendered_exactly_as_recorded(case: str) -> None:
     """
     recorded = CONTINUATION_PROMPTS[case]
     assert render_prompt(recorded["text"]) == recorded["prompt"]
+
+
+# --- the synopsis (api#17) ---------------------------------------------------
+
+
+def test_the_synopsis_prompt_is_rendered_exactly_as_recorded() -> None:
+    """One case is enough: a synopsis is one new guarded block, not a new prompt
+    shape the way fim/rewrite/title each are."""
+    recorded = SYNOPSIS_PROMPT
+    assert render_prompt(recorded["text"], synopsis=recorded["synopsis"]) == recorded["prompt"]
+
+
+def test_an_empty_synopsis_is_byte_identical_to_the_plain_case() -> None:
+    """The regression this issue's whitespace work is actually for: an empty
+    synopsis must not leave a stray blank line behind."""
+    plain = CONTINUATION_PROMPTS["plain"]
+    assert render_prompt(plain["text"], synopsis="") == plain["prompt"]
 
 
 @pytest.mark.parametrize("case", sorted(FIM_PROMPTS))
@@ -825,6 +852,103 @@ def test_generation_works_through_the_notes_path_too(llm_client, files_root: Pat
     )
     assert response.status_code == 200
     assert events(response)[-1] == "[DONE]"
+
+
+# --- the synopsis, end to end (api#17) --------------------------------------
+
+
+def test_a_chapters_generation_carries_its_storys_synopsis(
+    llm_client, data_root: Path
+) -> None:
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        synopsis="A letter nobody has opened in three years.",
+        chapters={"first-chapter.ink": "x"},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/stories/file/{file_id}/generate", json={"model": "p/m"})
+
+    assert "A letter nobody has opened in three years." in seen["messages"][0]["content"]
+
+
+def test_a_one_shots_generation_carries_no_synopsis(llm_client, data_root: Path) -> None:
+    """A one-shot is a bare File, never a Chapter -- it belongs to no story."""
+    created = llm_client.post(
+        "/api/stories/file", json={"name": "Solo", "dir": None}
+    ).json()
+    llm_client.put(
+        f"/api/stories/file/{created['id']}/document", json={"body": "the house was"}
+    )
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(
+        f"/api/stories/file/{created['id']}/generate", json={"model": "p/m"}
+    )
+
+    # Nothing prepended: the prompt opens exactly where a plain continuation does.
+    assert seen["messages"][0]["content"].startswith(
+        "You are a skilled writer helping out a fellow writer."
+    )
+
+
+def test_a_notes_generation_carries_its_folders_context(
+    llm_client, files_root: Path
+) -> None:
+    make_folder(files_root, "research", title="Research", context="Notes about the setting.")
+    make_note(files_root / "research", "note-one.ink", "the house was")
+    note_id = entry_named(
+        dir_named(llm_client, "notes", "Research")["files"], "note-one"
+    )["id"]
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/notes/file/{note_id}/generate", json={"model": "p/m"})
+
+    assert "Notes about the setting." in seen["messages"][0]["content"]
+
+
+def test_a_root_level_notes_generation_carries_no_context(
+    llm_client, files_root: Path
+) -> None:
+    make_note(files_root, "loose.ink", "the house was")
+    note_id = entry_named(
+        llm_client.get("/api/notes/tree").json()["files"], "loose"
+    )["id"]
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/notes/file/{note_id}/generate", json={"model": "p/m"})
+
+    # Nothing prepended: the prompt opens exactly where a plain continuation does.
+    assert seen["messages"][0]["content"].startswith(
+        "You are a skilled writer helping out a fellow writer."
+    )
 
 
 def test_an_unknown_file_id_is_not_found(llm_client) -> None:

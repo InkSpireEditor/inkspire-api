@@ -396,6 +396,17 @@ def generate(
             ),
         ),
     ] = None,
+    synopsis: Annotated[
+        str,
+        typer.Option(
+            "--synopsis",
+            help=(
+                "The containing story's synopsis or notes folder's context, as the "
+                "API would read it from story.yaml or a folder's manifest (api#17). "
+                "Left unset, the prompt makes no mention of one."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Continue the text read from standard input, printing chunks as they arrive.
 
@@ -426,6 +437,7 @@ def generate(
                     selection=at_selection,
                     prefix_share=svc.defaults.prefix_share,
                     send_selection=svc.defaults.send_selection,
+                    synopsis=synopsis,
                 )
             )
         except prompt.CursorOutOfRange as error:
@@ -442,6 +454,7 @@ def generate(
             cursor=at_cursor,
             selection=at_selection,
             send_selection=send_selection,
+            synopsis=synopsis,
         )
     )
 
@@ -562,6 +575,7 @@ async def _stream(
     cursor: prompt.Cursor | None = None,
     selection: prompt.CursorRange | None = None,
     send_selection: bool | None = None,
+    synopsis: str = "",
 ) -> None:
     started = time.monotonic()
     first_chunk_at: float | None = None
@@ -569,7 +583,7 @@ async def _stream(
 
     try:
         async for chunk in service(think, send_selection).stream(
-            model, text, cursor=cursor, selection=selection
+            model, text, cursor=cursor, selection=selection, synopsis=synopsis
         ):
             if first_chunk_at is None:
                 first_chunk_at = time.monotonic()
