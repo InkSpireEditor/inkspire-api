@@ -280,11 +280,7 @@ class LLMService:
         """
         config, name = self.parse_model(model)
         native = config.protocol is Protocol.ollama
-        url = (
-            f"{config.url.rstrip('/')}/api/chat"
-            if native
-            else endpoint(config.url, "chat/completions")
-        )
+        url = _chat_url(config, native=native)
         resolved = options if options is not None else self.defaults
 
         try:
@@ -310,6 +306,46 @@ class LLMService:
         except httpx.HTTPError as error:
             raise LLMError(f"Provider is unreachable: {error}") from error
 
+    async def complete(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        options: GenerationOptions | None = None,
+    ) -> str:
+        """Answers `prompt` in one response, for something short enough that
+        streaming it would buy nothing -- a proposed chapter title, today.
+
+        `prompt` arrives already rendered: unlike `stream`, this knows nothing about
+        `PromptContext` or any template, since what a title call sends is not the
+        continuation/fill-in-the-middle/rewrite prompt `prompt_lib.assemble` builds.
+        `options` defaults to `self.defaults` the same way `stream`'s does.
+
+        Raises `LLMError` if the provider cannot be reached, rejects the request, or
+        answers nothing usable, and `UnknownModel` for a model naming no configured
+        provider.
+        """
+        config, name = self.parse_model(model)
+        native = config.protocol is Protocol.ollama
+        url = _chat_url(config, native=native)
+        resolved = options if options is not None else self.defaults
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, transport=self.transport
+            ) as client:
+                response = await client.post(
+                    url,
+                    headers=headers(config),
+                    json=self._chat_payload(
+                        name, prompt, native=native, options=resolved, stream=False
+                    ),
+                )
+                await _raise_for_status(response)
+                return _answer(response.json(), native=native)
+        except httpx.HTTPError as error:
+            raise LLMError(f"Provider is unreachable: {error}") from error
+
     def _payload(
         self,
         model: str,
@@ -329,12 +365,30 @@ class LLMService:
             send_selection=options.send_selection,
         )
         rendered = prompt_lib.render(context)
+        return self._chat_payload(model, rendered, native=native, options=options, stream=True)
+
+    def _chat_payload(
+        self,
+        model: str,
+        rendered: str,
+        *,
+        native: bool,
+        options: GenerationOptions,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """The provider payload for one already-rendered prompt.
+
+        `stream` is `True` from `_payload` (a generation) and `False` from
+        `complete` (a one-shot answer) -- the only difference between the two call
+        sites, since everything below is about the protocol, not about what is being
+        asked.
+        """
         messages = [{"role": "user", "content": rendered}]
         if not native:
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
-                "stream": True,
+                "stream": stream,
                 "temperature": options.temperature,
             }
             return payload
@@ -350,7 +404,7 @@ class LLMService:
         payload = {
             "model": model,
             "messages": messages,
-            "stream": True,
+            "stream": stream,
             "options": sampling,
         }
         if options.think is not None:
@@ -437,10 +491,31 @@ def native_event(line: str) -> Event | None:
     return Event(message.get("content") or "", payload.get("done_reason"))
 
 
+def _answer(payload: dict[str, Any], *, native: bool) -> str:
+    """The text of one non-streamed chat response, native Ollama or chat-completions.
+
+    Raises `LLMError` for a shape with neither -- `complete`'s equivalent of `_events`
+    raising for a stream that produced nothing.
+    """
+    if native:
+        content = (payload.get("message") or {}).get("content")
+    else:
+        choices = payload.get("choices") or []
+        content = (choices[0].get("message") or {}).get("content") if choices else None
+    if not content:
+        raise LLMError("The model answered with nothing usable.")
+    return content
+
+
 def endpoint(base_url: str, path: str) -> str:
     """Builds an endpoint URL, tolerating a base that already ends in `/v1` or `/`."""
     base = base_url.rstrip("/").removesuffix("/v1")
     return f"{base}/v1/{path}"
+
+
+def _chat_url(config: ProviderConfig, *, native: bool) -> str:
+    """The chat endpoint for `config`, used by both `stream` and `complete`."""
+    return f"{config.url.rstrip('/')}/api/chat" if native else endpoint(config.url, "chat/completions")
 
 
 def headers(config: ProviderConfig) -> dict[str, str]:
@@ -545,6 +620,19 @@ async def get_defaults(service: ServiceDep) -> GenerationOptions:
     per-request override in `GenerateRequest` never changes what this answers.
     """
     return service.defaults
+
+
+@router.get("/features")
+async def get_features(settings: SettingsDep) -> dict[str, bool]:
+    """Which optional, small-model-backed features this installation offers.
+
+    Not a field on `/defaults`, which answers `GenerationOptions` -- a capability is
+    not one generation's setting, and adding one here would change that pinned
+    response shape for something unrelated to it. `title` is on once
+    `INKSPIRE_LLM_SMALL_MODEL` is configured; api#18's summary adds a second key here
+    rather than a setting of its own.
+    """
+    return {"title": settings.llm_small_model is not None}
 
 
 EMPTY_FILE = "Nothing to continue: the file is empty."

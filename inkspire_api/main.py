@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import auth, documents, files, llm, lore, repository, timelines
+from . import auth, documents, files, llm, lore, repository, timelines, titles
 from .deps import CurrentUser, current_user
 from .settings import Settings, get_settings
 from .fs import Conflict, Malformed, NotFound, StorageError
@@ -138,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(llm.router)
     api.include_router(llm.stories_router)
     api.include_router(llm.notes_router)
+    api.include_router(titles.router)
     api.include_router(repository.router)
     api.include_router(repository.history_router)
     application.include_router(api)

@@ -1,0 +1,30 @@
+You are a skilled writer helping out a fellow writer.
+
+Propose a title for the chapter below: a few words, evocative rather than a plain
+summary of events, that could sit on its own above the text.
+{%- set current_para = "" -%}
+{%- if ctx.current_title -%}
+{%- set current_para -%}
+Its current title is "{{ ctx.current_title }}". Propose a different one: not a
+rewording, a synonym, or a trivial variation of it -- something that reads
+differently and approaches the chapter from a different angle. Be creative.
+If the current title contains some kind of numbering and/or formatting, keep it intact.
+{%- endset -%}
+{%- endif -%}
+{%- set instruction_para = "" -%}
+{%- if ctx.instruction -%}
+{%- set instruction_para -%}
+The writer adds: {{ ctx.instruction }}
+{%- endset -%}
+{%- endif -%}
+{% set extra = [current_para, instruction_para] | select | join("\n\n") %}
+{% if extra %}
+{{ extra }}
+{% endif %}
+- Answer with the title alone: no preamble, no commentary, no quotation marks
+  around it, and no alternatives -- one title and nothing else.
+- Write plain text only: no Markdown, no HTML, no trailing punctuation.
+- Match the language the chapter is written in.
+
+Chapter:
+{{ ctx.prose -}}

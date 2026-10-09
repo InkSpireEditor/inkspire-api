@@ -16,6 +16,7 @@ no account and no HTTP in the way:
 
     inkspire llm models
     inkspire llm generate -m local-ollama/llama3 < chapter.ink
+    inkspire llm title < chapter.ink
 
 The `.ink` files themselves, since the API is forgiving about a header it cannot read
 and will show such a file under its filename rather than hide it:
@@ -45,7 +46,7 @@ import typer
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from . import ink, prompt, provenance, repository
+from . import ink, prompt, provenance, repository, titles
 from .db import get_sessionmaker
 from .fs import write_atomically
 from .llm import LLMError, LLMService, UnknownModel
@@ -443,6 +444,96 @@ def generate(
             send_selection=send_selection,
         )
     )
+
+
+@llm_app.command("title")
+def title_command(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Model to ask, as listed by `llm models`. Left unset, "
+                "INKSPIRE_LLM_SMALL_MODEL applies -- the same model the API's "
+                "title route uses."
+            ),
+        ),
+    ] = None,
+    *,
+    current_title: Annotated[
+        str,
+        typer.Option(
+            "--current-title",
+            "-t",
+            help=(
+                "The chapter's title already, as the dice button would send. Left "
+                "unset, the prompt makes no mention of one -- the same as a chapter "
+                "with no title at all."
+            ),
+        ),
+    ] = "",
+    instruction: Annotated[
+        str,
+        typer.Option(
+            "--instruction",
+            "-i",
+            help=(
+                "A short steering note, as the title-edit modal's own field would "
+                "send -- \"make it ominous\", say. Left unset, the prompt makes no "
+                "mention of one, the same as the dice button's own plain roll."
+            ),
+        ),
+    ] = "",
+    show_prompt: Annotated[
+        bool,
+        typer.Option("--show-prompt", help="Print the rendered prompt and ask nothing."),
+    ] = False,
+) -> None:
+    """Propose a title for the chapter read from standard input.
+
+        inkspire llm title < chapter.ink
+        inkspire llm title --current-title "The Wax Still Held" --show-prompt < chapter.ink
+        inkspire llm title --instruction "make it ominous" --show-prompt < chapter.ink
+
+    Wrapped in the same prompt the API's title route sends (`titles.py`), so what a
+    model answers here is what a writer would be offered through the dice button.
+    Always asks with thinking disabled, as the route does -- there is no --think
+    here. Output is the cleaned title alone; progress goes nowhere, since this is
+    one short answer rather than a stream.
+    """
+    text = sys.stdin.read()
+    if not text.strip():
+        fail("No text on standard input. Pipe a file or type text and end with Ctrl-D.")
+
+    svc = service(think=False)
+    context = titles.assemble_title(
+        text,
+        budget=svc.defaults.prompt_budget,
+        current_title=current_title,
+        instruction=instruction,
+    )
+    rendered = titles.render_title(context)
+
+    if show_prompt:
+        typer.echo(rendered)
+        return
+
+    chosen_model = model or get_settings().llm_small_model
+    if chosen_model is None:
+        fail("No model given and INKSPIRE_LLM_SMALL_MODEL is unset.")
+        raise AssertionError  # unreachable: fail() exits
+
+    try:
+        raw = asyncio.run(svc.complete(chosen_model, rendered))
+    except (UnknownModel, LLMError) as error:
+        fail(str(error))
+        raise AssertionError from error  # unreachable: fail() exits
+
+    cleaned = titles.clean_title(raw)
+    if not cleaned:
+        fail("The model answered with nothing usable as a title.")
+    typer.echo(cleaned)
 
 
 def _parse_select(select_range: str, text: str) -> prompt.CursorRange:

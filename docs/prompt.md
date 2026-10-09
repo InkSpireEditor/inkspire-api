@@ -268,6 +268,90 @@ whole file it just finished streaming into — is real, and is not what this cha
 goes away with api#13's paragraph-level diff, which turns that save into a few dozen bytes
 instead of the whole document.
 
+## A second prompt: proposing a title (api#25)
+
+`POST /api/stories/file/{id}/title` is not a fourth branch of the prompt above. A title is a
+different question — not a continuation, not a rewrite, nothing with a caret or a selection —
+and answering it with a few words is a different shape of request from streaming prose, so it
+gets its own module (`titles.py`), its own context (`TitleContext`), and its own template
+(`templates/title.j2`). Folding it into `PromptContext` and `prompt.j2` instead would mean a
+fourth branch keyed on some new flag, and every pinned case in `tests/data/prompts.json`
+re-verified for a question that was never about continuing or rewriting anything.
+
+`TitleContext` carries three things: the chapter's own text, trimmed from the *head* rather
+than the tail (a chapter's opening is what it is about, where a continuation's prefix is
+trimmed from the tail since what matters there is what comes right before the caret); the
+chapter's *current* title, read from its own header (`scanner.file(id).name`, not the body);
+and the writer's own `instruction`, from the title-edit modal's own field (`Tree.vue`,
+frontend) — the dice button itself sends none. The second field exists because the first
+version of this route had no way to tell the model a title was already proposed, so a reroll
+tended to answer with a trivial reword of the first answer instead of a genuinely different
+one. The third exists because knowing what *not* to repeat still leaves the model guessing at
+what the writer actually wants; a short, literal instruction — "something ominous," "shorter"
+— says so directly, for when the plain roll hasn't been satisfying.
+
+Both optional fields render as paragraphs ahead of the bullet list, and both paragraphs'
+actual wording lives in `title.j2` itself, not in Python — a deliberate choice: the whole
+point of a template is that its prose is something to edit in place, not something baked into
+a Python string a change here would have to touch instead. The first attempt at this moved
+the current-title paragraph's wording into a `TitleContext.extra` property in `titles.py`,
+joining it with the instruction paragraph there. That fixed the whitespace problem below, but
+at the cost of the one thing this template exists for — a line like "Be creative" or the
+numbering/formatting note was no longer something to add by editing `title.j2`, and from that
+file's own point of view, both had simply vanished. Reverted, in favour of doing the same join
+*inside* the template:
+
+```jinja
+{%- set current_para = "" -%}
+{%- if ctx.current_title -%}
+{%- set current_para -%}
+Its current title is "{{ ctx.current_title }}" ...
+{%- endset -%}
+{%- endif -%}
+{%- set instruction_para = "" -%}
+{%- if ctx.instruction -%}
+{%- set instruction_para -%}
+The writer adds: {{ ctx.instruction }}
+{%- endset -%}
+{%- endif -%}
+{% set extra = [current_para, instruction_para] | select | join("\n\n") %}
+{% if extra %}
+{{ extra }}
+{% endif %}
+```
+
+Each optional paragraph is captured into its own variable with a `{% set %}...{% endset %}`
+block — Jinja's own way to assign a rendered block of text to a name rather than emitting it
+immediately — so its wording is ordinary template prose, editable exactly where the rest of
+the template's prose is. `select` (Jinja's truthy filter, the same idea as Python's
+`filter(None, ...)`) drops whichever paragraph is empty, and `join("\n\n")` puts one blank
+line between whatever is left; the result renders through the one shape already proven not to
+double a blank line when nothing is left at all: `{% if extra %}{{ extra }}{% endif %}`. All
+of the `{% set %}`/`{% if %}` plumbing around the two captures is fully whitespace-stripped on
+both sides (`{%-`/`-%}` throughout), so none of it is visible in the output regardless of
+which, if either, paragraph exists — found by rendering every one of the four combinations,
+not by reading the markers, the same discipline the rewrite branch's own wording fix (api#24)
+was held to, and the reason the original two-independent-`{% if %}` attempt's bug was caught
+at all rather than shipped.
+
+It is also not streamed. `LLMService.stream()` exists for prose arriving over several seconds;
+a title is a handful of words arriving essentially at once, so `LLMService.complete()` answers
+it in one response instead — the same provider payload shape, `"stream": false` rather than
+`true`, decoded from one JSON body rather than a sequence of chunks.
+
+It reads `INKSPIRE_LLM_SMALL_MODEL`, never the writer's own selected model: that model may be
+hosted and metered, and was chosen for prose, not for a one-line side question. Unset, the route
+refuses with 409 rather than silently falling back to whatever the writer picked. The same
+setting is meant for api#18's own background summary call — one knob for every short,
+non-generation call this server makes, not one per feature. Always asks with `think=False`,
+regardless of `INKSPIRE_LLM_THINK`: a title has no business reasoning out loud, and a small
+model with a small context window can spend all of it thinking and answer nothing.
+
+A model's answer is not a title until `clean_title` has run on it — a quote, a `Title:` prefix,
+a trailing full stop, or three alternatives on separate lines are all things a small model
+reliably adds. `clean_title` is pure and tested on its own, separately from the route that calls
+it.
+
 ## Not yet built
 
 - **Real token counting.** The budget is a character count calibrated on English; nothing here
@@ -277,6 +361,8 @@ instead of the whole document.
   nothing reads what a model can actually do and suggests or enforces a ceiling from it.
 - **A story's synopsis, a notes folder's context, a chapter or character summary, retrieved
   lore, the writer's own instruction.** Each is a field on `PromptContext` and a block in
-  `prompt.j2`; none exist yet. See api#17, api#18, api#19/frontend#24, api#15.
+  `prompt.j2`; none exist yet. See api#17, api#18, api#19/frontend#24, api#15. A story's synopsis
+  is the natural second field on `TitleContext` too, by the same reasoning, once something
+  needs it there.
 - **A ceiling on how much may be rewritten at once.** Decided against, not merely unbuilt —
   see "The selection" above.

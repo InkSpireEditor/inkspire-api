@@ -107,5 +107,35 @@
       "selection_words": 6,
       "prompt": "You are a skilled writer helping out a fellow writer.\n\nRewrite the passage marked below. It is the whole of the text.\n\n- Write roughly 6 words, give or take a few: about the length\n  of what is being replaced. Do not pad it out to reach that number, and do not cut\n  it short to stay under it.\n- Write only the replacement: no preamble, no commentary, no quotation marks\n  around it, and nothing repeated from either side.\n- Write plain text and Markdown only. Never emit HTML: break a line with a real\n  newline character, never with a <br> tag.\n- Match the existing voice, tense and formatting exactly, including any Markdown.\n  If the text is verse, keep the line breaks and metre of the lines around it.\n\nPassage to replace:\n[REPLACE THIS]\n"
     }
+  },
+  "title": {
+    "title_plain": {
+      "prose": "The lantern outside the house had not been lit.",
+      "prompt": "You are a skilled writer helping out a fellow writer.\n\nPropose a title for the chapter below: a few words, evocative rather than a plain\nsummary of events, that could sit on its own above the text.\n\n- Answer with the title alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives -- one title and nothing else.\n- Write plain text only: no Markdown, no HTML, no trailing punctuation.\n- Match the language the chapter is written in.\n\nChapter:\nThe lantern outside the house had not been lit."
+    },
+    "title_quotes": {
+      "prose": "\"Don't,\" she said. 'Not tonight.' <b>&amp;</b> & < >  ",
+      "prompt": "You are a skilled writer helping out a fellow writer.\n\nPropose a title for the chapter below: a few words, evocative rather than a plain\nsummary of events, that could sit on its own above the text.\n\n- Answer with the title alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives -- one title and nothing else.\n- Write plain text only: no Markdown, no HTML, no trailing punctuation.\n- Match the language the chapter is written in.\n\nChapter:\n\"Don't,\" she said. 'Not tonight.' <b>&amp;</b> & < >  "
+    },
+    "title_cjk": {
+      "prose": "闇の中で、彼女は待っていた。",
+      "prompt": "You are a skilled writer helping out a fellow writer.\n\nPropose a title for the chapter below: a few words, evocative rather than a plain\nsummary of events, that could sit on its own above the text.\n\n- Answer with the title alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives -- one title and nothing else.\n- Write plain text only: no Markdown, no HTML, no trailing punctuation.\n- Match the language the chapter is written in.\n\nChapter:\n闇の中で、彼女は待っていた。"
+    },
+    "title_with_current": {
+      "prose": "The lantern outside the house had not been lit.",
+      "current_title": "The Wax Still Held",
+      "prompt": "You are a skilled writer helping out a fellow writer.\n\nPropose a title for the chapter below: a few words, evocative rather than a plain\nsummary of events, that could sit on its own above the text.\n\nIts current title is \"The Wax Still Held\". Propose a different one: not a\nrewording, a synonym, or a trivial variation of it -- something that reads\ndifferently and approaches the chapter from a different angle. Be creative.\nIf the current title contains some kind of numbering and/or formatting, keep it intact.\n\n- Answer with the title alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives -- one title and nothing else.\n- Write plain text only: no Markdown, no HTML, no trailing punctuation.\n- Match the language the chapter is written in.\n\nChapter:\nThe lantern outside the house had not been lit."
+    },
+    "title_with_instruction": {
+      "prose": "The lantern outside the house had not been lit.",
+      "instruction": "make it more ominous",
+      "prompt": "You are a skilled writer helping out a fellow writer.\n\nPropose a title for the chapter below: a few words, evocative rather than a plain\nsummary of events, that could sit on its own above the text.\n\nThe writer adds: make it more ominous\n\n- Answer with the title alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives -- one title and nothing else.\n- Write plain text only: no Markdown, no HTML, no trailing punctuation.\n- Match the language the chapter is written in.\n\nChapter:\nThe lantern outside the house had not been lit."
+    },
+    "title_with_current_and_instruction": {
+      "prose": "The lantern outside the house had not been lit.",
+      "current_title": "The Wax Still Held",
+      "instruction": "make it more ominous",
+      "prompt": "You are a skilled writer helping out a fellow writer.\n\nPropose a title for the chapter below: a few words, evocative rather than a plain\nsummary of events, that could sit on its own above the text.\n\nIts current title is \"The Wax Still Held\". Propose a different one: not a\nrewording, a synonym, or a trivial variation of it -- something that reads\ndifferently and approaches the chapter from a different angle. Be creative.\nIf the current title contains some kind of numbering and/or formatting, keep it intact.\n\nThe writer adds: make it more ominous\n\n- Answer with the title alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives -- one title and nothing else.\n- Write plain text only: no Markdown, no HTML, no trailing punctuation.\n- Match the language the chapter is written in.\n\nChapter:\nThe lantern outside the house had not been lit."
+    }
   }
 }

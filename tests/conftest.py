@@ -47,6 +47,10 @@ def settings(tmp_path) -> Settings:
         jwt_secret="test-only-signing-secret-padded-to-32-bytes",
         bcrypt_rounds=4,
         login_max_attempts=0,
+        # Pinned off, or a developer with one configured in their own .env.local
+        # (to try the dice button by hand) would see titles.py's tests behave
+        # differently on their machine than anywhere else.
+        llm_small_model=None,
     )
 
 
@@ -419,6 +423,7 @@ def llm_settings(
     think: bool | None = None,
     num_ctx: int | None = None,
     ttl: int = 3600,
+    small_model: str | None = None,
 ) -> Settings:
     """Settings with one provider, named `p`, reachable at https://provider.test."""
     providers = tmp_path / "providers.yaml"
@@ -432,6 +437,7 @@ def llm_settings(
         llm_think=think,
         llm_num_ctx=num_ctx,
         llm_cache_ttl=ttl,
+        llm_small_model=small_model,
     )
 
 
@@ -450,6 +456,13 @@ def sse_body(*events: dict) -> str:
 def delta(text: str) -> dict:
     """One chat-completions content chunk."""
     return {"choices": [{"delta": {"content": text}, "finish_reason": None}]}
+
+
+def answer_body(text: str, *, native: bool = False) -> str:
+    """A complete, non-streamed chat response body, for `LLMService.complete`."""
+    if native:
+        return json.dumps({"message": {"content": text}})
+    return json.dumps({"choices": [{"message": {"content": text}}]})
 
 
 def add_refresh_token(

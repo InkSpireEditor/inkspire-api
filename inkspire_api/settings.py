@@ -101,6 +101,12 @@ class Settings(BaseSettings):
 
     llm_cache_ttl: int = 3600
 
+    # A small model for short answers that are not the writer's prose: a proposed
+    # chapter title today, api#18's summary of dropped context next. Unset, and no
+    # such feature is offered at all -- the writer's own model is deliberately not a
+    # fallback, since it may be hosted and metered and they chose it for prose.
+    llm_small_model: str | None = None
+
     # Generation requests per authenticated account. Zero disables the limit.
     llm_limit: int = 20
     llm_interval: int = 60

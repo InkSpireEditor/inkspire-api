@@ -30,6 +30,7 @@ from tests.conftest import (
     EMAIL,
     PASSWORD,
     add_refresh_token,
+    answer_body,
     delta,
     llm_settings,
     sse_body,
@@ -433,7 +434,13 @@ def ask(monkeypatch, tmp_path):
     The returned callable takes the handler, the arguments, and what to put on standard
     input, and hands back both the click result and the request bodies the provider saw.
     """
-    def run(handler, *args: str, stdin: str = "", protocol: str = "openai"):
+    def run(
+        handler,
+        *args: str,
+        stdin: str = "",
+        protocol: str = "openai",
+        small_model: str | None = None,
+    ):
         seen: list[dict] = []
 
         def record(request: httpx.Request) -> httpx.Response:
@@ -441,7 +448,7 @@ def ask(monkeypatch, tmp_path):
                 seen.append(json.loads(request.content))
             return handler(request)
 
-        settings = llm_settings(tmp_path, protocol=protocol)
+        settings = llm_settings(tmp_path, protocol=protocol, small_model=small_model)
         monkeypatch.setattr(cli, "get_settings", lambda: settings)
         monkeypatch.setattr(
             cli,
@@ -689,6 +696,150 @@ def test_a_provider_that_writes_nothing_is_an_error(ask) -> None:
     )
     assert result.exit_code == 1
     assert "no text" in result.output
+
+
+# --- llm title ---------------------------------------------------------------
+
+
+def test_title_show_prompt_asks_nothing(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Propose a title" in result.output
+    assert TEXT in result.output
+    assert not seen
+
+
+def test_title_current_title_reaches_the_prompt(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "--current-title",
+        "The Wax Still Held",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert 'Its current title is "The Wax Still Held"' in result.output
+
+
+def test_title_with_no_current_title_mentions_none(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert "current title" not in result.output
+
+
+def test_title_instruction_reaches_the_prompt(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "--instruction",
+        "make it ominous",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert "The writer adds: make it ominous" in result.output
+
+
+def test_title_with_no_instruction_mentions_none(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert "writer adds" not in result.output
+
+
+def test_title_writes_the_cleaned_title_to_stdout(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body('"The Wax Still Held"')),
+        "title",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "The Wax Still Held"
+
+
+def test_title_sends_the_text_from_stdin_inside_the_prompt(ask) -> None:
+    _, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),
+        "title",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert TEXT in seen[0]["messages"][0]["content"]
+    assert seen[0]["stream"] is False
+
+
+def test_title_falls_back_to_the_configured_small_model(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),
+        "title",
+        stdin=TEXT,
+        small_model="p/small",
+    )
+    assert result.exit_code == 0, result.output
+    assert seen[0]["model"] == "small"
+
+
+def test_title_with_no_model_given_and_none_configured_is_an_error(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "INKSPIRE_LLM_SMALL_MODEL" in result.output
+    assert not seen
+
+
+def test_title_empty_input_is_an_error(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "-m",
+        "p/model",
+        stdin="   ",
+    )
+    assert result.exit_code == 1
+    assert "No text" in result.output
+
+
+def test_title_an_unknown_model_is_reported_without_a_traceback(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A Title")),  # pragma: no cover
+        "title",
+        "-m",
+        "absent/model",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "absent" in result.output
+
+
+def test_title_with_nothing_usable_is_an_error(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("   ")),
+        "title",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "nothing usable" in result.output
 
 
 # --- ink check -------------------------------------------------------------

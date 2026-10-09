@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import (
     EMAIL,
     PASSWORD,
+    answer_body,
     chapter_id,
     delta,
     entry_named,
@@ -40,7 +41,7 @@ from inkspire_api.llm import (
     native_event,
     sse_event,
 )
-from inkspire_api.settings import Settings
+from inkspire_api.settings import Settings, get_settings
 
 #: The prompt sent for a set of inputs, recorded so a change to the template shows up
 #: as a failure here rather than as a change in what the models are asked. `fim` and
@@ -51,10 +52,13 @@ _PROMPTS: dict[str, Any] = json.loads(
     (Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8")
 )
 CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
-    name: case for name, case in _PROMPTS.items() if name not in ("fim", "rewrite")
+    name: case for name, case in _PROMPTS.items() if name not in ("fim", "rewrite", "title")
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
 REWRITE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["rewrite"]
+#: Pinned here, alongside every other prompt shape, but rendered by
+#: `titles.render_title` rather than `prompt_lib.render` -- see test_titles.py.
+TITLE_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["title"]
 
 #: `Settings`' own default, kept as a constant here so a test that trims against it
 #: shows its intent rather than a bare 10000.
@@ -471,6 +475,63 @@ async def test_an_empty_completion_without_that_reason_is_not_an_error(
     assert await collect(llm_service(tmp_path, handler).stream("p/m", "t")) == []
 
 
+# --- complete(): a non-streamed answer --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_posts_without_streaming_and_returns_the_text(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        body = json.loads(request.content)
+        assert body["stream"] is False
+        return httpx.Response(200, text=answer_body("A Title"))
+
+    assert await llm_service(tmp_path, handler).complete("p/model", "prompt") == "A Title"
+
+
+@pytest.mark.asyncio
+async def test_complete_against_the_native_protocol(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat"
+        body = json.loads(request.content)
+        assert body["stream"] is False
+        return httpx.Response(200, text=answer_body("A Title", native=True))
+
+    answer = await llm_service(tmp_path, handler, protocol="ollama").complete("p/model", "prompt")
+    assert answer == "A Title"
+
+
+@pytest.mark.asyncio
+async def test_complete_sends_think_false_when_given(tmp_path: Path) -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=answer_body("x", native=True))
+
+    service = llm_service(tmp_path, handler, protocol="ollama")
+    await service.complete("p/model", "prompt", options=service.defaults.overlay(think=False))
+    assert seen["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_for_a_response_with_nothing_usable(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=json.dumps({"choices": [{"message": {}}]}))
+
+    with pytest.raises(LLMError, match="nothing usable"):
+        await llm_service(tmp_path, handler).complete("p/model", "prompt")
+
+
+@pytest.mark.asyncio
+async def test_complete_wraps_a_provider_failure(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(LLMError, match="HTTP 500"):
+        await llm_service(tmp_path, handler).complete("p/model", "prompt")
+
+
 # --- listing models --------------------------------------------------------
 
 
@@ -609,6 +670,23 @@ def test_the_defaults_endpoint_answers_the_servers_own_settings(llm_client) -> N
 
 def test_listing_defaults_requires_authentication(client: TestClient) -> None:
     assert client.get("/api/llm/defaults").status_code == 401
+
+
+def test_features_reports_title_off_with_no_small_model(llm_client) -> None:
+    response = llm_client.get("/api/llm/features")
+    assert response.status_code == 200
+    assert response.json() == {"title": False}
+
+
+def test_features_reports_title_on_once_a_small_model_is_set(app, settings, logged_in) -> None:
+    app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+        update={"llm_small_model": "p/model"}
+    )
+    assert logged_in.get("/api/llm/features").json() == {"title": True}
+
+
+def test_listing_features_requires_authentication(client: TestClient) -> None:
+    assert client.get("/api/llm/features").status_code == 401
 
 
 def test_a_per_request_temperature_reaches_the_provider(
