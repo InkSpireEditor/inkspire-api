@@ -17,6 +17,7 @@ no account and no HTTP in the way:
     inkspire llm models
     inkspire llm generate -m local-ollama/llama3 < chapter.ink
     inkspire llm title < chapter.ink
+    inkspire llm summary < chapter.ink
 
 The `.ink` files themselves, since the API is forgiving about a header it cannot read
 and will show such a file under its filename rather than hide it:
@@ -46,7 +47,7 @@ import typer
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from . import ink, prompt, provenance, repository, titles
+from . import context_summary, ink, prompt, provenance, repository, summaries, titles
 from .db import get_sessionmaker
 from .fs import write_atomically
 from .llm import LLMError, LLMService, UnknownModel
@@ -546,6 +547,84 @@ def title_command(
     cleaned = titles.clean_title(raw)
     if not cleaned:
         fail("The model answered with nothing usable as a title.")
+    typer.echo(cleaned)
+
+
+@llm_app.command("summary")
+def summary_command(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Model to ask, as listed by `llm models`. Left unset, "
+                "INKSPIRE_LLM_SMALL_MODEL applies -- the same model the background "
+                "context-summary call uses (api#18)."
+            ),
+        ),
+    ] = None,
+    *,
+    budget: Annotated[
+        int,
+        typer.Option(
+            "--budget",
+            help=(
+                "The prompt budget to trim standard input against, as "
+                "INKSPIRE_LLM_PROMPT_BUDGET does for a real generation -- what this "
+                "command summarises is whatever a continuation at this budget would "
+                "drop, not the whole of standard input."
+            ),
+        ),
+    ] = 10_000,
+    show_prompt: Annotated[
+        bool,
+        typer.Option("--show-prompt", help="Print the rendered prompt and ask nothing."),
+    ] = False,
+) -> None:
+    """Summarise what a continuation at `--budget` characters would drop from the
+    chapter read from standard input.
+
+        inkspire llm summary < chapter.ink
+        inkspire llm summary --budget 2000 --show-prompt < chapter.ink
+
+    The only way to iterate on `templates/summary.j2` against a real model without
+    saving a file large enough to trigger the background call's own trigger metric
+    (`context_summary.is_due`). Prints the dropped character count to standard error
+    alongside the answer -- the same number `is_due` compares a later trim's own
+    count against. Always asks with thinking disabled, as the background call does.
+    """
+    text = sys.stdin.read()
+    if not text.strip():
+        fail("No text on standard input. Pipe a file or type text and end with Ctrl-D.")
+
+    dropped_text = context_summary.dropped(text, budget)
+    if not dropped_text:
+        fail(f"Nothing would be dropped: the text is within the {budget}-character budget.")
+
+    context = summaries.assemble_summary(dropped_text, budget=budget)
+    rendered = summaries.render_summary(context)
+
+    if show_prompt:
+        typer.echo(rendered)
+        return
+
+    chosen_model = model or get_settings().llm_small_model
+    if chosen_model is None:
+        fail("No model given and INKSPIRE_LLM_SMALL_MODEL is unset.")
+        raise AssertionError  # unreachable: fail() exits
+
+    svc = service(think=False)
+    try:
+        raw = asyncio.run(svc.complete(chosen_model, rendered))
+    except (UnknownModel, LLMError) as error:
+        fail(str(error))
+        raise AssertionError from error  # unreachable: fail() exits
+
+    cleaned = summaries.clean_summary(raw)
+    if not cleaned:
+        fail("The model answered with nothing usable as a summary.")
+    typer.secho(f"{len(dropped_text)} characters would be dropped.", fg=typer.colors.BLUE, err=True)
     typer.echo(cleaned)
 
 

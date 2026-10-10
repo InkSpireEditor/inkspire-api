@@ -2,11 +2,11 @@
 """What a generation asks a model, assembled server-side from the file on disk.
 
 `PromptContext` is every section the template can render: `prefix`, `suffix`,
-`selection_words` and a story's synopsis or a notes folder's context (`synopsis`,
-api#17). A chapter or character summary, retrieved lore and the writer's own
-instruction are each a future field here plus a guarded block in
-`templates/prompt.j2`, and nothing else changes: see `docs/prompt.md` for the order
-they are meant to land in.
+`selection_words`, a story's synopsis or a notes folder's context (`synopsis`, api#17)
+and a summary of whatever this request's own trim just dropped from the prefix
+(`summary`, api#18). Retrieved lore and the writer's own instruction are each a future
+field here plus a guarded block in `templates/prompt.j2`, and nothing else changes: see
+`docs/prompt.md` for the order they are meant to land in.
 
 A caret splits the body into a prefix and a suffix; with no caret the whole body is
 the prefix and the suffix is empty, which is a continuation -- today's only mode and
@@ -67,10 +67,15 @@ class PromptContext:
     folder's own context -- both the same `Folder.summary` in memory, whichever
     applies to the file being generated from, or `""` for a one-shot or a root-level
     note, neither of which has one. Unlike the other fields, it is never trimmed or
-    charged against the budget: short by construction at the source. Each later
-    section is a field added here, never a change to an existing one, so the
-    template and its pinned cases (`tests/data/prompts.json`) are affected only by
-    the section actually being rendered.
+    charged against the budget: short by construction at the source. `summary`
+    (api#18) is a summary of whatever paragraphs `trim_to_tail` just cut off the
+    *prefix* in this very request -- not the stored value computed on the last save,
+    which may describe more or less than this request's own budget happens to drop.
+    `""` both when nothing was trimmed (the stored summary, if any, is then describing
+    text that is already sitting in the prompt verbatim) and when nothing has been
+    stored yet. Each later section is a field added here, never a change to an
+    existing one, so the template and its pinned cases (`tests/data/prompts.json`) are
+    affected only by the section actually being rendered.
     """
 
     prefix: str
@@ -78,6 +83,7 @@ class PromptContext:
     selection_words: int | None = None
     selection: str | None = None
     synopsis: str = ""
+    summary: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -470,14 +476,20 @@ def _prose_budget(budget: int, shown: str | None) -> int:
 
 def _trim_sides(
     prefix_side: Side, suffix_side: Side, budget: int, prefix_share: float
-) -> tuple[str, str]:
+) -> tuple[str, str, bool]:
     """The prefix and the suffix, each already joined and trimmed to its share of
-    `budget` characters, as `(prefix, suffix)`."""
+    `budget` characters, as `(prefix, suffix, prefix_was_trimmed)`.
+
+    `prefix_was_trimmed` is what `assemble` uses to decide whether a stored context
+    summary (api#18) belongs in this prompt at all: a summary describes text this
+    trim actually cut, so it must not render once nothing was.
+    """
     suffix_body = provenance.join_paragraphs(*suffix_side)
     prefix_budget = _prefix_budget(budget, prefix_share, suffix_body)
-    trimmed_prefix = trim_to_tail(provenance.join_paragraphs(*prefix_side), prefix_budget)
+    prefix_body = provenance.join_paragraphs(*prefix_side)
+    trimmed_prefix = trim_to_tail(prefix_body, prefix_budget)
     trimmed_suffix = trim_to_head(suffix_body, budget - prefix_budget) if suffix_body else ""
-    return trimmed_prefix, trimmed_suffix
+    return trimmed_prefix, trimmed_suffix, trimmed_prefix != prefix_body
 
 
 def assemble(
@@ -489,6 +501,7 @@ def assemble(
     prefix_share: float = 0.75,
     send_selection: bool = False,
     synopsis: str = "",
+    summary: str = "",
 ) -> PromptContext:
     """The context for one generation: `body` split at `cursor` or `selection`, each
     side trimmed to its share of `budget` characters.
@@ -513,6 +526,13 @@ def assemble(
     it is short by construction at the source (the frontend's own
     `MAX_SUMMARY_LENGTH`).
 
+    `summary` (api#18) is the caller's stored summary of what an *earlier* trim
+    dropped, if any -- passed through to `PromptContext.summary` only when *this*
+    request's own trim actually cut the prefix, `""` otherwise. The file may have
+    shrunk since the summary was computed, in which case nothing is being trimmed
+    any more and a summary of it would describe text already sitting in the prompt
+    verbatim.
+
     Raises `ValueError` if both `cursor` and `selection` are given, and
     `CursorOutOfRange` (or its `InvertedRange` subclass) if either does not address
     `body`.
@@ -522,7 +542,7 @@ def assemble(
     prefix_side, suffix_side, passage = _resolve_sides(paragraphs, separators, anchor)
     shown = passage if send_selection else None
 
-    trimmed_prefix, trimmed_suffix = _trim_sides(
+    trimmed_prefix, trimmed_suffix, prefix_trimmed = _trim_sides(
         prefix_side, suffix_side, _prose_budget(budget, shown), prefix_share
     )
     return PromptContext(
@@ -531,6 +551,7 @@ def assemble(
         selection_words=count_words(passage) if passage is not None else None,
         selection=shown,
         synopsis=synopsis,
+        summary=summary if prefix_trimmed else "",
     )
 
 

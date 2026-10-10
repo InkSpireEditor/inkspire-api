@@ -25,9 +25,10 @@ what happens in the file. A key this module does not know is kept as it is, so a
 can add one and the application will not remove it.
 
 `ink:body` is the prose, and is opaque here. `ink:provenance` is per-character
-provenance keyed by paragraph hash, and is opaque here too — this module carries it
-from disk to the caller and back without reading it, which is what lets the format gain
-a section without this file changing.
+provenance keyed by paragraph hash, and `ink:context_summary` is a summary of whatever a
+generation's prompt budget last trimmed off the body (api#18); both are opaque here too —
+this module carries each from disk to the caller and back without reading it, which is
+what lets the format gain a section without this file changing.
 
 Two rules the rest of the application depends on:
 
@@ -75,8 +76,12 @@ SECTION_BODY = "body"
 #: Per-character provenance, keyed by paragraph hash. Opaque to this module.
 SECTION_PROVENANCE = "provenance"
 
+#: A summary of what a generation's prompt budget last trimmed off the body, and how
+#: much (api#18). Opaque to this module, the same way provenance is.
+SECTION_CONTEXT_SUMMARY = "context_summary"
+
 #: The section names the format defines. Any other is kept but not understood.
-KNOWN_SECTIONS = (SECTION_META, SECTION_BODY, SECTION_PROVENANCE)
+KNOWN_SECTIONS = (SECTION_META, SECTION_BODY, SECTION_PROVENANCE, SECTION_CONTEXT_SUMMARY)
 
 #: The header keys this module reads. Any other is kept but not understood.
 KNOWN_KEYS = ("title", "status", "summary")

@@ -55,6 +55,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.login_max_attempts, settings.login_interval
     )
     application.state.llm_limiter = RateLimiter(settings.llm_limit, settings.llm_interval)
+    # A separate budget from llm_limiter, api#18's own setting: a writer who has been
+    # generating heavily must not starve their own background context summaries.
+    application.state.summary_limiter = RateLimiter(settings.llm_limit, settings.llm_interval)
     application.state.llm_service = None
     application.state.scanner = None
     application.state.notes_scanner = None

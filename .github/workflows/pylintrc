@@ -26,5 +26,14 @@ max-locals=18
 # Maximum number of attributes for a class (see R0902).
 max-attributes=20
 
+# Maximum number of public methods for a class (see R0904). storage.Scanner gained
+# write_context_summary (api#18) alongside the write_document it pairs with.
+max-public-methods=21
+
+# Maximum number of lines in a module (see C0302). cli.py gains one CLI command per
+# generation-adjacent route -- `llm summary` (api#18) is the latest -- and each is a
+# handful of lines, not a reason to split the file.
+max-module-lines=1100
+
 [MESSAGES CONTROL]
 disable=C0301,W0603,W1203,C0103,C1803,R1705,R1720

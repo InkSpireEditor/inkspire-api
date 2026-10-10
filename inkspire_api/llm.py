@@ -36,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import prompt as prompt_lib
+from .context_summary import parse_section as parse_context_summary
 from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
 from .fs import MAX_FILE_BYTES
@@ -256,6 +257,7 @@ class LLMService:
         selection: prompt_lib.CursorRange | None = None,
         options: GenerationOptions | None = None,
         synopsis: str = "",
+        summary: str = "",
     ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
 
@@ -270,6 +272,11 @@ class LLMService:
         context, if the caller found one -- passed straight through to
         `prompt_lib.assemble`, which renders it above everything else when it is
         not empty.
+
+        `summary` (api#18) is the file's own stored summary of what an *earlier*
+        trim dropped, if any -- also passed straight through to `prompt_lib.assemble`,
+        which renders it only when *this* request's own trim actually cuts the
+        prefix.
 
         `options` is this one generation's settings -- temperature, the budget and
         its split, `num_ctx`, whether to think, and whether a rewrite sends the
@@ -306,6 +313,7 @@ class LLMService:
                         selection=selection,
                         options=resolved,
                         synopsis=synopsis,
+                        summary=summary,
                     ),
                 ) as response:
                     await _raise_for_status(response)
@@ -364,6 +372,7 @@ class LLMService:
         cursor: prompt_lib.Cursor | None = None,
         selection: prompt_lib.CursorRange | None = None,
         synopsis: str = "",
+        summary: str = "",
     ) -> dict[str, Any]:
         context = prompt_lib.assemble(
             text,
@@ -373,6 +382,7 @@ class LLMService:
             prefix_share=options.prefix_share,
             send_selection=options.send_selection,
             synopsis=synopsis,
+            summary=summary,
         )
         rendered = prompt_lib.render(context)
         return self._chat_payload(model, rendered, native=native, options=options, stream=True)
@@ -638,11 +648,25 @@ async def get_features(settings: SettingsDep) -> dict[str, bool]:
 
     Not a field on `/defaults`, which answers `GenerationOptions` -- a capability is
     not one generation's setting, and adding one here would change that pinned
-    response shape for something unrelated to it. `title` is on once
-    `INKSPIRE_LLM_SMALL_MODEL` is configured; api#18's summary adds a second key here
-    rather than a setting of its own.
+    response shape for something unrelated to it. `title` and `summary` are both on
+    once `INKSPIRE_LLM_SMALL_MODEL` is configured -- one setting governs both
+    features, so one condition answers both keys.
     """
-    return {"title": settings.llm_small_model is not None}
+    small_model_configured = settings.llm_small_model is not None
+    return {"title": small_model_configured, "summary": small_model_configured}
+
+
+def _stored_summary(section: str | None) -> str:
+    """A file's stored context-summary section (api#18) as the plain text
+    `_stream_generation` passes down, or `""` where there is none or it cannot be
+    read -- the same "nothing stored" reading `context_summary.parse_section` itself
+    gives an unreadable section. `prompt.assemble` decides on its own whether this
+    request's own trim is what actually renders it.
+    """
+    if section is None:
+        return ""
+    parsed = parse_context_summary(section)
+    return parsed.text if parsed is not None else ""
 
 
 EMPTY_FILE = "Nothing to continue: the file is empty."
@@ -696,13 +720,15 @@ async def _stream_generation(
     service: LLMService,
     *,
     synopsis: str = "",
+    summary: str = "",
 ) -> StreamingResponse:
     """Shared by both spaces: rate-limits, starts the stream, and turns a failure
     before the first chunk into an ordinary status code.
 
     `synopsis` (api#17) is the containing story's synopsis or notes folder's
     context, looked up by the caller -- this function knows nothing about either
-    root, so it only ever passes the string along.
+    root, so it only ever passes the string along. `summary` (api#18) is the
+    file's own stored context summary, looked up by the caller the same way.
 
     Each event is `{"delta": "..."}` with text to append, `{"error": "..."}` if the
     provider fails once chunks have already been sent, and `[DONE]` at the end.
@@ -726,6 +752,7 @@ async def _stream_generation(
         selection=anchor.selection,
         options=options,
         synopsis=synopsis,
+        summary=summary,
     )
     try:
         first = await anext(chunks, None)
@@ -783,13 +810,17 @@ async def generate_story(
     responsibility, not something checked here.
     """
     file = scanner.file(file_id)
-    text = scanner.read_document(file_id).body
+    document = scanner.read_document(file_id)
+    text = document.body
     if not text.strip():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_FILE)
     # A one-shot is a bare File, never a Chapter -- it belongs to no story, so it
     # has no synopsis to offer (api#17).
     synopsis = scanner.story(file.story_id).summary if isinstance(file, Chapter) else ""
-    return await _stream_generation(text, body, request, user, service, synopsis=synopsis)
+    summary = _stored_summary(document.context_summary)
+    return await _stream_generation(
+        text, body, request, user, service, synopsis=synopsis, summary=summary
+    )
 
 
 @notes_router.post("/file/{file_id}/generate")
@@ -804,9 +835,13 @@ async def generate_note(
 ) -> StreamingResponse:
     """The same, for a note."""
     note = notes.note(file_id)
-    text = notes.read_document(file_id).body
+    document = notes.read_document(file_id)
+    text = document.body
     if not text.strip():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_FILE)
     # A root-level note belongs to no folder, so it has no context to offer (api#17).
     synopsis = notes.folder(note.folder_id).summary if note.folder_id is not None else ""
-    return await _stream_generation(text, body, request, user, service, synopsis=synopsis)
+    summary = _stored_summary(document.context_summary)
+    return await _stream_generation(
+        text, body, request, user, service, synopsis=synopsis, summary=summary
+    )

@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from git import Repo
 
-from inkspire_api import provenance, repository
+from inkspire_api import llm, provenance, repository
 from inkspire_api.fs import MAX_FILE_BYTES
-from tests.conftest import chapter_id, make_folder, make_note, make_story
+from inkspire_api.settings import get_settings
+from inkspire_api.throttle import RateLimiter
+from tests.conftest import EMAIL, PASSWORD, answer_body, chapter_id, llm_service, make_folder, make_note, make_story
 
 CONTENT_TYPE = {"Content-Type": "text/plain"}
 
@@ -398,3 +401,168 @@ def test_a_document_needs_a_token(
         ).status_code
         == 401
     )
+
+
+# --- the background context-summary call (api#18) ---------------------------
+
+#: Over `Settings`' own default budget (10 000 characters), so a save of this body
+#: actually trims a prefix and the background call is due on the first save.
+LONG_BODY = ("Jane Doe is the narrator. " * 500) + "\n\nThe end approaches now."
+
+
+@pytest.fixture
+def summary_client(app, settings, tmp_path: Path, user):
+    """A logged-in client with a small model configured, whose provider answers
+    from a transport given per test -- `title_client`'s own fixture in
+    test_titles.py, for the one other route that reads `INKSPIRE_LLM_SMALL_MODEL`."""
+    handlers: dict = {}
+
+    def dispatch(request: httpx.Request) -> httpx.Response:
+        return handlers["handler"](request)
+
+    built = llm_service(tmp_path, dispatch, protocol="openai")
+    app.dependency_overrides[llm.get_service] = lambda: built
+    app.dependency_overrides[get_settings] = lambda: settings.model_copy(
+        update={"llm_small_model": "p/model"}
+    )
+
+    with TestClient(app) as client:
+        client.post("/auth", json={"username": EMAIL, "password": PASSWORD})
+        client.handlers = handlers  # type: ignore[attr-defined]
+        yield client
+
+
+def chapter_text(stories: Path) -> str:
+    return (stories / CHAPTER).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("space", ["stories", "notes"])
+def test_no_small_model_schedules_nothing(
+    logged_in: TestClient, stories: Path, notes: Path, space: str
+) -> None:
+    """The plain `settings` fixture has no small model configured; a save of a body
+    well over budget must still write no section at all."""
+    identifier = (
+        chapter_id(logged_in, "Example Story", "first-chapter")
+        if space == "stories"
+        else note_id(logged_in)
+    )
+    logged_in.put(f"/api/{space}/file/{identifier}/document", json={"body": LONG_BODY})
+
+    assert "ink:context_summary" not in chapter_text(stories)
+
+
+def test_a_save_over_budget_writes_a_context_summary(
+    summary_client: TestClient, stories: Path
+) -> None:
+    chapter = chapter_id(summary_client, "Example Story", "first-chapter")
+    summary_client.handlers["handler"] = lambda request: httpx.Response(
+        200, text=answer_body("Jane Doe is the narrator.")
+    )
+
+    response = summary_client.put(
+        f"/api/stories/file/{chapter}/document", json={"body": LONG_BODY}
+    )
+    assert response.status_code == 200
+
+    text = chapter_text(stories)
+    assert "ink:context_summary" in text
+    assert "Jane Doe is the narrator." in text
+
+
+def test_a_notes_save_over_budget_writes_a_context_summary_too(
+    summary_client: TestClient, notes: Path
+) -> None:
+    summary_client.handlers["handler"] = lambda request: httpx.Response(
+        200, text=answer_body("Jane Doe is the narrator.")
+    )
+
+    response = summary_client.put(
+        f"/api/notes/file/{note_id(summary_client)}/document", json={"body": LONG_BODY}
+    )
+    assert response.status_code == 200
+    assert "ink:context_summary" in (notes / "scratch.ink").read_text(encoding="utf-8")
+
+
+def test_a_save_under_budget_writes_nothing(summary_client: TestClient, stories: Path) -> None:
+    chapter = chapter_id(summary_client, "Example Story", "first-chapter")
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(request)
+        return httpx.Response(200, text=answer_body("Should not be asked."))
+
+    summary_client.handlers["handler"] = handler
+    summary_client.put(f"/api/stories/file/{chapter}/document", json={"body": "Short."})
+
+    assert not called
+    assert "ink:context_summary" not in chapter_text(stories)
+
+
+def test_a_second_save_too_soon_after_does_not_call_again(
+    summary_client: TestClient, stories: Path
+) -> None:
+    """`is_due`'s own proportional gating (`context_summary.py`), exercised through
+    the route: a second save with barely any change in what is dropped must not
+    spend a second model call."""
+    chapter = chapter_id(summary_client, "Example Story", "first-chapter")
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    summary_client.handlers["handler"] = handler
+    summary_client.put(f"/api/stories/file/{chapter}/document", json={"body": LONG_BODY})
+    assert len(calls) == 1
+
+    summary_client.put(f"/api/stories/file/{chapter}/document", json={"body": LONG_BODY})
+    assert len(calls) == 1  # unchanged: the second save was skipped
+
+
+def test_the_summary_rate_budget_is_separate_from_generations(
+    summary_client: TestClient, app, stories: Path
+) -> None:
+    """A writer who has been generating heavily must not starve their own
+    background summaries -- `app.state.summary_limiter` is a budget of its own,
+    consulted instead of `app.state.llm_limiter` by this route."""
+    chapter = chapter_id(summary_client, "Example Story", "first-chapter")
+    app.state.llm_limiter = RateLimiter(limit=1, interval=60)
+    app.state.llm_limiter.consume(EMAIL)  # exhaust generation's own budget
+    app.state.summary_limiter = RateLimiter(limit=1, interval=60)  # untouched
+
+    summary_client.handlers["handler"] = lambda request: httpx.Response(
+        200, text=answer_body("Jane Doe is the narrator.")
+    )
+    response = summary_client.put(
+        f"/api/stories/file/{chapter}/document", json={"body": LONG_BODY}
+    )
+
+    assert response.status_code == 200
+    assert "ink:context_summary" in chapter_text(stories)
+
+
+def test_an_exhausted_summary_budget_writes_nothing(
+    summary_client: TestClient, app, stories: Path
+) -> None:
+    """`limit=0` *disables* a `RateLimiter` (`throttle.py`'s own convention) --
+    exhausting it instead means consuming its one allowance first, for this same
+    account, the way a real writer would after one earlier save already spent it."""
+    chapter = chapter_id(summary_client, "Example Story", "first-chapter")
+    app.state.summary_limiter = RateLimiter(limit=1, interval=60)
+    app.state.summary_limiter.consume(EMAIL)  # spend the one allowance up front
+
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(request)
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    summary_client.handlers["handler"] = handler
+    response = summary_client.put(
+        f"/api/stories/file/{chapter}/document", json={"body": LONG_BODY}
+    )
+
+    assert response.status_code == 200  # the save itself still succeeds
+    assert not called
+    assert "ink:context_summary" not in chapter_text(stories)

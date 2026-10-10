@@ -16,6 +16,7 @@ from inkspire_api import ink
 META = ink.fence_line(ink.SECTION_META)
 BODY = ink.fence_line(ink.SECTION_BODY)
 PROV = ink.fence_line(ink.SECTION_PROVENANCE)
+CTXSUM = ink.fence_line(ink.SECTION_CONTEXT_SUMMARY)
 
 
 # --- what is a fence line --------------------------------------------------
@@ -185,6 +186,35 @@ def test_sections_keep_the_order_they_were_read_in() -> None:
 def test_a_section_opened_twice_keeps_its_last_occurrence() -> None:
     document = ink.parse(f"{BODY}First.\n{BODY}Second.\n")
     assert document.body == "Second.\n"
+
+
+def test_a_context_summary_section_is_carried_as_text() -> None:
+    """A second section carried without being read, the same way provenance is
+    (api#18) -- `summaries.py` is what understands what is inside it."""
+    document = ink.parse(f"{BODY}Once.\n{CTXSUM}dropped_chars: 10\nsummary: hello\n")
+    assert document.body == "Once.\n"
+    assert document.sections == {"context_summary": "dropped_chars: 10\nsummary: hello\n"}
+
+
+def test_a_context_summary_section_means_nothing_to_check() -> None:
+    """Known to the format now, so it must not be reported the way an unknown
+    section is (`test_an_unknown_section_is_a_warning_on_its_fence`)."""
+    problems = ink.check(f"{BODY}Once.\n{CTXSUM}dropped_chars: 10\nsummary: hello\n")
+    assert problems == []
+
+
+def test_a_context_summary_section_survives_alongside_provenance() -> None:
+    """Writing one does not disturb the other -- the whole reason `ink:provenance`
+    and `ink:context_summary` can be two sections rather than one."""
+    text = f'{BODY}Once.\n{PROV}47f57caaa4fb330e: [[0, 5, "gen"]]\n{CTXSUM}dropped_chars: 10\nsummary: hello\n'
+    document = ink.parse(text)
+    assert document.sections["provenance"] == '47f57caaa4fb330e: [[0, 5, "gen"]]\n'
+    assert document.sections["context_summary"] == "dropped_chars: 10\nsummary: hello\n"
+
+    rewritten = ink.render_with(document, document.body, ink.SECTION_CONTEXT_SUMMARY, "dropped_chars: 20\nsummary: changed\n")
+    rewritten_document = ink.parse(rewritten)
+    assert rewritten_document.sections["provenance"] == '47f57caaa4fb330e: [[0, 5, "gen"]]\n'
+    assert rewritten_document.sections["context_summary"] == "dropped_chars: 20\nsummary: changed\n"
 
 
 # --- writing one back ------------------------------------------------------

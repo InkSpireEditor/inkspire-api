@@ -28,19 +28,21 @@ from typing import NamedTuple
 
 
 class StoredDocument(NamedTuple):
-    """One file as it is on disk: where it is, its prose, and its provenance section.
+    """One file as it is on disk: where it is, its prose, and its provenance and
+    context-summary sections.
 
     Where it is comes back because recovering stale provenance needs the file's history
     (§7.5), and only `repository.py` may ask git for that — so a scanner hands out what
     to ask about rather than growing a git dependency of its own.
 
-    `provenance` is the section's text, unparsed. `ink.py` carries a section it does not
-    read, and a scanner is no different.
+    `provenance` and `context_summary` are each a section's text, unparsed. `ink.py`
+    carries a section it does not read, and a scanner is no different.
     """
 
     relpath: PurePosixPath
     body: str
     provenance: str | None
+    context_summary: str | None = None
 
 
 @dataclass(frozen=True)

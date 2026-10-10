@@ -30,8 +30,9 @@ from tests.conftest import (
     sse_body,
 )
 
-from inkspire_api import llm
+from inkspire_api import ink, llm
 from inkspire_api import prompt as prompt_lib
+from inkspire_api.context_summary import ContextSummary, render_section
 from inkspire_api.llm import (
     LLMError,
     LLMService,
@@ -56,7 +57,7 @@ _PROMPTS: dict[str, Any] = json.loads(
 CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
     name: case
     for name, case in _PROMPTS.items()
-    if name not in ("fim", "rewrite", "title", "synopsis")
+    if name not in ("fim", "rewrite", "title", "synopsis", "summary", "context_summary")
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
 REWRITE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["rewrite"]
@@ -67,6 +68,11 @@ TITLE_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["title"]
 #: to prove the new section renders correctly without disturbing the other nine --
 #: it is not a new prompt shape the way fim/rewrite/title each are.
 SYNOPSIS_PROMPT: dict[str, str] = _PROMPTS["synopsis"]
+#: A single case (api#18): a continuation with a context summary above it. Built
+#: from `PromptContext` directly rather than through `render_prompt`/`assemble`,
+#: since `assemble`'s own gating -- a summary renders only once this request's own
+#: trim actually fires -- is covered in `test_prompt.py` and is not what this pins.
+SUMMARY_PROMPT: dict[str, str] = _PROMPTS["summary"]
 
 #: `Settings`' own default, kept as a constant here so a test that trims against it
 #: shows its intent rather than a bare 10000.
@@ -150,6 +156,25 @@ def test_an_empty_synopsis_is_byte_identical_to_the_plain_case() -> None:
     synopsis must not leave a stray blank line behind."""
     plain = CONTINUATION_PROMPTS["plain"]
     assert render_prompt(plain["text"], synopsis="") == plain["prompt"]
+
+
+# --- the context summary (api#18) --------------------------------------------
+
+
+def test_the_context_summary_renders_above_the_continuation_as_recorded() -> None:
+    """One case is enough: a stored summary is one new guarded block, not a new
+    prompt shape the way fim/rewrite/title each are. Built from `PromptContext`
+    directly, not `render_prompt`, since this pins the template alone -- whether
+    `assemble` would actually set the field is `test_prompt.py`'s question."""
+    recorded = SUMMARY_PROMPT
+    context = prompt_lib.PromptContext(prefix=recorded["text"], summary=recorded["summary"])
+    assert prompt_lib.render(context) == recorded["prompt"]
+
+
+def test_an_empty_context_summary_is_byte_identical_to_the_plain_case() -> None:
+    plain = CONTINUATION_PROMPTS["plain"]
+    context = prompt_lib.PromptContext(prefix=plain["text"])
+    assert prompt_lib.render(context) == plain["prompt"]
 
 
 @pytest.mark.parametrize("case", sorted(FIM_PROMPTS))
@@ -699,17 +724,19 @@ def test_listing_defaults_requires_authentication(client: TestClient) -> None:
     assert client.get("/api/llm/defaults").status_code == 401
 
 
-def test_features_reports_title_off_with_no_small_model(llm_client) -> None:
+def test_features_reports_title_and_summary_off_with_no_small_model(llm_client) -> None:
     response = llm_client.get("/api/llm/features")
     assert response.status_code == 200
-    assert response.json() == {"title": False}
+    assert response.json() == {"title": False, "summary": False}
 
 
-def test_features_reports_title_on_once_a_small_model_is_set(app, settings, logged_in) -> None:
+def test_features_reports_title_and_summary_on_once_a_small_model_is_set(
+    app, settings, logged_in
+) -> None:
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={"llm_small_model": "p/model"}
     )
-    assert logged_in.get("/api/llm/features").json() == {"title": True}
+    assert logged_in.get("/api/llm/features").json() == {"title": True, "summary": True}
 
 
 def test_listing_features_requires_authentication(client: TestClient) -> None:
@@ -949,6 +976,120 @@ def test_a_root_level_notes_generation_carries_no_context(
     assert seen["messages"][0]["content"].startswith(
         "You are a skilled writer helping out a fellow writer."
     )
+
+
+# --- the stored context summary (api#18) -------------------------------------
+
+
+def _ink_with_context_summary(body: str, summary_text: str, dropped_chars: int) -> str:
+    """A `.ink` file's text carrying `body` and an `ink:context_summary` section,
+    built through the real `render_section`/`ink.render_with` rather than by hand,
+    the way every other section this suite plants is."""
+    section = render_section(ContextSummary(text=summary_text, dropped_chars=dropped_chars))
+    document = ink.parse(body)
+    return ink.render_with(document, document.body, ink.SECTION_CONTEXT_SUMMARY, section)
+
+
+def test_a_chapters_generation_carries_its_stored_context_summary_once_trimmed(
+    llm_client, data_root: Path
+) -> None:
+    """A body long enough that the real default budget (`DEFAULT_BUDGET`) trims the
+    prefix -- the stored summary belongs in the prompt exactly when that happens."""
+    long_body = ("Jane Doe is the narrator. " * 500) + "\n\nThe end approaches now."
+    text = _ink_with_context_summary(
+        long_body, "Jane Doe is the narrator.", dropped_chars=1000
+    )
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": text}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/stories/file/{file_id}/generate", json={"model": "p/m"})
+
+    assert "Jane Doe is the narrator." in seen["messages"][0]["content"]
+
+
+def test_a_chapters_generation_carries_no_summary_once_the_body_fits(
+    llm_client, data_root: Path
+) -> None:
+    """A stored summary left over from a since-shortened chapter must not render:
+    nothing is being trimmed any more, so the stored value describes text that is
+    already in the prompt verbatim."""
+    text = _ink_with_context_summary("Short body.", "Should not appear.", dropped_chars=5000)
+    make_story(
+        data_root, "example-story", title="Example Story", chapters={"first-chapter.ink": text}
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/stories/file/{file_id}/generate", json={"model": "p/m"})
+
+    assert "Should not appear." not in seen["messages"][0]["content"]
+    assert seen["messages"][0]["content"].startswith(
+        "You are a skilled writer helping out a fellow writer."
+    )
+
+
+def test_a_chapter_with_no_stored_summary_carries_none(llm_client, data_root: Path) -> None:
+    long_body = ("Jane Doe is the narrator. " * 500) + "\n\nThe end approaches now."
+    make_story(
+        data_root,
+        "example-story",
+        title="Example Story",
+        chapters={"first-chapter.ink": long_body},
+    )
+    file_id = chapter_id(llm_client, "Example Story", "first-chapter")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/stories/file/{file_id}/generate", json={"model": "p/m"})
+
+    content = seen["messages"][0]["content"]
+    # The stripped-off prefix's own opening words must not reappear verbatim right
+    # before "Existing text:" -- which is exactly what a phantom summary would do.
+    assert content.count("You are a skilled writer helping out a fellow writer.") == 1
+
+
+def test_a_notes_generation_carries_its_stored_context_summary_too(
+    llm_client, files_root: Path
+) -> None:
+    """The same section, the same rendering rule, on the other root."""
+    long_body = ("Jane Doe is the narrator. " * 500) + "\n\nThe end approaches now."
+    text = _ink_with_context_summary(
+        long_body, "Jane Doe is the narrator.", dropped_chars=1000
+    )
+    make_note(files_root, "loose.ink", "placeholder")
+    note_id = entry_named(llm_client.get("/api/notes/tree").json()["files"], "loose")["id"]
+    (files_root / "loose.ink").write_text(text, encoding="utf-8")
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(f"/api/notes/file/{note_id}/generate", json={"model": "p/m"})
+
+    assert "Jane Doe is the narrator." in seen["messages"][0]["content"]
 
 
 def test_an_unknown_file_id_is_not_found(llm_client) -> None:

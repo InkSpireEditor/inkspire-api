@@ -23,6 +23,7 @@ collide with a story or a chapter.
 from __future__ import annotations
 
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -116,6 +117,11 @@ class NotesScanner:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._held = HeldScan(self._scan, self._current_stamp)
+        # Guards a document's read-render-write against a second one landing
+        # mid-write — `write_document` and `write_context_summary` both take it, so
+        # a background summary (api#18) can never replace a save that lands while it
+        # is still assembling its own answer.
+        self._write_lock = threading.Lock()
 
     # --- reading -----------------------------------------------------------
 
@@ -373,7 +379,7 @@ class NotesScanner:
         return read_text(self.path(relpath), relpath)
 
     def read_document(self, file_id: str) -> StoredDocument:
-        """A note's prose and provenance, without its header.
+        """A note's prose, provenance and context summary, without its header.
 
         The same shape the stories root answers, so one route serves both — even though
         a note has no history to recover from (§7.5).
@@ -381,17 +387,57 @@ class NotesScanner:
         note = self.note(file_id)
         document = ink.parse(self._text(note.relpath))
         return StoredDocument(
-            note.relpath, document.body, document.sections.get(ink.SECTION_PROVENANCE)
+            note.relpath,
+            document.body,
+            document.sections.get(ink.SECTION_PROVENANCE),
+            document.sections.get(ink.SECTION_CONTEXT_SUMMARY),
         )
 
     def write_document(self, file_id: str, body: str, section: str | None) -> None:
-        """Replaces a note's prose and its provenance together, for §7.1's reason."""
-        note = self.note(file_id)
-        path = self.path(note.relpath)
-        if not path.is_file():
-            raise NotFound(f'"{note.relpath}" is no longer on disk.')
+        """Replaces a note's prose and its provenance together, for §7.1's reason.
 
-        document = ink.parse(self._text(note.relpath))
-        text = ink.render_with(document, body, ink.SECTION_PROVENANCE, section)
-        write_atomically(path, text)
-        self._held.restamp()
+        Takes `_write_lock`, which `write_context_summary` also takes, so a background
+        summary (api#18) can never land between this read and this write and be
+        clobbered by them.
+        """
+        with self._write_lock:
+            note = self.note(file_id)
+            path = self.path(note.relpath)
+            if not path.is_file():
+                raise NotFound(f'"{note.relpath}" is no longer on disk.')
+
+            document = ink.parse(self._text(note.relpath))
+            text = ink.render_with(document, body, ink.SECTION_PROVENANCE, section)
+            write_atomically(path, text)
+            self._held.restamp()
+
+    def write_context_summary(self, file_id: str, expected_body: str, section: str) -> bool:
+        """Writes a summary of what a generation's prompt budget last trimmed (api#18),
+        answering whether it actually did.
+
+        Deliberately **not** written atomically with the body the way provenance is
+        (§7.1): a stale summary is just a worse summary, not corruption of a correctness
+        record, so it may be written on its own, in the background, after the save that
+        triggered it has already returned. `expected_body` is what the summary was
+        computed against; a mismatch -- the writer saved again while the model was
+        still answering -- answers `False` and writes nothing, since this summary
+        describes text that has already moved and the next save's own task catches up.
+        Takes `_write_lock`, the same one `write_document` takes, so the match check and
+        the write happen as one step and a concurrent save can never land in between and
+        be overwritten by this.
+        """
+        with self._write_lock:
+            note = self.note(file_id)
+            path = self.path(note.relpath)
+            if not path.is_file():
+                raise NotFound(f'"{note.relpath}" is no longer on disk.')
+
+            document = ink.parse(self._text(note.relpath))
+            if document.body != expected_body:
+                return False
+            text = ink.render_with(
+                document, document.body, ink.SECTION_CONTEXT_SUMMARY, section
+            )
+            write_atomically(path, text)
+            self._held.restamp()
+            return True

@@ -22,20 +22,30 @@ history (§7.5) so the writer never sees the drift. Recovering on read must not 
 story repository, though, so the answer is reconciled and the file is left stale on disk
 until the next ordinary save persists it. The notes root has no history at all — it is
 not a repository — so a paragraph it cannot account for resets.
+
+**A `PUT` also schedules a background context-summary call (api#18)**, when
+`INKSPIRE_LLM_SMALL_MODEL` is configured: `summaries.update` runs after the response has
+already been sent, and may write a fresh `ink:context_summary` section a few seconds
+later. This is the one section ever written outside the body's own atomic write
+(`summaries.py` and `docs/ink-format.md`'s "Two rules" have why that is safe here and
+nowhere else), which is why it is scheduled from this module rather than left to the
+generate route that reads it back.
 """
 
 from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from git import Repo
 from pydantic import BaseModel, Field
 
-from . import provenance, repository
+from . import provenance, repository, summaries
+from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
 from .fs import MAX_FILE_BYTES
+from .llm import ServiceDep
 from .notes import NotesScanner
 from .storage import Scanner
 
@@ -43,6 +53,13 @@ stories_router = APIRouter(prefix="/stories", tags=["stories"])
 notes_router = APIRouter(prefix="/notes", tags=["notes"])
 
 TOO_LONG = f"A file must be at most {MAX_FILE_BYTES} bytes."
+
+#: File ids with a context-summary call already running, so a second save landing
+#: before the first call answers is skipped rather than queued (api#18) -- the
+#: summary is then one save behind until the next one catches up. A plain set needs
+#: no lock of its own: `BackgroundTasks` runs these on the event loop, never two at
+#: once in the same process.
+_SUMMARIZING: set[str] = set()
 
 
 class DocumentBody(BaseModel):
@@ -79,14 +96,18 @@ def _read(
     scanner: Scanner | NotesScanner, file_id: str, repo: Repo | None
 ) -> dict:
     """One file's prose and provenance, reconciled against what the prose says now."""
-    relpath, body, section = scanner.read_document(file_id)
-    stored = provenance.parse_section(section) if section is not None else None
+    document = scanner.read_document(file_id)
+    stored = (
+        provenance.parse_section(document.provenance)
+        if document.provenance is not None
+        else None
+    )
     if stored is None:
-        return {"body": body, "metadata": None, "reconciled": None}
+        return {"body": document.body, "metadata": None, "reconciled": None}
 
-    recovery = repository.reconciled(repo, PurePosixPath(relpath), body, stored)
+    recovery = repository.reconciled(repo, PurePosixPath(document.relpath), document.body, stored)
     return {
-        "body": body,
+        "body": document.body,
         "metadata": {
             key: [list(run) for run in runs] for key, runs in recovery.metadata.items()
         },
@@ -94,8 +115,19 @@ def _read(
     }
 
 
-async def _write(scanner: Scanner | NotesScanner, file_id: str, document: DocumentBody) -> dict:
-    """One file's prose and provenance, written together."""
+async def _write(
+    scanner: Scanner | NotesScanner,
+    file_id: str,
+    document: DocumentBody,
+    *,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user: CurrentUser,
+    service: ServiceDep,
+    settings: SettingsDep,
+) -> dict:
+    """One file's prose and provenance, written together; schedules a background
+    context-summary call (api#18) afterwards."""
     if len(document.body.encode("utf-8")) > MAX_FILE_BYTES:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LONG)
 
@@ -105,7 +137,51 @@ async def _write(scanner: Scanner | NotesScanner, file_id: str, document: Docume
     # Off the event loop: the write would otherwise hold up every other request being
     # served alongside it.
     await run_in_threadpool(scanner.write_document, file_id, document.body, section)
+    _schedule_summary(
+        scanner,
+        file_id,
+        background_tasks=background_tasks,
+        request=request,
+        user=user,
+        service=service,
+        settings=settings,
+    )
     return {"ok": True}
+
+
+def _schedule_summary(
+    scanner: Scanner | NotesScanner,
+    file_id: str,
+    *,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user: CurrentUser,
+    service: ServiceDep,
+    settings: SettingsDep,
+) -> None:
+    """Schedules `summaries.update` for `file_id` after this response is sent, unless
+    one of three things says not to (api#18): no small model is configured, one is
+    already running for this file, or this account's own summary rate budget
+    (`app.state.summary_limiter`, separate from generation's own) is spent. Each of
+    these skips silently -- there is no response left to answer a refusal into, and
+    the next save's own call catches up regardless.
+    """
+    model = settings.llm_small_model
+    if model is None or file_id in _SUMMARIZING:
+        return
+    if not request.app.state.summary_limiter.consume(user.email):
+        return
+
+    budget = service.defaults.prompt_budget
+
+    async def _run() -> None:
+        _SUMMARIZING.add(file_id)
+        try:
+            await summaries.update(scanner, file_id, service=service, model=model, budget=budget)
+        finally:
+            _SUMMARIZING.discard(file_id)
+
+    background_tasks.add_task(_run)
 
 
 @stories_router.get("/file/{file_id}/document")
@@ -116,10 +192,27 @@ def read_story_document(file_id: str, scanner: ScannerDep, repo: repository.Opti
 
 @stories_router.put("/file/{file_id}/document")
 async def write_story_document(
-    file_id: str, body: DocumentBody, scanner: ScannerDep
+    file_id: str,
+    body: DocumentBody,
+    scanner: ScannerDep,
+    background_tasks: BackgroundTasks,
+    *,
+    request: Request,
+    user: CurrentUser,
+    service: ServiceDep,
+    settings: SettingsDep,
 ) -> dict:
     """Replaces a chapter's or a one-shot's prose and provenance in one write."""
-    return await _write(scanner, file_id, body)
+    return await _write(
+        scanner,
+        file_id,
+        body,
+        background_tasks=background_tasks,
+        request=request,
+        user=user,
+        service=service,
+        settings=settings,
+    )
 
 
 @notes_router.get("/file/{file_id}/document")
@@ -129,6 +222,25 @@ def read_note_document(file_id: str, notes: NotesDep) -> dict:
 
 
 @notes_router.put("/file/{file_id}/document")
-async def write_note_document(file_id: str, body: DocumentBody, notes: NotesDep) -> dict:
+async def write_note_document(
+    file_id: str,
+    body: DocumentBody,
+    notes: NotesDep,
+    background_tasks: BackgroundTasks,
+    *,
+    request: Request,
+    user: CurrentUser,
+    service: ServiceDep,
+    settings: SettingsDep,
+) -> dict:
     """Replaces a note's prose and provenance in one write."""
-    return await _write(notes, file_id, body)
+    return await _write(
+        notes,
+        file_id,
+        body,
+        background_tasks=background_tasks,
+        request=request,
+        user=user,
+        service=service,
+        settings=settings,
+    )

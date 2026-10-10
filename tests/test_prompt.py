@@ -500,3 +500,49 @@ def test_synopsis_is_never_trimmed_or_charged_against_the_budget() -> None:
     long_synopsis = "Word " * 1000
     context = assemble("hello", budget=10, synopsis=long_synopsis)
     assert context.synopsis == long_synopsis
+
+
+# --- the context summary (api#18) ----------------------------------------------
+
+
+def test_summary_defaults_to_empty() -> None:
+    assert assemble("hello", budget=10).summary == ""
+
+
+def test_summary_renders_once_the_prefix_is_actually_trimmed() -> None:
+    body = ("Jane Doe is the narrator. " * 400) + "\n\nThe end."
+    context = assemble(body, budget=50, summary="Jane Doe is the narrator.")
+    assert context.summary == "Jane Doe is the narrator."
+
+
+def test_summary_does_not_render_when_nothing_was_trimmed() -> None:
+    """The file may have shrunk since the summary was stored -- the stored value is
+    then describing text that is already sitting in the prompt verbatim."""
+    context = assemble("Short.", budget=10_000, summary="Should not appear.")
+    assert context.summary == ""
+
+
+def test_summary_does_not_render_at_exactly_the_budget() -> None:
+    """A body whose length equals the budget is not trimmed (`trim_to_tail`'s own
+    `<=` check), so the summary must not render here either."""
+    body = "x" * 50
+    context = assemble(body, budget=50, summary="Should not appear.")
+    assert context.summary == ""
+
+
+def test_summary_renders_on_a_fill_in_the_middle_too() -> None:
+    prefix = "Jane Doe is the narrator. " * 200
+    body = prefix + "caret" + " and then more text follows after it for a while here."
+    cursor = cursor_from_offset(body, len(prefix))
+    context = assemble(body, budget=50, cursor=cursor, summary="Jane Doe is the narrator.")
+    assert context.summary == "Jane Doe is the narrator."
+
+
+def test_summary_renders_on_a_rewrite_too() -> None:
+    prefix = "Jane Doe is the narrator. " * 200
+    body = prefix + "the passage" + " and then more text follows after it for a while."
+    start = cursor_from_offset(body, len(prefix))
+    end = cursor_from_offset(body, len(prefix) + len("the passage"))
+    selection = CursorRange(start, end)
+    context = assemble(body, budget=50, selection=selection, summary="Jane Doe is the narrator.")
+    assert context.summary == "Jane Doe is the narrator."

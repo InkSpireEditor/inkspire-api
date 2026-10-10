@@ -1,3 +1,11 @@
+{#- The summary paragraph is captured once, here, and emitted at the slot each of
+   the three branches below already reserves for it (api#18). -#}
+{%- set summary_para = "" -%}
+{%- if ctx.summary -%}
+{%- set summary_para -%}
+{{ ctx.summary }}
+{%- endset -%}
+{%- endif -%}
 {# Retrieved lore renders here too, above this (api#15's retrieval). -#}
 {% if ctx.synopsis -%}
 {{ ctx.synopsis }}
@@ -38,10 +46,13 @@ Rewrite the passage marked below. It is the whole of the text.
   newline character, never with a <br> tag.
 - Match the existing voice, tense and formatting exactly, including any Markdown.
   If the text is verse, keep the line breaks and metre of the lines around it.
-{# A chapter or character summary renders here, between the instructions and the
-   surrounding text (api#18's summarised dropped text, api#14's rolling summary).
-   The writer's own instruction, when there is one, renders last, immediately
-   above "Text before:" (api#19's instruction field). #}
+
+{% if summary_para -%}
+{{ summary_para }}
+
+{% endif -%}
+{#- The writer's own instruction, when there is one, renders last, immediately
+   above "Text before:" (api#19's instruction field). -#}
 {% if ctx.prefix -%}
 Text before:
 {{ ctx.prefix }}
@@ -70,10 +81,13 @@ before it directly into the text after it.
   newline character, never with a <br> tag.
 - Match the existing voice, tense and formatting exactly, including any Markdown.
   If the text is verse, keep the line breaks and metre of the lines around it.
-{# A chapter or character summary renders here, between the instructions and the
-   surrounding text (api#18's summarised dropped text, api#14's rolling summary).
-   The writer's own instruction, when there is one, renders last, immediately
-   above "Text before:" (api#19's instruction field). #}
+
+{% if summary_para -%}
+{{ summary_para }}
+
+{% endif -%}
+{#- The writer's own instruction, when there is one, renders last, immediately
+   above "Text before:" (api#19's instruction field). -#}
 Text before:
 {{ ctx.prefix }}
 Text after:
@@ -101,10 +115,13 @@ with nothing inserted in between, so your first character has to join on cleanly
 - Write at most two sentences.
 - Output the continuation and nothing else: no preamble, no commentary, no
   quotation marks around it.
-{# A chapter or character summary renders here, between the instructions and the
-   existing text (api#18's summarised dropped text, api#14's rolling summary).
-   The writer's own instruction, when there is one, renders last, immediately above
-   "Existing text:" (api#19's instruction field). #}
+
+{% if summary_para -%}
+{{ summary_para }}
+
+{% endif -%}
+{#- The writer's own instruction, when there is one, renders last, immediately above
+   "Existing text:" (api#19's instruction field). -#}
 Existing text:
 {# Both tags here strip the whitespace beside them: this comment leaves no blank line
    behind it, and the text below closes flush, so the prompt ends on the writer's own

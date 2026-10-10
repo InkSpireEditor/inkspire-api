@@ -887,6 +887,142 @@ def test_title_with_nothing_usable_is_an_error(ask) -> None:
     assert "nothing usable" in result.output
 
 
+# --- llm summary (api#18) -----------------------------------------------------
+
+
+def test_summary_show_prompt_asks_nothing(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),  # pragma: no cover
+        "summary",
+        "--budget",
+        "10",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Below is the opening of a chapter" in result.output
+    assert not seen
+
+
+def test_summary_show_prompt_carries_the_dropped_text(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),  # pragma: no cover
+        "summary",
+        "--budget",
+        "10",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    # Only what trim_to_tail would drop at this budget -- not the whole of stdin.
+    assert "Passage:\nThe lanter" in result.output
+    assert "house was" not in result.output
+
+
+def test_summary_within_budget_is_an_error(ask) -> None:
+    """The default budget (10 000) is nowhere near `TEXT`'s length -- nothing to
+    summarise, and no request should be made."""
+
+    def handler(request):  # pragma: no cover - must not be reached
+        raise AssertionError("no request should be made")
+
+    result, _ = ask(handler, "summary", "--show-prompt", stdin=TEXT)
+    assert result.exit_code == 1
+    assert "Nothing would be dropped" in result.output
+
+
+def test_summary_writes_the_cleaned_answer_to_stdout(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("  Jane Doe is the narrator.  \n\n")),
+        "summary",
+        "-m",
+        "p/model",
+        "--budget",
+        "10",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Jane Doe is the narrator." in result.stdout
+
+
+def test_summary_reports_the_dropped_character_count(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),
+        "summary",
+        "-m",
+        "p/model",
+        "--budget",
+        "10",
+        stdin=TEXT,
+    )
+    assert "characters would be dropped" in result.output
+
+
+def test_summary_falls_back_to_the_configured_small_model(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),
+        "summary",
+        "--budget",
+        "10",
+        stdin=TEXT,
+        small_model="p/small",
+    )
+    assert result.exit_code == 0, result.output
+    assert seen[0]["model"] == "small"
+
+
+def test_summary_with_no_model_given_and_none_configured_is_an_error(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),  # pragma: no cover
+        "summary",
+        "--budget",
+        "10",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "INKSPIRE_LLM_SMALL_MODEL" in result.output
+    assert not seen
+
+
+def test_summary_empty_input_is_an_error(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),  # pragma: no cover
+        "summary",
+        "-m",
+        "p/model",
+        stdin="   ",
+    )
+    assert result.exit_code == 1
+    assert "No text" in result.output
+
+
+def test_summary_an_unknown_model_is_reported_without_a_traceback(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("A summary")),  # pragma: no cover
+        "summary",
+        "-m",
+        "absent/model",
+        "--budget",
+        "10",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "absent" in result.output
+
+
+def test_summary_with_nothing_usable_is_an_error(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("   ")),
+        "summary",
+        "-m",
+        "p/model",
+        "--budget",
+        "10",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "nothing usable" in result.output
+
+
 # --- ink check -------------------------------------------------------------
 
 

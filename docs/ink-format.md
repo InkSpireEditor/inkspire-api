@@ -97,6 +97,10 @@ exactly what `GET /file/{id}/contents` returns: nothing to strip, no markup of o
 without being read here, which is what lets the format gain a section without this module
 changing. `provenance.md` describes it.
 
+**`ink:context_summary`** — a summary of whatever a generation's prompt budget last trimmed
+off the body, and how many characters that was (api#18). Carried the same way provenance is,
+opaque to this module; `inkspire_api/summaries.py` and `context_summary.py` describe it.
+
 ## Two rules the rest of the application depends on
 
 > **The header holds metadata that is independent of the body. A further section holds
@@ -111,6 +115,20 @@ discards provenance the writer just created. `render` takes all three parts with
 for exactly this reason — there is no signature that can write prose and leave a stale hash
 behind it — and both roots write a document through one function, `ink.render_with`, so the
 rule has one implementation rather than two that can drift.
+
+**One deliberate exception: `ink:context_summary` may be written on its own, in the
+background, after the body it describes.** The constraint above exists because a provenance
+section whose hashes no longer match the prose is silent corruption of a correctness record.
+A context summary carries no such record — it is the model's own paraphrase of some
+paragraphs, and a stale one is simply a worse summary, not a wrong answer about what the
+writer actually typed. That difference is what lets `documents.py` return a save's response
+immediately and schedule `summaries.update` to write the section a few seconds later, rather
+than holding up every save for a model call. Two things keep this safe: `write_context_summary`
+(`storage.py`, `notes.py`) refuses to write at all if the body it reads back no longer matches
+the body the summary was computed against — a second save that landed while the model was
+still answering — and both it and `write_document` take the same per-scanner lock around their
+own read-render-write, so a save can never land between `write_context_summary`'s read and its
+write and be overwritten by it.
 
 ## Reading is forgiving; `ink check` is where it is judged
 

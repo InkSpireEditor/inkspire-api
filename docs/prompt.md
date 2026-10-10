@@ -20,9 +20,9 @@ sequenceDiagram
     W->>E: clicks Generate (or Rewrite, with a passage selected)
     E->>E: read the caret or the selection, flush any pending save -- refuse to continue if it fails
     E->>API: POST file/{id}/generate { model, cursor_para?, cursor_offset?, cursor_end_para?, cursor_end_offset?, think?, ... }
-    API->>FS: read_document(id)
+    API->>FS: read_document(id) -- body, provenance, and a stored context summary if one exists (api#18)
     API->>FS: the containing story's synopsis, or notes folder's context, if either exists (api#17)
-    API->>API: prompt.assemble(body, budget, cursor, selection, prefix_share, send_selection, synopsis) -- split, trim, render
+    API->>API: prompt.assemble(body, budget, cursor, selection, prefix_share, send_selection, synopsis, summary) -- split, trim, render
     API-->>E: stream: {"delta": "..."} events, then [DONE]
     loop each delta
         E->>E: appendGenerated(delta) -- execCommand('insertText') at the caret or over the selection, marked "gen"
@@ -59,16 +59,17 @@ flowchart LR
     R --> M["sent to the model"]
 
     Y["a story's synopsis, or a notes folder's context<br/>(Folder.summary, api#17)"] --> C
-    H["a chapter/character summary -- not built"] -.-> C
+    Z["a stored summary of what an earlier trim dropped,<br/>rendered only if THIS trim cuts the prefix (api#18)"] --> C
     L["retrieved lore -- not built"] -.-> C
     I["the writer's instruction -- not built"] -.-> C
 ```
 
 `PromptContext` (`inkspire_api/prompt.py`) is every section the template can render: `prefix`,
-`suffix`, `selection_words`, `selection` and `synopsis` (api#17) today, nothing else. Each later
-section is a new field here and a guarded block in the template — never a change to an existing
-field — which is why the prompts pinned in `tests/data/prompts.json` are untouched by a later
-section existing at all: nothing renders that was not already rendering.
+`suffix`, `selection_words`, `selection`, `synopsis` (api#17) and `summary` (api#18) today,
+nothing else. Each later section is a new field here and a guarded block in the template —
+never a change to an existing field — which is why the prompts pinned in
+`tests/data/prompts.json` are untouched by a later section existing at all: nothing renders
+that was not already rendering.
 
 `synopsis` is a story's own synopsis or a notes folder's own context — two on-disk names
 (`story.yaml`'s `synopsis`, a notes folder manifest's `context`) for the one in-memory field
@@ -179,12 +180,80 @@ record a `.ink` file already keeps.
 - A single paragraph that alone exceeds its budget falls to a ladder: whole lines from the
   relevant end, then a hard character cut if even one line alone is too long — always keeping
   that end, the same ladder the chunked-reading design (api#12) specifies for the same reason.
-- **The trim is silent.** The writer is not told the opening of a long chapter was dropped.
-  Summarising what the trim actually removed is later work — a rolling summary (api#14's own
-  "later" section), or api#18's narrower one keyed on what one trim just dropped — not a
-  warning on every generation past the budget. A story's synopsis (api#17, above) is not this:
-  it is independent of the trim boundary, sent in full regardless of how much of the body was
-  cut.
+- **The trim is silent to the writer**, but not undocumented to the model: the writer is never
+  told the opening of a long chapter was dropped, but a summary of what was dropped is sent in
+  its place (api#18, below) once the small model has had a chance to produce one. A story's
+  synopsis (api#17, above) is not this: it is independent of the trim boundary, sent in full
+  regardless of how much of the body was cut. A rolling summary of the *whole* document,
+  independent of any one trim, is still later work (api#14's own "later" section).
+
+## Summarising what the trim dropped (api#18)
+
+`trim_to_tail` cuts the opening of a long chapter off the prompt and says nothing about it --
+so a continuation past the budget has no idea a character's name, a relationship, or an object
+was already established on a page it can no longer see. This is the narrow fix: the exact
+paragraphs one trim removes, summarised by a small model into one or two sentences, stored in
+the file itself, and rendered back into the prompt — but only for a *later* generation whose
+own trim cuts the same ground again, never for the generation whose save triggered the call.
+
+**Computed in the background, on save, not blocking it.** `documents.py`'s `_write` --
+shared by both the stories and the notes `PUT .../document` routes -- schedules
+`summaries.update` through `BackgroundTasks.add_task` once the body is written, so the save
+itself answers before any model call starts. Skipped silently, with no error surfaced anywhere
+a writer can see, when: `INKSPIRE_LLM_SMALL_MODEL` is unset (the same setting `titles.py`'s
+proposed-title route reads -- one knob for every short, non-generation call this server makes,
+not one per feature); a call for this file is already running (a plain `set` of file ids,
+`documents._SUMMARIZING`, needs no lock since `BackgroundTasks` runs on the event loop); or
+this account's own `app.state.summary_limiter` -- a budget separate from generation's own, so a
+writer who has been generating heavily cannot starve their own summaries -- is spent. Any of
+these leaves the file exactly as a previous save left it; the next save's own call catches up.
+
+**The trigger metric is proportional, not a fixed size.** `context_summary.is_due(dropped_chars,
+stored)` compares what a trim would cut *now* against what the last stored summary was computed
+from:
+
+```
+delta = abs(dropped_chars - stored)
+due = delta >= max(MIN_TRIGGER_CHARS, stored * (GROWTH_FACTOR - 1))
+```
+
+`MIN_TRIGGER_CHARS` (2000) is a floor, so a chapter barely over budget does not spend a model
+call on a couple of sentences' worth of change. `GROWTH_FACTOR` (2.0) makes the threshold double
+each time -- due again at roughly 2k, 4k, 8k, 16k dropped characters -- so a story that keeps
+growing asks for fewer summaries, less often, the longer it gets; a gentler factor (the
+golden-ratio-ish 1.618) would ask more often at less staleness each time. The check is
+**symmetric on purpose**: `abs()` catches a large deletion the same way it catches large growth,
+because a growth-only check would never notice paragraphs the writer has since cut, and a
+summary describing text that no longer exists could stand forever.
+
+**Rendered only when this request's own trim actually fires.** `PromptContext.summary` is set
+by `prompt.assemble` from the stored value, but only when `_trim_sides` reports that *this*
+call's own `trim_to_tail` cut the prefix -- not whenever a summary happens to be sitting in the
+file. A chapter can shrink below budget after a summary was stored (an edit, a cut); once that
+happens nothing is being trimmed any more, the whole file is already in the prompt verbatim, and
+rendering a summary of it on top would be redundant at best, describing text that may no longer
+exist at worst. This is the same two-newline, verified-by-rendering guarded block every other
+optional section in `prompt.j2` uses, captured once near the top of the template and emitted at
+the slot each of the three branches already reserves for it.
+
+**Stored in the body's own file, as `ink:context_summary`** (`docs/ink-format.md`), the one
+section ever written outside the body's own atomic write -- a stale summary is a worse summary,
+not corruption of a correctness record the way stale provenance would be, which is what makes
+writing it on its own, in the background, safe here and nowhere else. `write_context_summary`
+(`storage.py`, `notes.py`) refuses to write at all if the body has moved since the summary was
+computed against it, and shares the scanner's own write lock with `write_document` so the two
+can never interleave into a lost update.
+
+**What the trigger metric cannot see.** A rewrite *inside* the dropped region that barely
+changes its size -- renaming a character through the first ten chapters, say -- is invisible to
+a size-based check by construction. A manual, forced-recompute action is the intended fix and is
+not built (the issue's own "hidden manual trigger," left for a later, frontend-facing step).
+
+**The dropped region is itself trimmed from the head, not the tail**, the same way
+`titles.py`'s `assemble_title` trims a chapter's opening rather than its end: what establishes a
+name or a fact is usually near the start of what was cut. A dropped region larger than the
+summary call's own budget therefore loses its middle, not its start -- a rolling summary of the
+whole document (api#14) is the eventual fix for that, and this is deliberately not it.
 
 ### The budget, and the three numbers around it
 
@@ -360,7 +429,7 @@ it in one response instead — the same provider payload shape, `"stream": false
 It reads `INKSPIRE_LLM_SMALL_MODEL`, never the writer's own selected model: that model may be
 hosted and metered, and was chosen for prose, not for a one-line side question. Unset, the route
 refuses with 409 rather than silently falling back to whatever the writer picked. The same
-setting is meant for api#18's own background summary call — one knob for every short,
+setting governs api#18's own background summary call, above — one knob for every short,
 non-generation call this server makes, not one per feature. Always asks with `think=False`,
 regardless of `INKSPIRE_LLM_THINK`: a title has no business reasoning out loud, and a small
 model with a small context window can spend all of it thinking and answer nothing.
@@ -377,11 +446,14 @@ it.
   per-model tokenizer.
 - **Auto-detecting a model's real context window.** `num_ctx` is set (or left unset) by hand;
   nothing reads what a model can actually do and suggests or enforces a ceiling from it.
-- **A chapter or character summary, retrieved lore, the writer's own instruction on
-  Generate.** Each is a field on `PromptContext` and a block in `prompt.j2`, the way a
-  story's synopsis or a notes folder's context (api#17, above) already is; none of these
-  three exist yet. See api#18, api#19/frontend#24, api#15. A story's synopsis is the natural
-  second field on `titles.py`'s own, separate `TitleContext` too, by the same reasoning, once
-  something needs it there — api#25 is a different prompt, not this one.
+- **Retrieved lore, the writer's own instruction on Generate.** Each is a field on
+  `PromptContext` and a block in `prompt.j2`, the way a story's synopsis (api#17) and the
+  trimmed-context summary (api#18) already are; neither of these two exist yet. See
+  api#19/frontend#24, api#15. A story's synopsis is the natural second field on `titles.py`'s
+  own, separate `TitleContext` too, by the same reasoning, once something needs it there —
+  api#25 is a different prompt, not this one.
+- **The manual, forced-recompute trigger for api#18's own summary**, and any frontend
+  surface for it at all. `/llm/features`'s `summary` key exists so a later UI has something
+  to gate on; the action itself is the issue's own "hidden manual trigger," not built.
 - **A ceiling on how much may be rewritten at once.** Decided against, not merely unbuilt —
   see "The selection" above.

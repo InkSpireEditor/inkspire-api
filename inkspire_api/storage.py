@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import shutil
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -192,6 +193,11 @@ class Scanner:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._held = HeldScan(self._scan, self._current_stamp)
+        # Guards a document's read-render-write against a second one landing
+        # mid-write — `write_document` and `write_context_summary` both take it, so
+        # a background summary (api#18) can never replace a save that lands while it
+        # is still assembling its own answer.
+        self._write_lock = threading.Lock()
 
     # --- reading -----------------------------------------------------------
 
@@ -656,7 +662,8 @@ class Scanner:
         return read_text(self.path(relpath), relpath)
 
     def read_document(self, file_id: str) -> StoredDocument:
-        """A chapter's or a one-shot's prose and provenance, without its header.
+        """A chapter's or a one-shot's prose, provenance and context summary, without
+        its header.
 
         The one read, for both the editor and `GET /contents` — which takes the body off
         it and ignores the rest. There is nothing to save by reading less: `ink.parse`
@@ -665,7 +672,10 @@ class Scanner:
         file = self.file(file_id)
         document = ink.parse(self._text(file.relpath))
         return StoredDocument(
-            file.relpath, document.body, document.sections.get(ink.SECTION_PROVENANCE)
+            file.relpath,
+            document.body,
+            document.sections.get(ink.SECTION_PROVENANCE),
+            document.sections.get(ink.SECTION_CONTEXT_SUMMARY),
         )
 
     def write_document(self, file_id: str, body: str, section: str | None) -> None:
@@ -678,14 +688,48 @@ class Scanner:
 
         The header and every other section are read from disk at the moment of the
         write rather than taken from the client, so a title or a status changed by hand
-        since the client loaded the file survives the save.
+        since the client loaded the file survives the save. Takes `_write_lock`, which
+        `write_context_summary` also takes, so a background summary (api#18) can never
+        land between this read and this write and be clobbered by them.
         """
-        file = self.file(file_id)
-        path = self.path(file.relpath)
-        if not path.is_file():
-            raise NotFound(f'"{file.relpath}" is no longer on disk.')
+        with self._write_lock:
+            file = self.file(file_id)
+            path = self.path(file.relpath)
+            if not path.is_file():
+                raise NotFound(f'"{file.relpath}" is no longer on disk.')
 
-        document = ink.parse(self._text(file.relpath))
-        text = ink.render_with(document, body, ink.SECTION_PROVENANCE, section)
-        write_atomically(path, text)
-        self._held.restamp()
+            document = ink.parse(self._text(file.relpath))
+            text = ink.render_with(document, body, ink.SECTION_PROVENANCE, section)
+            write_atomically(path, text)
+            self._held.restamp()
+
+    def write_context_summary(self, file_id: str, expected_body: str, section: str) -> bool:
+        """Writes a summary of what a generation's prompt budget last trimmed (api#18),
+        answering whether it actually did.
+
+        Deliberately **not** written atomically with the body the way provenance is
+        (§7.1): a stale summary is just a worse summary, not corruption of a correctness
+        record, so it may be written on its own, in the background, after the save that
+        triggered it has already returned. `expected_body` is what the summary was
+        computed against; a mismatch -- the writer saved again while the model was
+        still answering -- answers `False` and writes nothing, since this summary
+        describes text that has already moved and the next save's own task catches up.
+        Takes `_write_lock`, the same one `write_document` takes, so the match check and
+        the write happen as one step and a concurrent save can never land in between and
+        be overwritten by this.
+        """
+        with self._write_lock:
+            file = self.file(file_id)
+            path = self.path(file.relpath)
+            if not path.is_file():
+                raise NotFound(f'"{file.relpath}" is no longer on disk.')
+
+            document = ink.parse(self._text(file.relpath))
+            if document.body != expected_body:
+                return False
+            text = ink.render_with(
+                document, document.body, ink.SECTION_CONTEXT_SUMMARY, section
+            )
+            write_atomically(path, text)
+            self._held.restamp()
+            return True
