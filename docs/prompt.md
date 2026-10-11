@@ -199,8 +199,10 @@ record a `.ink` file already keeps.
   told the opening of a long chapter was dropped, but a summary of what was dropped is sent in
   its place (api#18, below) once the small model has had a chance to produce one. A story's
   synopsis (api#17, above) is not this: it is independent of the trim boundary, sent in full
-  regardless of how much of the body was cut. A rolling summary of the *whole* document,
-  independent of any one trim, is still later work (api#14's own "later" section).
+  regardless of how much of the body was cut. A *rolling* summary that folds the document
+  forward chunk by chunk was considered and rejected (api#28): it weights early material by how
+  many folds it has survived and recent material not at all, which is backwards for what this is
+  for. What api#28 built instead is below, in the same section.
 
 ## Summarising what the trim dropped (api#18)
 
@@ -268,11 +270,33 @@ the same decision sequence `update` below uses, with its trigger check skippable
 (`respect_trigger=False`) only from the command line. A frontend surface for the same action
 is a separate, not-yet-built step (the issue's own "hidden manual trigger").
 
-**The dropped region is itself trimmed from the head, not the tail**, the same way
-`titles.py`'s `assemble_title` trims a chapter's opening rather than its end: what establishes a
-name or a fact is usually near the start of what was cut. A dropped region larger than the
-summary call's own budget therefore loses its middle, not its start -- a rolling summary of the
-whole document (api#14) is the eventual fix for that, and this is deliberately not it.
+**Bounded by the small model's own window, not by `INKSPIRE_LLM_PROMPT_BUDGET` (api#28).**
+`resummarise` used to pass one `budget` to two different things: `dropped()`, which is right --
+it is the writer's own prompt budget that decides what a generation's trim removes -- and
+`assemble_summary`, which is wrong -- reusing that same number meant the summary call only ever
+read the dropped region's own first `INKSPIRE_LLM_PROMPT_BUDGET` characters, silently, regardless
+of how much larger the actual dropped region was. A 200 000-character chapter at the default
+10 000-character budget stored a summary of the *next* 10 000 characters back from the kept
+tail and nothing — no summary, no text — for everything before that.
+
+`INKSPIRE_LLM_SUMMARY_NUM_CTX` (tokens, default `32 768`) is the fix: the small model's own
+context window, unrelated to `INKSPIRE_LLM_NUM_CTX` above, which is the writer's model's window
+and never applied to this call at all -- the summary call's `options` used to inherit whatever
+`num_ctx` the writer had configured for their own, unrelated model, which is unset more often
+than not, in which case Ollama's own small default silently governed a call this codebase had
+never sized for it. `summaries.summary_budget(summary_num_ctx)` turns the token count into a
+character budget the same way the three-numbers arithmetic below does for the writer's own
+budget, less `RESERVED_TOKENS` for `summary.j2`'s fixed instructions and the answer itself, and
+that same `summary_num_ctx` is now sent as this call's own `num_ctx` -- the two can never
+disagree, because one setting produces both.
+
+**The dropped region is itself trimmed from the head, not the tail, once it still does not
+fit** -- the same way `titles.py`'s `assemble_title` trims a chapter's opening rather than its
+end: what establishes a name or a fact is usually near the start of what was cut. At the default
+`32 768`-token window this reads roughly 128 000 characters whole, which is every realistic
+chapter; past that, the head-trim above is the overflow guard, and a region that large still
+loses its middle, not its start. That residual case is where api#28 left off, not where it
+started.
 
 ### The budget, and the three numbers around it
 
@@ -299,6 +323,14 @@ one request:
 - **A model's real context window** is a fact about the model, not a setting. It is not
   configured anywhere in this codebase (see "Not yet built" below) — `num_ctx` is the number
   that actually governs behaviour, and it can be set below, at, or above the real window.
+
+This arithmetic is for the writer's own model. The small model api#18's summary call and
+`titles.py`'s proposed-title route both use has the identical hazard with a different pair of
+numbers: `INKSPIRE_LLM_SUMMARY_NUM_CTX` (api#28) is that model's own `num_ctx`, and
+`summaries.summary_budget` is its own character-budget conversion, held well under it by
+`RESERVED_TOKENS` rather than by a second flat ceiling borrowed from the writer's settings. The
+two pairs do not mix: `INKSPIRE_LLM_NUM_CTX` never reaches the summary call, and
+`INKSPIRE_LLM_SUMMARY_NUM_CTX` never reaches a generation.
 
 10 000 characters is roughly 2 100 tokens of English prose and, measured against a local model,
 about 2.5 seconds of prompt evaluation — "a few seconds" is the limit this number was chosen

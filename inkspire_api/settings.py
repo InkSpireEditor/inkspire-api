@@ -107,6 +107,15 @@ class Settings(BaseSettings):
     # fallback, since it may be hosted and metered and they chose it for prose.
     llm_small_model: str | None = None
 
+    # The small model's own context window, in tokens -- unrelated to llm_num_ctx,
+    # which is the writer's own model's window and never applies to this call. The
+    # context-summary call (api#18, api#28) derives its character budget from this
+    # number and sends it as that call's own num_ctx, so the two can never disagree:
+    # a dropped region up to roughly four characters per token, less headroom for the
+    # template's own instructions and the answer, is read whole rather than losing
+    # everything past the writer's prompt budget.
+    llm_summary_num_ctx: int = Field(default=32768, ge=1024)
+
     # Generation requests per authenticated account. Zero disables the limit.
     llm_limit: int = 20
     llm_interval: int = 60

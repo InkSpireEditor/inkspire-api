@@ -52,6 +52,17 @@ def test_assemble_summary_keeps_everything_under_budget() -> None:
     assert summaries.assemble_summary(dropped, budget=10_000).dropped == dropped
 
 
+# --- summary_budget: the small model's own window, not the writer's budget (api#28) -
+
+
+def test_summary_budget_converts_tokens_to_characters_less_the_reserve() -> None:
+    assert summaries.summary_budget(32_768) == (32_768 - summaries.RESERVED_TOKENS) * summaries.CHARS_PER_TOKEN
+
+
+def test_summary_budget_clamps_at_zero_rather_than_going_negative() -> None:
+    assert summaries.summary_budget(100) == 0
+
+
 # --- clean_summary ------------------------------------------------------------
 
 
@@ -80,7 +91,9 @@ def test_clean_summary_of_nothing_but_whitespace_is_empty() -> None:
 _LONG_BODY = ("Jane Doe is the narrator. " * 400) + "\n\nThe end."
 
 
-def _resummarise(body, stored_section, *, tmp_path, handler, budget=50, respect_trigger=True):
+def _resummarise(
+    body, stored_section, *, tmp_path, handler, budget=50, summary_num_ctx=32768, respect_trigger=True
+):
     service = llm_service(tmp_path, handler)
     return asyncio.run(
         summaries.resummarise(
@@ -88,7 +101,8 @@ def _resummarise(body, stored_section, *, tmp_path, handler, budget=50, respect_
             stored_section,
             service=service,
             model="p/model",
-            budget=budget,
+            prompt_budget=budget,
+            summary_num_ctx=summary_num_ctx,
             respect_trigger=respect_trigger,
         )
     )
@@ -158,6 +172,111 @@ def test_resummarise_raises_rather_than_swallowing_a_provider_failure(tmp_path: 
         _resummarise(_LONG_BODY, None, tmp_path=tmp_path, handler=handler)
 
 
+# --- resummarise's own call: bounded by the summary model's window, not the --------
+# --- writer's prompt budget (api#28) -----------------------------------------------
+
+_NUMBERED_PARAGRAPHS = "\n\n".join(
+    f"Paragraph {i} filler text padding padding padding." for i in range(300)
+)
+
+
+def _captured(tmp_path: Path, handler_result: httpx.Response) -> tuple[list[dict], dict]:
+    """A handler that records every request body it answers, plus the list it
+    records into -- `seen[0]` is the first (and, for one `resummarise` call, only)
+    request's own decoded JSON body."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return handler_result
+
+    return seen, {"handler": handler}
+
+
+def test_resummarise_sends_the_whole_dropped_region_not_just_its_opening(tmp_path: Path) -> None:
+    """The regression test for the bug this issue is about: a dropped region far
+    larger than the writer's own prompt budget, but comfortably inside the summary
+    model's own window, must reach the model whole -- not trimmed a second time to
+    the same small number that decided what was dropped in the first place."""
+    seen, handlers = _captured(tmp_path, httpx.Response(200, text=answer_body("A summary.")))
+
+    outcome = _resummarise(
+        _NUMBERED_PARAGRAPHS,
+        None,
+        tmp_path=tmp_path,
+        handler=handlers["handler"],
+        budget=500,
+        summary_num_ctx=32_768,
+        respect_trigger=False,
+    )
+
+    assert outcome.state == summaries.WRITTEN
+    sent = seen[0]["messages"][0]["content"]
+    # The opening was always sent, even by the buggy code -- not the interesting case.
+    assert "Paragraph 0 " in sent
+    # Paragraph 250 sits well inside the dropped region (prompt_budget=500 characters
+    # keeps only the last handful of paragraphs) but far past where the old code,
+    # reusing that same 500-character budget for the summary call itself, would have
+    # cut the dropped region a second time.
+    assert "Paragraph 250 " in sent
+
+
+def test_resummarise_still_applies_the_head_trim_past_the_summary_models_own_window(
+    tmp_path: Path,
+) -> None:
+    """Not a rolling summary: a dropped region larger than even the summary model's
+    own window still loses its middle, kept from the head -- the documented residual
+    case, not the bug this issue fixes."""
+    seen, handlers = _captured(tmp_path, httpx.Response(200, text=answer_body("A summary.")))
+
+    # summary_budget(900) == (900 - 768) * 4 == 528 characters -- comfortably inside
+    # the 300-paragraph body above, so paragraph 250 is lost again at this window.
+    outcome = _resummarise(
+        _NUMBERED_PARAGRAPHS,
+        None,
+        tmp_path=tmp_path,
+        handler=handlers["handler"],
+        budget=500,
+        summary_num_ctx=900,
+        respect_trigger=False,
+    )
+
+    assert outcome.state == summaries.WRITTEN
+    sent = seen[0]["messages"][0]["content"]
+    assert "Paragraph 0 " in sent
+    assert "Paragraph 250 " not in sent
+
+
+def test_resummarise_sends_the_summary_models_own_num_ctx_and_output_cap(tmp_path: Path) -> None:
+    """The call's own `num_ctx` is `summary_num_ctx`, never the writer's own
+    `llm_num_ctx` -- the two models' windows must not be conflated -- and its answer
+    is capped via `max_output_tokens`, which the summary call sent nothing for before
+    this issue. Needs an Ollama-protocol provider: `_chat_payload` only emits
+    `options.num_ctx`/`num_predict` on that path (`llm.py`)."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, text=answer_body("A summary.", native=True))
+
+    service = llm_service(tmp_path, handler, protocol="ollama", num_ctx=10_240)
+    outcome = asyncio.run(
+        summaries.resummarise(
+            _LONG_BODY,
+            None,
+            service=service,
+            model="p/model",
+            prompt_budget=50,
+            summary_num_ctx=32_768,
+            respect_trigger=False,
+        )
+    )
+
+    assert outcome.state == summaries.WRITTEN
+    assert seen[0]["options"]["num_ctx"] == 32_768
+    assert seen[0]["options"]["num_predict"] == summaries.SUMMARY_OUTPUT_TOKENS
+
+
 # --- update: the background task, against a real scanner --------------------
 
 
@@ -166,10 +285,21 @@ def scanner(data_root: Path) -> Scanner:
     return Scanner(data_root)
 
 
-def _update(scanner: Scanner, file_id: str, *, tmp_path: Path, handler, budget: int = 50) -> None:
+def _update(
+    scanner: Scanner, file_id: str, *, tmp_path: Path, handler, budget: int = 50, summary_num_ctx: int = 32768
+) -> None:
     """Runs `summaries.update` to completion against a mocked provider."""
     service = llm_service(tmp_path, handler)
-    asyncio.run(summaries.update(scanner, file_id, service=service, model="p/model", budget=budget))
+    asyncio.run(
+        summaries.update(
+            scanner,
+            file_id,
+            service=service,
+            model="p/model",
+            prompt_budget=budget,
+            summary_num_ctx=summary_num_ctx,
+        )
+    )
 
 
 def _one_chapter(data_root: Path, body: str) -> tuple[Scanner, str]:

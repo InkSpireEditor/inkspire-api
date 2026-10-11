@@ -58,6 +58,21 @@ SUMMARY_TEMPLATE = "summary.j2"
 #: region it describes.
 MAX_SUMMARY_CHARS = 1000
 
+#: The character-per-token assumption `docs/prompt.md` already names and accepts for
+#: the writer's own budget; used the same way here to turn a token-denominated
+#: `INKSPIRE_LLM_SUMMARY_NUM_CTX` into a character budget for `assemble_summary`.
+CHARS_PER_TOKEN = 4
+
+#: Tokens reserved out of the summary model's own window for `summary.j2`'s fixed
+#: instructions plus margin -- the dropped region's own budget is what remains.
+RESERVED_TOKENS = 768
+
+#: The summary call's own answer cap, passed as `complete`'s `max_output_tokens` --
+#: `num_predict` on an Ollama provider, `max_tokens` on a chat-completions one.
+#: `clean_summary`'s `MAX_SUMMARY_CHARS` is a second, character-denominated brake on
+#: the same answer; this one bounds what the provider itself is asked to produce.
+SUMMARY_OUTPUT_TOKENS = 400
+
 #: What `resummarise` decided, named so a caller's report does not have to infer it back
 #: from which field of `Outcome` is set.
 #:
@@ -91,14 +106,29 @@ class SummaryContext:
     dropped: str
 
 
-def assemble_summary(text: str, *, budget: int) -> SummaryContext:
-    """`text`'s opening within `budget` characters, cut at a paragraph boundary.
+def summary_budget(summary_num_ctx: int) -> int:
+    """How many characters of a dropped region one summary call can read whole, given
+    a small model whose own context window is `summary_num_ctx` tokens.
 
-    The head, not the tail `prompt_lib.trim_to_tail` keeps for a continuation's own
-    prefix -- the same reasoning `titles.py`'s `assemble_title` already uses: what
-    opens a dropped region is what establishes the names and facts worth keeping, so
-    a dropped region larger than `budget` loses its middle rather than its start. A
-    rolling summary (api#14) is the fix for that; this is not it.
+    `RESERVED_TOKENS` is held back for `summary.j2`'s fixed instructions and the
+    answer itself; what remains converts to characters at `CHARS_PER_TOKEN`, floored
+    at `0` for a window so small that nothing is left (`settings.py`'s own `ge=1024`
+    keeps this from biting in practice, but a caller should not have to trust that).
+    """
+    return max((summary_num_ctx - RESERVED_TOKENS) * CHARS_PER_TOKEN, 0)
+
+
+def assemble_summary(text: str, *, budget: int) -> SummaryContext:
+    """`text` within `budget` characters, cut at a paragraph boundary.
+
+    `budget` is normally `summary_budget(summary_num_ctx)` -- large enough that a
+    realistic chapter's whole dropped region fits, so this is the overflow guard
+    rather than the normal path. Where it still does not fit, the head is kept, not
+    the tail `prompt_lib.trim_to_tail` keeps for a continuation's own prefix -- the
+    same reasoning `titles.py`'s `assemble_title` already uses: what opens a dropped
+    region is what establishes the names and facts worth keeping. A region larger
+    than `summary_num_ctx` can still lose its middle this way; api#28 is where that
+    residual case lives.
     """
     return SummaryContext(dropped=prompt_lib.trim_to_head(text, budget))
 
@@ -126,11 +156,20 @@ async def resummarise(
     *,
     service: LLMService,
     model: str,
-    budget: int,
+    prompt_budget: int,
+    summary_num_ctx: int,
     respect_trigger: bool = True,
 ) -> Outcome:
-    """Decides whether `body` needs a fresh `ink:context_summary` at `budget`
+    """Decides whether `body` needs a fresh `ink:context_summary` at `prompt_budget`
     characters and, where it does, asks for and cleans one.
+
+    `prompt_budget` and `summary_num_ctx` answer two different questions that used to
+    be one parameter: `prompt_budget` is the *writer's* budget, which is what decides
+    what a generation's own trim would drop (`dropped`, below) -- unrelated to the
+    summary model. `summary_num_ctx` is the *small* model's own context window, which
+    `summary_budget` turns into how much of that dropped region one call can read
+    (api#28 -- the same number, reused as this call's own `num_ctx`, so the budget and
+    the window can never disagree).
 
     `respect_trigger` is `is_due`'s own gate: `True` for `update`, which must not spend
     a call every single save; `False` for `inkspire ink maintenance`, which exists
@@ -143,7 +182,7 @@ async def resummarise(
     a caller running by hand wants to see a provider failure, not have it logged where
     nothing is watching.
     """
-    dropped_text = dropped(body, budget)
+    dropped_text = dropped(body, prompt_budget)
     dropped_chars = len(dropped_text)
     if dropped_chars == 0:
         # Nothing is being trimmed any more. Leaving a stale section in place is
@@ -157,8 +196,13 @@ async def resummarise(
         if not is_due(dropped_chars, stored.dropped_chars if stored is not None else 0):
             return Outcome(CURRENT, dropped_chars)
 
-    rendered = render_summary(assemble_summary(dropped_text, budget=budget))
-    raw = await service.complete(model, rendered, options=service.defaults.overlay(think=False))
+    rendered = render_summary(assemble_summary(dropped_text, budget=summary_budget(summary_num_ctx)))
+    raw = await service.complete(
+        model,
+        rendered,
+        options=service.defaults.overlay(think=False, num_ctx=summary_num_ctx),
+        max_output_tokens=SUMMARY_OUTPUT_TOKENS,
+    )
 
     cleaned = clean_summary(raw)
     if not cleaned:
@@ -174,10 +218,12 @@ async def update(
     *,
     service: LLMService,
     model: str,
-    budget: int,
+    prompt_budget: int,
+    summary_num_ctx: int,
 ) -> None:
-    """The background task: summarises what a trim of `file_id`'s body at `budget`
-    characters would drop, if a new summary is due, and writes the result.
+    """The background task: summarises what a trim of `file_id`'s body at
+    `prompt_budget` characters would drop, if a new summary is due, and writes the
+    result.
 
     Scheduled from `documents.py`'s `_write` after every save, and only when `model`
     (`INKSPIRE_LLM_SMALL_MODEL`) is configured. Every failure -- the file
@@ -194,7 +240,12 @@ async def update(
 
     try:
         outcome = await resummarise(
-            document.body, document.context_summary, service=service, model=model, budget=budget
+            document.body,
+            document.context_summary,
+            service=service,
+            model=model,
+            prompt_budget=prompt_budget,
+            summary_num_ctx=summary_num_ctx,
         )
     except (LLMError, UnknownModel):
         logger.exception("the context-summary call failed for %s", file_id)

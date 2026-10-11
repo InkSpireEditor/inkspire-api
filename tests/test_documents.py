@@ -8,6 +8,7 @@ hashes describing text that is no longer there.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -456,9 +457,13 @@ def test_a_save_over_budget_writes_a_context_summary(
     summary_client: TestClient, stories: Path
 ) -> None:
     chapter = chapter_id(summary_client, "Example Story", "first-chapter")
-    summary_client.handlers["handler"] = lambda request: httpx.Response(
-        200, text=answer_body("Jane Doe is the narrator.")
-    )
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    summary_client.handlers["handler"] = handler
 
     response = summary_client.put(
         f"/api/stories/file/{chapter}/document", json={"body": LONG_BODY}
@@ -468,6 +473,12 @@ def test_a_save_over_budget_writes_a_context_summary(
     text = chapter_text(stories)
     assert "ink:context_summary" in text
     assert "Jane Doe is the narrator." in text
+
+    # The regression check (api#28): LONG_BODY's dropped region is over 13 000
+    # characters, past the old 10 000-character budget `assemble_summary` used to
+    # reuse from the writer's own prompt budget. It must reach the model whole.
+    passage = seen[0]["messages"][0]["content"].split("Passage:\n", 1)[1]
+    assert len(passage) > 10_000
 
 
 def test_a_notes_save_over_budget_writes_a_context_summary_too(

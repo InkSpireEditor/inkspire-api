@@ -945,7 +945,7 @@ def test_summary_show_prompt_asks_nothing(ask) -> None:
         stdin=TEXT,
     )
     assert result.exit_code == 0, result.output
-    assert "Below is the opening of a chapter" in result.output
+    assert "Below is the earlier part of a chapter" in result.output
     assert not seen
 
 

@@ -172,12 +172,20 @@ def _schedule_summary(
     if not request.app.state.summary_limiter.consume(user.email):
         return
 
-    budget = service.defaults.prompt_budget
+    prompt_budget = service.defaults.prompt_budget
+    summary_num_ctx = settings.llm_summary_num_ctx
 
     async def _run() -> None:
         _SUMMARIZING.add(file_id)
         try:
-            await summaries.update(scanner, file_id, service=service, model=model, budget=budget)
+            await summaries.update(
+                scanner,
+                file_id,
+                service=service,
+                model=model,
+                prompt_budget=prompt_budget,
+                summary_num_ctx=summary_num_ctx,
+            )
         finally:
             _SUMMARIZING.discard(file_id)
 

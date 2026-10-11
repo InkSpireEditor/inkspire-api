@@ -592,6 +592,19 @@ def summary_command(
             ),
         ),
     ] = 10_000,
+    summary_num_ctx: Annotated[
+        int | None,
+        typer.Option(
+            "--summary-num-ctx",
+            help=(
+                "The summary model's own context window, in tokens -- unrelated to "
+                "--budget above, which is the writer's own prompt budget and decides "
+                "only what counts as dropped. Left unset, INKSPIRE_LLM_SUMMARY_NUM_CTX "
+                "applies. `summaries.summary_budget` turns this into how many "
+                "characters of the dropped region one call can read whole (api#28)."
+            ),
+        ),
+    ] = None,
     show_prompt: Annotated[
         bool,
         typer.Option("--show-prompt", help="Print the rendered prompt and ask nothing."),
@@ -617,7 +630,8 @@ def summary_command(
     if not dropped_text:
         fail(f"Nothing would be dropped: the text is within the {budget}-character budget.")
 
-    context = summaries.assemble_summary(dropped_text, budget=budget)
+    chosen_num_ctx = summary_num_ctx if summary_num_ctx is not None else get_settings().llm_summary_num_ctx
+    context = summaries.assemble_summary(dropped_text, budget=summaries.summary_budget(chosen_num_ctx))
     rendered = summaries.render_summary(context)
 
     if show_prompt:
@@ -631,7 +645,14 @@ def summary_command(
 
     svc = service(think=False)
     try:
-        raw = asyncio.run(svc.complete(chosen_model, rendered))
+        raw = asyncio.run(
+            svc.complete(
+                chosen_model,
+                rendered,
+                options=svc.defaults.overlay(num_ctx=chosen_num_ctx),
+                max_output_tokens=summaries.SUMMARY_OUTPUT_TOKENS,
+            )
+        )
     except (UnknownModel, LLMError) as error:
         fail(str(error))
         raise AssertionError from error  # unreachable: fail() exits
@@ -1058,6 +1079,7 @@ async def run_summary_pass(
     svc: LLMService | None,
     model: str | None,
     budget: int,
+    summary_num_ctx: int,
     dry_run: bool,
     header_printed: bool,
     counts: Counter[str],
@@ -1093,7 +1115,8 @@ async def run_summary_pass(
             document.sections.get(ink.SECTION_CONTEXT_SUMMARY),
             service=svc,
             model=model,
-            budget=budget,
+            prompt_budget=budget,
+            summary_num_ctx=summary_num_ctx,
             respect_trigger=False,
         )
     except (LLMError, UnknownModel) as error:
@@ -1119,6 +1142,7 @@ async def maintain_one(
     svc: LLMService | None,
     model: str | None,
     budget: int,
+    summary_num_ctx: int,
 ) -> Counter[str]:
     """Runs the requested passes against one file, reports what each found, and --
     unless `dry_run` -- writes every section either pass changed in one write.
@@ -1151,6 +1175,7 @@ async def maintain_one(
             svc=svc,
             model=model,
             budget=budget,
+            summary_num_ctx=summary_num_ctx,
             dry_run=dry_run,
             header_printed=header_printed,
             counts=counts,
@@ -1175,6 +1200,7 @@ async def maintain_all(
     svc: LLMService | None,
     model: str | None,
     budget: int,
+    summary_num_ctx: int,
 ) -> Counter[str]:
     """`maintain_one`, over every file, inside one `asyncio.run` -- so a provider
     connection the summary pass needs is made once for the whole walk rather than
@@ -1183,7 +1209,14 @@ async def maintain_all(
     counts: Counter[str] = Counter()
     for path in files:
         counts += await maintain_one(
-            path, settings, passes=passes, dry_run=dry_run, svc=svc, model=model, budget=budget
+            path,
+            settings,
+            passes=passes,
+            dry_run=dry_run,
+            svc=svc,
+            model=model,
+            budget=budget,
+            summary_num_ctx=summary_num_ctx,
         )
     return counts
 
@@ -1234,6 +1267,17 @@ def maintenance(
             ),
         ),
     ] = 10_000,
+    summary_num_ctx: Annotated[
+        int | None,
+        typer.Option(
+            "--summary-num-ctx",
+            help=(
+                "The summary model's own context window, in tokens -- unrelated to "
+                "--budget above. Left unset, INKSPIRE_LLM_SUMMARY_NUM_CTX applies "
+                "(api#28)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Regenerate every derived section a `.ink` file carries.
 
@@ -1291,10 +1335,18 @@ def maintenance(
         passes = passes - {"summaries"}
 
     svc = service(think=False) if ("summaries" in passes and not dry_run) else None
+    chosen_num_ctx = summary_num_ctx if summary_num_ctx is not None else settings.llm_summary_num_ctx
 
     counts = asyncio.run(
         maintain_all(
-            files, settings, passes=passes, dry_run=dry_run, svc=svc, model=chosen_model, budget=budget
+            files,
+            settings,
+            passes=passes,
+            dry_run=dry_run,
+            svc=svc,
+            model=chosen_model,
+            budget=budget,
+            summary_num_ctx=chosen_num_ctx,
         )
     )
 
