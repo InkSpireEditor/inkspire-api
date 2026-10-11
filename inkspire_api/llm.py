@@ -46,6 +46,12 @@ from .storage import Chapter
 #: Upper bound on a model identifier, across every provider.
 MAX_MODEL_LENGTH = 255
 
+#: Ceiling on the writer's own steering of a generation (api#19). Mirrors
+#: `titles.py`'s own `MAX_INSTRUCTION_LENGTH` -- a short nudge, not a second prompt --
+#: but is not that same constant: `titles.py` already imports `LLMService` from this
+#: module, so importing the other way would cycle.
+MAX_INSTRUCTION_LENGTH = 300
+
 #: Listing models is a cheap metadata call and should fail fast rather than wait out
 #: a generation-sized budget.
 MODELS_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -258,6 +264,7 @@ class LLMService:
         options: GenerationOptions | None = None,
         synopsis: str = "",
         summary: str = "",
+        instruction: str = "",
     ) -> AsyncGenerator[str, None]:
         """Yields content chunks as the provider produces them.
 
@@ -277,6 +284,10 @@ class LLMService:
         trim dropped, if any -- also passed straight through to `prompt_lib.assemble`,
         which renders it only when *this* request's own trim actually cuts the
         prefix.
+
+        `instruction` (api#19) is the writer's own one-off steering for this
+        generation alone -- passed straight through to `prompt_lib.assemble`, which
+        renders it last, immediately above the existing text.
 
         `options` is this one generation's settings -- temperature, the budget and
         its split, `num_ctx`, whether to think, and whether a rewrite sends the
@@ -314,6 +325,7 @@ class LLMService:
                         options=resolved,
                         synopsis=synopsis,
                         summary=summary,
+                        instruction=instruction,
                     ),
                 ) as response:
                     await _raise_for_status(response)
@@ -385,6 +397,7 @@ class LLMService:
         selection: prompt_lib.CursorRange | None = None,
         synopsis: str = "",
         summary: str = "",
+        instruction: str = "",
     ) -> dict[str, Any]:
         context = prompt_lib.assemble(
             text,
@@ -394,6 +407,7 @@ class LLMService:
             prefix_share=options.prefix_share,
             send_selection=options.send_selection,
             synopsis=synopsis,
+            instruction=instruction,
             summary=summary,
         )
         rendered = prompt_lib.render(context)
@@ -633,6 +647,11 @@ class GenerateRequest(BaseModel):
     #: (`INKSPIRE_LLM_SEND_SELECTION`, on by default) in place; ignored outright for a
     #: continuation or a fill-in-the-middle, which have no passage to send.
     send_selection: bool | None = None
+    #: The writer's own one-off steering for this generation alone (api#19) -- "make
+    #: this more neutral", "continue as if a day has passed". `None` -- the default --
+    #: renders nothing; not one of `GenerationOptions`' six fields, since this is
+    #: request content, not a server-overridable setting.
+    instruction: str | None = Field(default=None, max_length=MAX_INSTRUCTION_LENGTH)
 
     def options(self, defaults: GenerationOptions) -> GenerationOptions:
         """`defaults` overlaid with whichever of this request's fields are not `None`."""
@@ -754,6 +773,8 @@ async def _stream_generation(
     context, looked up by the caller -- this function knows nothing about either
     root, so it only ever passes the string along. `summary` (api#18) is the
     file's own stored context summary, looked up by the caller the same way.
+    `instruction` (api#19) needs no such lookup -- it is already sitting on `body`,
+    so it is read here rather than threaded through every caller.
 
     Each event is `{"delta": "..."}` with text to append, `{"error": "..."}` if the
     provider fails once chunks have already been sent, and `[DONE]` at the end.
@@ -778,6 +799,7 @@ async def _stream_generation(
         options=options,
         synopsis=synopsis,
         summary=summary,
+        instruction=body.instruction or "",
     )
     try:
         first = await anext(chunks, None)

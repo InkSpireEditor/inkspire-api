@@ -2,11 +2,12 @@
 """What a generation asks a model, assembled server-side from the file on disk.
 
 `PromptContext` is every section the template can render: `prefix`, `suffix`,
-`selection_words`, a story's synopsis or a notes folder's context (`synopsis`, api#17)
-and a summary of whatever this request's own trim just dropped from the prefix
-(`summary`, api#18). Retrieved lore and the writer's own instruction are each a future
-field here plus a guarded block in `templates/prompt.j2`, and nothing else changes: see
-`docs/prompt.md` for the order they are meant to land in.
+`selection_words`, a story's synopsis or a notes folder's context (`synopsis`, api#17),
+a summary of whatever this request's own trim just dropped from the prefix
+(`summary`, api#18), and the writer's own one-off steering for this generation alone
+(`instruction`, api#19). Retrieved lore is a future field here plus a guarded block in
+`templates/prompt.j2`, and nothing else changes: see `docs/prompt.md` for where it is
+meant to land.
 
 A caret splits the body into a prefix and a suffix; with no caret the whole body is
 the prefix and the suffix is empty, which is a continuation -- today's only mode and
@@ -73,9 +74,15 @@ class PromptContext:
     which may describe more or less than this request's own budget happens to drop.
     `""` both when nothing was trimmed (the stored summary, if any, is then describing
     text that is already sitting in the prompt verbatim) and when nothing has been
-    stored yet. Each later section is a field added here, never a change to an
-    existing one, so the template and its pinned cases (`tests/data/prompts.json`) are
-    affected only by the section actually being rendered.
+    stored yet. `instruction` (api#19) is the writer's own one-off steering for this
+    generation alone -- "make this more neutral", "continue as if a day has passed" --
+    rendered last, immediately above the existing text. Unlike `summary`, it is
+    unconditional: there is no earlier request it has to have been computed against.
+    Like `synopsis`, it is never trimmed or charged against the budget, short by
+    construction at the source (`GenerateRequest`'s own character cap). Each later
+    section is a field added here, never a change to an existing one, so the template
+    and its pinned cases (`tests/data/prompts.json`) are affected only by the section
+    actually being rendered.
     """
 
     prefix: str
@@ -84,6 +91,7 @@ class PromptContext:
     selection: str | None = None
     synopsis: str = ""
     summary: str = ""
+    instruction: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -502,6 +510,7 @@ def assemble(
     send_selection: bool = False,
     synopsis: str = "",
     summary: str = "",
+    instruction: str = "",
 ) -> PromptContext:
     """The context for one generation: `body` split at `cursor` or `selection`, each
     side trimmed to its share of `budget` characters.
@@ -533,6 +542,11 @@ def assemble(
     any more and a summary of it would describe text already sitting in the prompt
     verbatim.
 
+    `instruction` (api#19) passes straight through to `PromptContext.instruction` --
+    unconditionally, unlike `summary`: there is no earlier request it has to have
+    been computed against. Never charged against `budget` and never trimmed, the
+    same reasoning `synopsis` already has.
+
     Raises `ValueError` if both `cursor` and `selection` are given, and
     `CursorOutOfRange` (or its `InvertedRange` subclass) if either does not address
     `body`.
@@ -552,6 +566,7 @@ def assemble(
         selection=shown,
         synopsis=synopsis,
         summary=summary if prefix_trimmed else "",
+        instruction=instruction,
     )
 
 

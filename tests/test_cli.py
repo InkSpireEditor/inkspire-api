@@ -55,6 +55,7 @@ def render_prompt(
     selection: prompt_lib.CursorRange | None = None,
     send_selection: bool = Settings().llm_send_selection,
     synopsis: str = "",
+    instruction: str = "",
 ) -> str:
     """What `generate --show-prompt` and a real generation both send, now that
     assembly is `prompt.py`'s two calls rather than one bare function.
@@ -72,6 +73,7 @@ def render_prompt(
             prefix_share=prefix_share,
             send_selection=send_selection,
             synopsis=synopsis,
+            instruction=instruction,
         )
     )
 
@@ -542,6 +544,49 @@ def test_generate_show_prompt_with_synopsis(ask) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "A letter nobody has opened in three years." in result.output
+    assert not seen
+
+
+def test_generate_instruction_reaches_the_prompt(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=sse_body(delta("x"))),
+        "generate",
+        "-m",
+        "p/model",
+        "--instruction",
+        "Make this more neutral.",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert seen[0]["messages"][0]["content"] == render_prompt(
+        TEXT, instruction="Make this more neutral."
+    )
+
+
+def test_generate_with_no_instruction_mentions_none(ask) -> None:
+    _, seen = ask(
+        lambda request: httpx.Response(200, text=sse_body(delta("x"))),
+        "generate",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert seen[0]["messages"][0]["content"] == render_prompt(TEXT)
+
+
+def test_generate_show_prompt_with_instruction(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=sse_body(delta("x"))),  # pragma: no cover
+        "generate",
+        "-m",
+        "p/model",
+        "--instruction",
+        "Make this more neutral.",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Make this more neutral." in result.output
     assert not seen
 
 

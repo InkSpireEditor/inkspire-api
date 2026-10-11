@@ -410,6 +410,17 @@ def generate(
             ),
         ),
     ] = "",
+    instruction: Annotated[
+        str,
+        typer.Option(
+            "--instruction",
+            help=(
+                "The writer's own one-off steering for this generation, as the "
+                "GenerateRequest field would carry it (api#19). Left unset, the "
+                "prompt makes no mention of one."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Continue the text read from standard input, printing chunks as they arrive.
 
@@ -441,6 +452,7 @@ def generate(
                     prefix_share=svc.defaults.prefix_share,
                     send_selection=svc.defaults.send_selection,
                     synopsis=synopsis,
+                    instruction=instruction,
                 )
             )
         except prompt.CursorOutOfRange as error:
@@ -458,6 +470,7 @@ def generate(
             selection=at_selection,
             send_selection=send_selection,
             synopsis=synopsis,
+            instruction=instruction,
         )
     )
 
@@ -729,6 +742,7 @@ async def _stream(
     selection: prompt.CursorRange | None = None,
     send_selection: bool | None = None,
     synopsis: str = "",
+    instruction: str = "",
 ) -> None:
     started = time.monotonic()
     first_chunk_at: float | None = None
@@ -736,7 +750,7 @@ async def _stream(
 
     try:
         async for chunk in service(think, send_selection).stream(
-            model, text, cursor=cursor, selection=selection, synopsis=synopsis
+            model, text, cursor=cursor, selection=selection, synopsis=synopsis, instruction=instruction
         ):
             if first_chunk_at is None:
                 first_chunk_at = time.monotonic()

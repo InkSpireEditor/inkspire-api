@@ -34,6 +34,7 @@ from inkspire_api import ink, llm
 from inkspire_api import prompt as prompt_lib
 from inkspire_api.context_summary import ContextSummary, render_section
 from inkspire_api.llm import (
+    MAX_INSTRUCTION_LENGTH,
     LLMError,
     LLMService,
     ModelCache,
@@ -58,7 +59,16 @@ CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
     name: case
     for name, case in _PROMPTS.items()
     if name
-    not in ("fim", "rewrite", "title", "synopsis", "summary", "context_summary", "completion")
+    not in (
+        "fim",
+        "rewrite",
+        "title",
+        "synopsis",
+        "summary",
+        "context_summary",
+        "completion",
+        "instruction",
+    )
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
 REWRITE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["rewrite"]
@@ -78,6 +88,9 @@ SYNOPSIS_PROMPT: dict[str, str] = _PROMPTS["synopsis"]
 #: since `assemble`'s own gating -- a summary renders only once this request's own
 #: trim actually fires -- is covered in `test_prompt.py` and is not what this pins.
 SUMMARY_PROMPT: dict[str, str] = _PROMPTS["summary"]
+#: A single case (api#19): a continuation with the writer's own instruction above
+#: the existing text. One is enough, for the same reason synopsis's is.
+INSTRUCTION_PROMPT: dict[str, str] = _PROMPTS["instruction"]
 
 #: `Settings`' own default, kept as a constant here so a test that trims against it
 #: shows its intent rather than a bare 10000.
@@ -93,6 +106,7 @@ def render_prompt(
     prefix_share: float = 0.75,
     send_selection: bool = False,
     synopsis: str = "",
+    instruction: str = "",
 ) -> str:
     """What `LLMService._payload` sends: assembly, then the render.
 
@@ -112,6 +126,7 @@ def render_prompt(
             prefix_share=prefix_share,
             send_selection=send_selection,
             synopsis=synopsis,
+            instruction=instruction,
         )
     )
 
@@ -161,6 +176,23 @@ def test_an_empty_synopsis_is_byte_identical_to_the_plain_case() -> None:
     synopsis must not leave a stray blank line behind."""
     plain = CONTINUATION_PROMPTS["plain"]
     assert render_prompt(plain["text"], synopsis="") == plain["prompt"]
+
+
+# --- the writer's own instruction (api#19) -----------------------------------
+
+
+def test_the_instruction_prompt_is_rendered_exactly_as_recorded() -> None:
+    """One case is enough: an instruction is one new guarded block, not a new
+    prompt shape the way fim/rewrite/title each are."""
+    recorded = INSTRUCTION_PROMPT
+    assert render_prompt(recorded["text"], instruction=recorded["instruction"]) == recorded["prompt"]
+
+
+def test_an_empty_instruction_is_byte_identical_to_the_plain_case() -> None:
+    """The same regression synopsis's own whitespace case guards: an empty
+    instruction must not leave a stray blank line behind."""
+    plain = CONTINUATION_PROMPTS["plain"]
+    assert render_prompt(plain["text"], instruction="") == plain["prompt"]
 
 
 # --- the context summary (api#18) --------------------------------------------
@@ -1028,6 +1060,73 @@ def test_a_root_level_notes_generation_carries_no_context(
     assert seen["messages"][0]["content"].startswith(
         "You are a skilled writer helping out a fellow writer."
     )
+
+
+# --- the writer's own instruction, end to end (api#19) -----------------------
+
+
+def test_a_generations_instruction_reaches_the_prompt(llm_client, data_root: Path) -> None:
+    created = llm_client.post(
+        "/api/stories/file", json={"name": "Solo", "dir": None}
+    ).json()
+    llm_client.put(
+        f"/api/stories/file/{created['id']}/document", json={"body": "the house was"}
+    )
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(
+        f"/api/stories/file/{created['id']}/generate",
+        json={"model": "p/m", "instruction": "Make this more neutral."},
+    )
+
+    assert "Make this more neutral." in seen["messages"][0]["content"]
+
+
+def test_a_generation_with_no_instruction_mentions_none(llm_client, data_root: Path) -> None:
+    created = llm_client.post(
+        "/api/stories/file", json={"name": "Solo", "dir": None}
+    ).json()
+    llm_client.put(
+        f"/api/stories/file/{created['id']}/document", json={"body": "the house was"}
+    )
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=sse_body(delta("x")))
+
+    llm_client.handlers["handler"] = handler
+    llm_client.post(
+        f"/api/stories/file/{created['id']}/generate", json={"model": "p/m"}
+    )
+
+    assert "also asks" not in seen["messages"][0]["content"]
+
+
+def test_an_overlong_instruction_is_rejected(llm_client, data_root: Path) -> None:
+    """A `Field(max_length=...)` violation is a malformed body -- 400, the same
+    distinction `titles.py`'s own overlong-instruction test pins."""
+    created = llm_client.post(
+        "/api/stories/file", json={"name": "Solo", "dir": None}
+    ).json()
+    llm_client.put(
+        f"/api/stories/file/{created['id']}/document", json={"body": "the house was"}
+    )
+
+    too_long = "x" * (MAX_INSTRUCTION_LENGTH + 1)
+    response = llm_client.post(
+        f"/api/stories/file/{created['id']}/generate",
+        json={"model": "p/m", "instruction": too_long},
+    )
+
+    assert response.status_code == 400
 
 
 # --- the stored context summary (api#18) -------------------------------------

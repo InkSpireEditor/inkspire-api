@@ -546,3 +546,30 @@ def test_summary_renders_on_a_rewrite_too() -> None:
     selection = CursorRange(start, end)
     context = assemble(body, budget=50, selection=selection, summary="Jane Doe is the narrator.")
     assert context.summary == "Jane Doe is the narrator."
+
+
+# --- the writer's own instruction (api#19) ------------------------------------
+
+
+def test_instruction_defaults_to_empty() -> None:
+    assert assemble("hello", budget=10).instruction == ""
+
+
+def test_instruction_passes_straight_through() -> None:
+    context = assemble("hello", budget=10, instruction="Make this more neutral.")
+    assert context.instruction == "Make this more neutral."
+
+
+def test_instruction_is_never_trimmed_or_charged_against_the_budget() -> None:
+    """Unlike the prefix/suffix/selection: short by construction at the source
+    (`GenerateRequest`'s own character cap), the same reasoning `synopsis` has."""
+    long_instruction = "Word " * 1000
+    context = assemble("hello", budget=10, instruction=long_instruction)
+    assert context.instruction == long_instruction
+
+
+def test_instruction_renders_unconditionally_unlike_summary() -> None:
+    """There is no earlier request it has to have been computed against -- it
+    renders whether or not this request's own trim cuts anything."""
+    context = assemble("Short.", budget=10_000, instruction="Make this more neutral.")
+    assert context.instruction == "Make this more neutral."

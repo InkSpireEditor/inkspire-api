@@ -61,12 +61,13 @@ flowchart LR
     Y["a story's synopsis, or a notes folder's context<br/>(Folder.summary, api#17)"] --> C
     Z["a stored summary of what an earlier trim dropped,<br/>rendered only if THIS trim cuts the prefix (api#18)"] --> C
     L["retrieved lore -- not built"] -.-> C
-    I["the writer's instruction -- not built"] -.-> C
+    I["the writer's own instruction, unconditional (api#19)"] --> C
 ```
 
 `PromptContext` (`inkspire_api/prompt.py`) is every section the template can render: `prefix`,
-`suffix`, `selection_words`, `selection`, `synopsis` (api#17) and `summary` (api#18) today,
-nothing else. Each later section is a new field here and a guarded block in the template —
+`suffix`, `selection_words`, `selection`, `synopsis` (api#17), `summary` (api#18) and
+`instruction` (api#19) today, nothing else. Each later section is a new field here and a
+guarded block in the template —
 never a change to an existing field — which is why the prompts pinned in
 `tests/data/prompts.json` are untouched by a later section existing at all: nothing renders
 that was not already rendering.
@@ -84,6 +85,20 @@ frontend's own `MAX_SUMMARY_LENGTH`). Renders in the one slot marked for it, abo
 continuation/fill-in-the-middle/rewrite instructions and therefore identical across all three,
 and only when it is not empty — an empty one leaves the prompt byte-identical to before this
 field existed.
+
+`instruction` (api#19) is the writer's own one-off steering for this generation alone --
+"make this more neutral", "continue as if a day has passed" -- carried on `GenerateRequest`
+itself rather than looked up by the route, since there is nothing to look up: `_stream_generation`
+reads `body.instruction` directly and passes it down the same way `synopsis`/`summary` travel.
+Capped at `MAX_INSTRUCTION_LENGTH` (300 characters, `llm.py`) -- short by construction at the
+source, the same reasoning `synopsis` has, so `assemble` never trims or charges it against the
+budget either. Unlike `summary`, it renders unconditionally: there is no earlier request it has
+to have been computed against. Renders in the same slot `synopsis` does not -- last, immediately
+above the continuation/fill-in-the-middle/rewrite's own "Text before:"/"Existing text:" --
+wrapped as "The writer also asks: ..." inside the `{% set %}` capture `templates/prompt.j2` uses
+for it, the same `instruction_para` idiom `summary_para` (api#18) already establishes. An
+overlong instruction is a `Field(max_length=...)` violation -- 400, not 422, the same
+distinction `titles.py`'s own instruction field already draws.
 
 ### The caret, and why its absence is not a special case written twice
 
@@ -514,12 +529,11 @@ needs a story, and the editor opens a note through the same component it opens a
   per-model tokenizer.
 - **Auto-detecting a model's real context window.** `num_ctx` is set (or left unset) by hand;
   nothing reads what a model can actually do and suggests or enforces a ceiling from it.
-- **Retrieved lore, the writer's own instruction on Generate.** Each is a field on
-  `PromptContext` and a block in `prompt.j2`, the way a story's synopsis (api#17) and the
-  trimmed-context summary (api#18) already are; neither of these two exist yet. See
-  api#19/frontend#24, api#15. A story's synopsis is the natural second field on `titles.py`'s
-  own, separate `TitleContext` too, by the same reasoning, once something needs it there —
-  api#25 is a different prompt, not this one.
+- **Retrieved lore (api#15).** A field on `PromptContext` and a block in `prompt.j2`, the way
+  a story's synopsis (api#17), the trimmed-context summary (api#18) and the writer's own
+  instruction (api#19) already are; this one does not exist yet. A story's synopsis is the
+  natural second field on `titles.py`'s own, separate `TitleContext` too, by the same
+  reasoning, once something needs it there — api#25 is a different prompt, not this one.
 - **A frontend surface for the manual, forced-recompute trigger.** The action itself is built
   -- `inkspire ink maintenance --summaries` (api#27) -- but only from the command line.
   `/llm/features`'s `summary` key exists so a later UI has something to gate on.
