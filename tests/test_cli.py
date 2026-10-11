@@ -1250,7 +1250,7 @@ def test_a_root_that_is_not_there_is_not_an_error(check, tmp_path) -> None:
     assert "1 file checked" in result.output
 
 
-# --- ink reclassify ---------------------------------------------------------
+# --- ink maintenance (api#27, formerly ink reclassify) ----------------------
 
 OLD_PARA = "The door creaked. The streets glistened like wet glass under the lamplight."
 NEW_PARA = "The door creaked open. The streets glistened like wet glass under the lamplight."
@@ -1267,22 +1267,47 @@ def ink_file(body: str, section: str | None = None) -> str:
 
 
 @pytest.fixture
-def reclassify(monkeypatch, tmp_path):
-    """Runs `inkspire ink reclassify`, with both roots where the test put them."""
+def maintenance(monkeypatch, tmp_path):
+    """Runs `inkspire ink maintenance`, with both roots where the test put them and a
+    provider answered by a handler, not the network -- `ask`'s own contract for `llm`,
+    merged with `serve`'s own way of giving a story repository a real root.
+
+    No test here passes a model call it does not expect: the default handler fails
+    loudly if one reaches it, so a test exercising the provenance pass alone (which
+    should call no model at all) does not have to assert that negative itself.
+    """
+
+    def unexpected(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no model call was expected, got one for {request.url}")
+
     data_root = tmp_path / "novel-data"
     # exist_ok, because `story_repo` may have made it first: both fixtures build the
     # same root and nothing fixes which one pytest resolves first.
     (data_root / "stories").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        cli,
-        "get_settings",
-        lambda: Settings(
-            data_root=data_root, files_root=tmp_path / "files", jwt_secret="s" * 32
-        ),
-    )
 
-    def run(*args: str):
-        return runner.invoke(cli.app, ["ink", "reclassify", *args])
+    def run(*args: str, handler=unexpected, small_model: str | None = None):
+        seen: list[dict] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            if request.content:
+                seen.append(json.loads(request.content))
+            return handler(request)
+
+        settings = llm_settings(tmp_path, small_model=small_model).model_copy(
+            update={
+                "data_root": data_root,
+                "files_root": tmp_path / "files",
+                "jwt_secret": "s" * 32,
+            }
+        )
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            cli,
+            "LLMService",
+            lambda given: LLMService(given, transport=httpx.MockTransport(record)),
+        )
+        result = runner.invoke(cli.app, ["ink", "maintenance", *args])
+        return result, seen
 
     return run
 
@@ -1312,34 +1337,25 @@ def edit(data_root: Path, body: str, section: str | None = OLD_SECTION) -> Path:
     return path
 
 
-def test_a_dry_run_writes_nothing_and_exits_non_zero(reclassify, story_repo) -> None:
+def test_dry_run_writes_nothing_and_exits_non_zero(maintenance, story_repo) -> None:
+    """`-n` is the opt-in: everything else about `maintenance` writes by default."""
     path = edit(story_repo, NEW_PARA)
     before = path.read_bytes()
 
-    result = reclassify()
+    result, seen = maintenance("--provenance", "-n")
 
     assert result.exit_code == 1
     assert path.read_bytes() == before
+    assert not seen
     assert "STALE" in result.output
     assert "recoverable" in result.output
-    assert "Nothing written; pass --force to apply." in result.output
+    assert "Nothing written; omit --dry-run to apply." in result.output
 
 
-def test_a_dry_run_is_the_default_and_may_be_asked_for(reclassify, story_repo) -> None:
-    """So intent is visible in a script."""
-    path = edit(story_repo, NEW_PARA)
-    before = path.read_bytes()
-
-    result = reclassify("--dry-run")
-
-    assert result.exit_code == 1
-    assert path.read_bytes() == before
-
-
-def test_force_rewrites_the_entry_under_the_new_hash(reclassify, story_repo) -> None:
+def test_a_bare_run_rewrites_the_entry_under_the_new_hash(maintenance, story_repo) -> None:
     path = edit(story_repo, NEW_PARA)
 
-    result = reclassify("--force")
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     text = path.read_text(encoding="utf-8")
@@ -1349,43 +1365,37 @@ def test_force_rewrites_the_entry_under_the_new_hash(reclassify, story_repo) -> 
     assert "1 file written." in result.output
 
 
-def test_force_leaves_nothing_stale_behind(reclassify, story_repo) -> None:
+def test_a_bare_run_leaves_nothing_stale_behind(maintenance, story_repo) -> None:
     """A second run has nothing to do, which is what says the first one worked."""
     edit(story_repo, NEW_PARA)
-    assert reclassify("-f").exit_code == 0
+    result, _ = maintenance("--provenance")
+    assert result.exit_code == 0
 
-    second = reclassify()
+    second, _ = maintenance("--provenance", "-n")
     assert second.exit_code == 0
     assert "STALE" not in second.output
 
 
-def test_force_and_dry_run_together_are_refused(reclassify, story_repo) -> None:
-    edit(story_repo, NEW_PARA)
-    result = reclassify("--force", "--dry-run")
-    assert result.exit_code == 1
-    assert "not both" in result.output
-
-
-def test_a_clean_file_is_not_reported_at_all(reclassify, story_repo) -> None:
+def test_a_clean_file_is_not_reported_at_all(maintenance, story_repo) -> None:
     """Nothing is stale, so there is nothing to say about it."""
-    result = reclassify()
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     assert "STALE" not in result.output
     assert "1 file checked, 0 stale" in result.output
 
 
-def test_a_file_with_no_provenance_is_left_alone(reclassify, tmp_path) -> None:
+def test_a_file_with_no_provenance_is_left_alone(maintenance, tmp_path) -> None:
     path = write_chapter(tmp_path, "one.ink", ink_file("Once."))
     before = path.read_bytes()
 
-    result = reclassify("--force")
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     assert path.read_bytes() == before
 
 
-def test_no_matching_revision_resets_that_paragraph_only(reclassify, story_repo) -> None:
+def test_no_matching_revision_resets_that_paragraph_only(maintenance, story_repo) -> None:
     """Its neighbour keeps its runs exactly, which is why provenance is keyed by
     paragraph and not by file."""
     kept = "Untouched."
@@ -1396,7 +1406,7 @@ def test_no_matching_revision_resets_that_paragraph_only(reclassify, story_repo)
         f'"{kept_key}": [[0, 2, "fix"]]\n"deadbeefdeadbeef": [[0, 4, "gen"]]\n',
     )
 
-    result = reclassify("--force")
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     text = (story_repo / CHAPTER_PATH).read_text(encoding="utf-8")
@@ -1405,14 +1415,14 @@ def test_no_matching_revision_resets_that_paragraph_only(reclassify, story_repo)
     assert "would reset" in result.output
 
 
-def test_a_notes_file_resets_without_attempting_git(reclassify, tmp_path) -> None:
+def test_a_notes_file_resets_without_attempting_git(maintenance, tmp_path) -> None:
     """The notes root is not a repository, so there is nothing to recover from."""
     files_root = tmp_path / "files"
     files_root.mkdir(parents=True, exist_ok=True)
     path = files_root / "scratch.ink"
     path.write_text(ink_file(NEW_PARA, OLD_SECTION), encoding="utf-8")
 
-    result = reclassify("--force")
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     text = path.read_text(encoding="utf-8")
@@ -1421,57 +1431,165 @@ def test_a_notes_file_resets_without_attempting_git(reclassify, tmp_path) -> Non
     assert "would reset" in result.output
 
 
-def test_a_story_root_that_is_not_a_repository_can_only_reset(reclassify, tmp_path) -> None:
+def test_a_story_root_that_is_not_a_repository_can_only_reset(maintenance, tmp_path) -> None:
     """A data root nobody has cloned. The command still works; recovery is what is lost."""
     path = write_chapter(tmp_path, "one.ink", ink_file(NEW_PARA, OLD_SECTION))
 
-    result = reclassify("--force")
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     assert f'"{NEW_KEY}": []' in path.read_text(encoding="utf-8")
 
 
-def test_one_named_file_is_reclassified_on_its_own(reclassify, story_repo) -> None:
+def test_one_named_file_is_maintained_on_its_own(maintenance, story_repo) -> None:
     path = edit(story_repo, NEW_PARA)
     other = story_repo / "stories" / "example-story" / "chapters" / "two.ink"
     other.write_text(ink_file(NEW_PARA, OLD_SECTION), encoding="utf-8")
 
-    result = reclassify("-f", str(path))
+    result, _ = maintenance("--provenance", str(path))
 
     assert result.exit_code == 0
     assert "1 file checked" in result.output
     assert OLD_KEY in other.read_text(encoding="utf-8")
 
 
-def test_a_section_that_cannot_be_read_is_left_alone(reclassify, story_repo) -> None:
+def test_a_section_that_cannot_be_read_is_left_alone(maintenance, story_repo) -> None:
     """There is no recovery to apply to a section nobody can parse, and rewriting it
     from nothing would throw away whatever it was meant to say."""
     path = edit(story_repo, NEW_PARA, "[unclosed\n")
     before = path.read_bytes()
 
-    result = reclassify("--force")
+    result, _ = maintenance("--provenance")
 
     assert result.exit_code == 0
     assert path.read_bytes() == before
 
 
-def test_an_empty_repository_has_nothing_to_reclassify(reclassify) -> None:
-    result = reclassify()
+def test_an_empty_repository_has_nothing_to_maintain(maintenance) -> None:
+    result, _ = maintenance("--provenance")
     assert result.exit_code == 0
-    assert "No .ink files to reclassify." in result.output
+    assert "No .ink files to maintain." in result.output
 
 
-def test_a_path_that_is_not_there_is_refused(reclassify, tmp_path) -> None:
-    result = reclassify(str(tmp_path / "gone.ink"))
+def test_a_path_that_is_not_there_is_refused(maintenance, tmp_path) -> None:
+    result, _ = maintenance("--provenance", str(tmp_path / "gone.ink"))
     assert result.exit_code == 1
     assert "is not there" in result.output
 
 
-def test_the_report_names_the_paragraph_and_the_hash(reclassify, story_repo) -> None:
+def test_the_report_names_the_paragraph_and_the_hash(maintenance, story_repo) -> None:
     edit(story_repo, NEW_PARA)
 
-    result = reclassify()
+    result, _ = maintenance("--provenance")
 
     assert "para 1" in result.output
     assert "39f4…2890" in result.output
-    assert f"was {OLD_KEY[:4]}…{OLD_KEY[-4:]}" in result.output
+
+
+# --- the summary pass (api#27) -----------------------------------------------
+
+_LONG_BODY = ("Jane Doe is the narrator. " * 400) + "\n\nThe end."
+
+
+def test_provenance_only_makes_no_model_call(maintenance, story_repo) -> None:
+    """The default `unexpected` handler raises if the summary pass is ever reached;
+    `--provenance` alone must never get there even with a model configured."""
+    edit(story_repo, NEW_PARA, OLD_SECTION)
+    result, seen = maintenance("--provenance", small_model="p/model")
+
+    assert result.exit_code == 0
+    assert not seen
+
+
+def test_summaries_only_leaves_a_stale_hash_alone(maintenance, story_repo) -> None:
+    path = edit(story_repo, NEW_PARA)
+    before = path.read_bytes()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    result, _ = maintenance("--summaries", handler=handler, small_model="p/model")
+
+    assert result.exit_code == 0
+    assert path.read_bytes() == before  # the stale hash is still there, untouched
+
+
+def test_a_bare_run_does_both_passes(maintenance, story_repo) -> None:
+    path = edit(story_repo, f"{NEW_PARA}\n\n{_LONG_BODY}")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    result, seen = maintenance(handler=handler, small_model="p/model")
+
+    assert result.exit_code == 0
+    assert len(seen) == 1
+    text = path.read_text(encoding="utf-8")
+    assert NEW_KEY in text
+    assert "ink:context_summary" in text
+    assert "1 resummarised." in result.output
+
+
+def test_dry_run_reports_a_due_summary_and_calls_no_model(maintenance, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", ink_file(_LONG_BODY))
+
+    result, seen = maintenance("-n", small_model="p/model")
+
+    assert result.exit_code == 0  # a due summary never fails a dry run on its own
+    assert not seen
+    assert "would resummarise" in result.output
+    assert "1 due for a new summary." in result.output
+
+
+def test_summaries_only_with_no_model_configured_fails(maintenance, tmp_path) -> None:
+    write_chapter(tmp_path, "one.ink", ink_file(_LONG_BODY))
+
+    result, seen = maintenance("--summaries")
+
+    assert result.exit_code == 1
+    assert not seen
+    assert "INKSPIRE_LLM_SMALL_MODEL" in result.output
+
+
+def test_a_bare_run_with_no_model_configured_skips_summaries_but_fixes_hashes(
+    maintenance, story_repo
+) -> None:
+    path = edit(story_repo, f"{NEW_PARA}\n\n{_LONG_BODY}")
+
+    result, seen = maintenance()
+
+    assert result.exit_code == 0
+    assert not seen
+    assert "skipping the summary pass" in result.output
+    assert NEW_KEY in path.read_text(encoding="utf-8")
+
+
+def test_a_file_needing_both_sections_is_written_once(maintenance, story_repo) -> None:
+    path = edit(story_repo, f"{NEW_PARA}\n\n{_LONG_BODY}")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    result, _ = maintenance(handler=handler, small_model="p/model")
+
+    assert result.exit_code == 0
+    text = path.read_text(encoding="utf-8")
+    assert NEW_KEY in text
+    assert "ink:context_summary" in text
+    assert text.count("ink:provenance") == 1  # one file, one write, one of each section
+
+
+def test_a_provider_failure_is_reported_and_does_not_abort_the_walk(
+    maintenance, tmp_path
+) -> None:
+    write_chapter(tmp_path, "one.ink", ink_file(_LONG_BODY))
+    write_chapter(tmp_path, "two.ink", ink_file("Short."))
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    result, _ = maintenance("--summaries", handler=handler, small_model="p/model")
+
+    assert result.exit_code == 1
+    assert "provider error" in result.output
+    assert "2 file" in result.output  # both files were still checked

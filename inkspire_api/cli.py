@@ -24,6 +24,8 @@ and will show such a file under its filename rather than hide it:
 
     inkspire ink check
     inkspire ink check stories/example-story
+    inkspire ink maintenance
+    inkspire ink maintenance --dry-run
 
 And the server itself:
 
@@ -868,7 +870,7 @@ SHOWN_HASH = 4
 
 @dataclass(frozen=True)
 class Verdict:
-    """What `reclassify` found about one paragraph."""
+    """What `reclassify_file` found about one paragraph."""
 
     #: Its place in the body, counting from 1, which is how a reader finds it.
     index: int
@@ -976,7 +978,7 @@ def reclassify_file(path: Path, settings: Settings) -> tuple[list[Verdict], str 
     )
 
 
-def report(verdict: Verdict, revision: str | None) -> None:
+def report_provenance(verdict: Verdict, revision: str | None) -> None:
     """One paragraph's line of the report."""
     if verdict.state == "ok":
         typer.secho(f"  para {verdict.index}  {brief(verdict.digest)}  ok")
@@ -995,91 +997,315 @@ def report(verdict: Verdict, revision: str | None) -> None:
     )
 
 
-def reclassify_one(path: Path, settings: Settings, *, force: bool) -> Counter[str]:
-    """Reports one file, writes it where `force` says to, and counts what it found."""
-    counts: Counter[str] = Counter()
+def report_summary(dropped_chars: int, verdict: str, *, colour: str) -> None:
+    """The context-summary line of the report, the same shape `report_provenance`
+    gives one paragraph -- a count, then what was or would be done about it."""
+    typer.secho(f"  summary  {plural(dropped_chars, 'character')} dropped  -> {verdict}", fg=colour)
+
+
+def run_provenance_pass(
+    path: Path, settings: Settings, *, counts: Counter[str], sections: dict[str, str]
+) -> bool:
+    """Runs the provenance pass on one file: recovers or resets every stale
+    paragraph, reports what it found, and folds the result into `counts` and
+    `sections` in place. Returns whether it printed anything, so `maintain_one`
+    knows whether the file's own header is already out before the summary pass runs.
+
+    Reused wholesale from `reclassify_file` rather than re-expressed here: it already
+    reads the file, recovers or resets every stale paragraph, and renders the
+    result -- a second reparse of its own output is the cost of calling it instead
+    of duplicating what it does.
+    """
     try:
-        found, revision, text = reclassify_file(path, settings)
+        found, revision, patched = reclassify_file(path, settings)
     except (OSError, UnicodeDecodeError) as error:
         typer.secho(f"{shown(path)}: cannot be read as text: {error}", fg=typer.colors.RED)
-        counts["stale"] += 1
-        return counts
-
-    if text is None:
-        return counts
+        counts["failed"] += 1
+        return False
+    if patched is None:
+        return False
 
     typer.secho(shown(path))
     for verdict in found:
-        report(verdict, revision)
+        report_provenance(verdict, revision)
         if verdict.state == "recovered":
             counts["stale"] += 1
             counts["recoverable"] += 1
         elif verdict.state == "reset":
             counts["stale"] += 1
             counts["would_reset"] += 1
+    sections[ink.SECTION_PROVENANCE] = ink.parse(patched).sections[ink.SECTION_PROVENANCE]
+    return True
 
-    if force:
-        write_atomically(path, text)
-        counts["written"] += 1
+
+async def run_summary_pass(
+    document: ink.Document,
+    *,
+    svc: LLMService | None,
+    model: str | None,
+    budget: int,
+    dry_run: bool,
+    header_printed: bool,
+    counts: Counter[str],
+    sections: dict[str, str],
+    path: Path,
+) -> None:
+    """Runs the summary pass on one file: decides what is due, bypassing `is_due`
+    (the whole point of a manual pass is to resummarise everything trimmed, not
+    only what the proportional metric calls due), reports it, and folds the result
+    into `counts` and `sections` in place.
+
+    `header_printed` says whether the provenance pass already printed the file's
+    own header, so this prints it instead exactly when nothing else has. A dry run
+    never calls `summaries.resummarise`: costs nothing, calls no model. `svc`/
+    `model` are asserted present once this actually needs them -- `maintenance`
+    below only calls this once it has confirmed both, for every file in one walk.
+    """
+    dropped_chars = len(context_summary.dropped(document.body, budget))
+    if dropped_chars == 0:
+        return
+    if not header_printed:
+        typer.secho(shown(path))
+
+    if dry_run:
+        report_summary(dropped_chars, "would resummarise", colour=typer.colors.YELLOW)
+        counts["summary_due"] += 1
+        return
+
+    assert svc is not None and model is not None  # gated by the caller
+    try:
+        outcome = await summaries.resummarise(
+            document.body,
+            document.sections.get(ink.SECTION_CONTEXT_SUMMARY),
+            service=svc,
+            model=model,
+            budget=budget,
+            respect_trigger=False,
+        )
+    except (LLMError, UnknownModel) as error:
+        typer.secho(f"  summary  provider error: {error}", fg=typer.colors.RED)
+        counts["failed"] += 1
+        return
+
+    if outcome.state == summaries.UNUSABLE:
+        report_summary(outcome.dropped_chars, "model answered nothing usable", colour=typer.colors.RED)
+    elif outcome.state == summaries.WRITTEN:
+        assert outcome.section is not None
+        report_summary(outcome.dropped_chars, "resummarised", colour=typer.colors.GREEN)
+        counts["resummarised"] += 1
+        sections[ink.SECTION_CONTEXT_SUMMARY] = outcome.section
+
+
+async def maintain_one(
+    path: Path,
+    settings: Settings,
+    *,
+    passes: set[str],
+    dry_run: bool,
+    svc: LLMService | None,
+    model: str | None,
+    budget: int,
+) -> Counter[str]:
+    """Runs the requested passes against one file, reports what each found, and --
+    unless `dry_run` -- writes every section either pass changed in one write.
+
+    `svc`/`model` are `None` whenever the summary pass cannot run at all for this
+    invocation (not requested, or no model configured) -- `maintenance` below
+    decides that once, not per file, so this never has to ask why they are absent.
+
+    Everything about a file -- its header, its body, every section neither pass
+    touches -- comes from `sections`, a copy of what was parsed, the same discipline
+    `ink.render_with` exists to enforce: a section derived from the body is never
+    written without it.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        typer.secho(f"{shown(path)}: cannot be read as text: {error}", fg=typer.colors.RED)
+        return Counter(failed=1)
+
+    document = ink.parse(text)
+    sections = dict(document.sections)
+    counts: Counter[str] = Counter()
+
+    header_printed = False
+    if "provenance" in passes:
+        header_printed = run_provenance_pass(path, settings, counts=counts, sections=sections)
+    if "summaries" in passes:
+        await run_summary_pass(
+            document,
+            svc=svc,
+            model=model,
+            budget=budget,
+            dry_run=dry_run,
+            header_printed=header_printed,
+            counts=counts,
+            sections=sections,
+            path=path,
+        )
+
+    if dry_run or sections == document.sections:
+        return counts
+
+    write_atomically(path, ink.render(document.metadata, document.body, sections))
+    counts["written"] += 1
     return counts
 
 
-@ink_app.command("reclassify")
-def reclassify(
+async def maintain_all(
+    files: list[Path],
+    settings: Settings,
+    *,
+    passes: set[str],
+    dry_run: bool,
+    svc: LLMService | None,
+    model: str | None,
+    budget: int,
+) -> Counter[str]:
+    """`maintain_one`, over every file, inside one `asyncio.run` -- so a provider
+    connection the summary pass needs is made once for the whole walk rather than
+    once per file. Not concurrent: a local model serves one request at a time
+    regardless, and concurrency would only hammer a hosted one."""
+    counts: Counter[str] = Counter()
+    for path in files:
+        counts += await maintain_one(
+            path, settings, passes=passes, dry_run=dry_run, svc=svc, model=model, budget=budget
+        )
+    return counts
+
+
+@ink_app.command("maintenance")
+def maintenance(
     paths: Annotated[
         list[Path] | None,
-        typer.Argument(help="Files or directories to reclassify. Omit for both roots."),
+        typer.Argument(help="Files or directories to maintain. Omit for both roots."),
     ] = None,
-    force: Annotated[
-        bool, typer.Option("--force", "-f", help="Write the recovered provenance.")
-    ] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", "-n", help="Report and write nothing. The default.")
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Report what would change. Writes nothing and calls no model.",
+        ),
     ] = False,
+    provenance_only: Annotated[
+        bool, typer.Option("--provenance", help="Only repair ink:provenance hashes.")
+    ] = False,
+    summaries_only: Annotated[
+        bool,
+        typer.Option(
+            "--summaries", help="Only resummarise dropped context. Bypasses the usual staleness check."
+        ),
+    ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Model for the summary pass, as listed by `llm models`. Left unset, "
+                "INKSPIRE_LLM_SMALL_MODEL applies, the same model the background "
+                "context-summary call uses (api#18)."
+            ),
+        ),
+    ] = None,
+    *,
+    budget: Annotated[
+        int,
+        typer.Option(
+            "--budget",
+            help=(
+                "The prompt budget the summary pass trims against, as "
+                "INKSPIRE_LLM_PROMPT_BUDGET does for a real generation."
+            ),
+        ),
+    ] = 10_000,
 ) -> None:
-    """Put right the provenance of a paragraph edited outside the editor.
+    """Regenerate every derived section a `.ink` file carries.
 
-    A paragraph edited by hand no longer hashes to the key its runs are stored under,
-    so those runs describe prose that is no longer there. Recomputing the hash is not
-    the fix: it would record the new text while keeping offsets measured against the
-    old. Instead the paragraph's own earlier text is looked for in the file's history,
-    diffed forward, and the runs replayed over the result. What history cannot explain
-    resets to plain prose rather than being guessed at.
+    Two passes, selected by `--provenance`/`--summaries`; naming neither runs both.
 
-    **Nothing is written without `--force`.** A dry run exits non-zero if it found
-    anything stale, so it can gate a commit; `--force` exits zero once it has resolved
-    it. A notes file has no history and can only ever reset.
+    **Provenance.** A paragraph edited by hand no longer hashes to the key its runs are
+    stored under, so those runs describe prose that is no longer there. Recomputing the
+    hash is not the fix: it would record the new text while keeping offsets measured
+    against the old. Instead the paragraph's own earlier text is looked for in the
+    file's history, diffed forward, and the runs replayed over the result. What history
+    cannot explain resets to plain prose rather than being guessed at. A notes file has
+    no history and can only ever reset.
+
+    **Summaries.** Resummarises what a trim at `--budget` characters would drop from
+    every file that has anything trimmed, regardless of whether `context_summary.is_due`
+    would call it due -- that bypass is the point: it is the forced recompute for a
+    rewrite inside the dropped region that does not change its size, which the
+    proportional metric cannot see on its own. One model call per file that needs one;
+    `--dry-run` reports which files those are and spends none of them.
+
+    **Writes by default.** `INKSPIRE_DATA_ROOT` is a git working tree, so a bad rewrite
+    is recoverable with `git checkout` before it is committed; a note's provenance can
+    only ever reset regardless of who runs this. `--dry-run`/`-n` reports and writes
+    nothing, and calls no model either. A dry run exits non-zero if it found anything
+    stale -- so it can gate a commit -- but never because a summary was merely due,
+    which would make the gate fail on nearly every long chapter. A real run exits
+    non-zero only if something actually failed: a file that could not be read, or a
+    provider error.
 
     With no argument this covers both roots, as `ink check` does.
     """
-    if force and dry_run:
-        fail("Pass --force or --dry-run, not both.")
+    passes = {
+        name
+        for name, chosen in (("provenance", provenance_only), ("summaries", summaries_only))
+        if chosen
+    } or {"provenance", "summaries"}
 
     settings = get_settings()
     roots = [root for root in (settings.data_root, settings.files_root) if root.is_dir()]
     files = ink_files(list(paths) if paths else roots)
     if not files:
-        typer.secho("No .ink files to reclassify.", fg=typer.colors.YELLOW, err=True)
+        typer.secho("No .ink files to maintain.", fg=typer.colors.YELLOW, err=True)
         return
 
-    counts: Counter[str] = Counter()
-    for path in files:
-        counts += reclassify_one(path, settings, force=force)
-
-    summary = (
-        f"{plural(len(files), 'file')} checked, {counts['stale']} stale, "
-        f"{counts['recoverable']} recoverable, {counts['would_reset']} would reset."
-    )
-    if force:
+    chosen_model = model or settings.llm_small_model
+    if "summaries" in passes and chosen_model is None:
+        if summaries_only:
+            fail("No model given and INKSPIRE_LLM_SMALL_MODEL is unset.")
         typer.secho(
-            f"{summary} {plural(counts['written'], 'file')} written.",
-            fg=typer.colors.GREEN,
+            "[WARNING] No model given and INKSPIRE_LLM_SMALL_MODEL is unset -- "
+            "skipping the summary pass.",
+            fg=typer.colors.YELLOW,
             err=True,
         )
-        return
-    if counts["stale"]:
-        typer.secho(
-            f"{summary} Nothing written; pass --force to apply.", fg=typer.colors.YELLOW, err=True
+        passes = passes - {"summaries"}
+
+    svc = service(think=False) if ("summaries" in passes and not dry_run) else None
+
+    counts = asyncio.run(
+        maintain_all(
+            files, settings, passes=passes, dry_run=dry_run, svc=svc, model=chosen_model, budget=budget
         )
+    )
+
+    resummarised = counts["summary_due"] if dry_run else counts["resummarised"]
+    summary = (
+        f"{plural(len(files), 'file')} checked, {counts['stale']} stale, "
+        f"{counts['recoverable']} recoverable, {counts['would_reset']} would reset, "
+        f"{resummarised} {'due for a new summary' if dry_run else 'resummarised'}."
+    )
+
+    if dry_run:
+        if counts["stale"] or counts["summary_due"]:
+            typer.secho(
+                f"{summary} Nothing written; omit --dry-run to apply.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        else:
+            typer.secho(summary, fg=typer.colors.GREEN, err=True)
+        if counts["stale"]:
+            raise typer.Exit(code=1)
+        return
+
+    typer.secho(
+        f"{summary} {plural(counts['written'], 'file')} written.", fg=typer.colors.GREEN, err=True
+    )
+    if counts["failed"]:
         raise typer.Exit(code=1)
-    typer.secho(summary, fg=typer.colors.GREEN, err=True)

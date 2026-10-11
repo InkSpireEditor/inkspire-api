@@ -246,8 +246,12 @@ can never interleave into a lost update.
 
 **What the trigger metric cannot see.** A rewrite *inside* the dropped region that barely
 changes its size -- renaming a character through the first ten chapters, say -- is invisible to
-a size-based check by construction. A manual, forced-recompute action is the intended fix and is
-not built (the issue's own "hidden manual trigger," left for a later, frontend-facing step).
+a size-based check by construction. The fix is a manual, forced-recompute action, and it is
+built: `inkspire ink maintenance --summaries` (api#27, `docs/provenance.md`) resummarises every
+file with anything dropped at all, `is_due` ignored, through `resummarise` (`summaries.py`) --
+the same decision sequence `update` below uses, with its trigger check skippable
+(`respect_trigger=False`) only from the command line. A frontend surface for the same action
+is a separate, not-yet-built step (the issue's own "hidden manual trigger").
 
 **The dropped region is itself trimmed from the head, not the tail**, the same way
 `titles.py`'s `assemble_title` trims a chapter's opening rather than its end: what establishes a
@@ -516,8 +520,8 @@ needs a story, and the editor opens a note through the same component it opens a
   api#19/frontend#24, api#15. A story's synopsis is the natural second field on `titles.py`'s
   own, separate `TitleContext` too, by the same reasoning, once something needs it there —
   api#25 is a different prompt, not this one.
-- **The manual, forced-recompute trigger for api#18's own summary**, and any frontend
-  surface for it at all. `/llm/features`'s `summary` key exists so a later UI has something
-  to gate on; the action itself is the issue's own "hidden manual trigger," not built.
+- **A frontend surface for the manual, forced-recompute trigger.** The action itself is built
+  -- `inkspire ink maintenance --summaries` (api#27) -- but only from the command line.
+  `/llm/features`'s `summary` key exists so a later UI has something to gate on.
 - **A ceiling on how much may be rewritten at once.** Decided against, not merely unbuilt —
   see "The selection" above.

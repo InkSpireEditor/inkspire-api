@@ -180,21 +180,31 @@ machine-written — that would fabricate a record rather than recover one.
 it right on disk:
 
 ```bash
-poetry run inkspire ink reclassify                   # report; writes nothing
-poetry run inkspire ink reclassify -f                # apply
-poetry run inkspire ink reclassify -n chapters/02.ink  # a dry run, said out loud
+poetry run inkspire ink maintenance                      # repairs provenance, resummarises -- writes
+poetry run inkspire ink maintenance -n                   # report; writes nothing, calls no model
+poetry run inkspire ink maintenance --provenance chapters/02.ink  # one file, one pass
 ```
 
     chapters/02.ink
       para 1  080e…6029  ok
       para 2  39f4…2890  STALE  -> recoverable from 07e9299, was 47f5…330e (3 runs)
       para 3  7f39…2f97  ok
-    1 file checked, 1 stale, 1 recoverable, 0 would reset. Nothing written; pass --force to apply.
+    1 file checked, 1 stale, 1 recoverable, 0 would reset, 0 resummarised. 1 file written.
 
-A dry run exits non-zero if it found anything stale, so it too can gate a commit, and a clean
-file prints nothing at all. Unlike the route this walks the whole history rather than
-stopping at a ceiling: it is run by hand, after a miss, and is worth the time. Notes have no
-history — their root is not a repository — so there a stale paragraph can only be dropped.
+`--provenance`/`--summaries` select a pass; naming neither runs both. It writes by default --
+`INKSPIRE_DATA_ROOT` is a git working tree, so a bad rewrite is recoverable with `git checkout`
+before it is committed -- and `-n`/`--dry-run` reports and writes nothing instead, calling no
+model either. A dry run exits non-zero if it found anything stale, so it too can gate a
+commit, and a clean file prints nothing at all. The provenance pass walks the whole history
+rather than stopping at a ceiling, unlike the route: it is run by hand, after a miss, and is
+worth the time. Notes have no history — their root is not a repository — so there a stale
+paragraph can only be dropped.
+
+The summary pass resummarises what a trim at `INKSPIRE_LLM_PROMPT_BUDGET` characters would
+drop from every file that has anything trimmed, bypassing the usual staleness check on
+purpose: it is the forced recompute for a rewrite inside the dropped region that does not
+change its size, which that check cannot see on its own. One model call per file that needs
+one; `-n` reports which files those are and spends none of them.
 
 One story is one directory in the tree, and its chapters are that directory's files:
 

@@ -459,7 +459,7 @@ class Recovery(NamedTuple):
     """What a reconciliation answered.
 
     `sources` maps a paragraph's new hash to the stale key its runs came from. Only
-    `ink reclassify` reads it, to say in its report which key it recovered — but it has
+    `ink maintenance` reads it, to say in its report which key it recovered — but it has
     to come from here, because the pairing is decided by similarity (§7.5) and a caller
     comparing key sets afterwards could only guess at it.
     """
@@ -510,7 +510,7 @@ def _stale_texts(
     the revisions since the edit rather than the length of the history. Answers what was
     found and the newest revision that contributed — `None` where nothing did.
 
-    `limit` of `None` walks the whole history, which only `ink reclassify` asks for: it
+    `limit` of `None` walks the whole history, which only `ink maintenance` asks for: it
     is run by hand, after a miss, and is worth however long it takes. A request takes the
     ceiling instead.
 
@@ -572,7 +572,7 @@ def recover(
     no match.
 
     **Writes nothing.** A read must not dirty the story repository, so the file stays
-    stale on disk until the next ordinary save; `ink reclassify --force` is the only
+    stale on disk until the next ordinary save; a bare `ink maintenance` is the only
     thing that persists a recovery on its own.
     """
     paragraphs, _ = provenance.split_paragraphs(body)
@@ -632,7 +632,7 @@ def reconciled(
     """`metadata` rekeyed to `body`, recovering from history where there is any.
 
     The one place that decides what no repository means, so the `document` route and
-    `ink reclassify` cannot come to different answers about it. `None` for `repo` is the
+    `ink maintenance` cannot come to different answers about it. `None` for `repo` is the
     notes root, whose files have no history, and a story root nobody has cloned: in
     either case a paragraph that is no longer accounted for resets (§7.5).
     """

@@ -18,8 +18,9 @@ import pytest
 
 from tests.conftest import answer_body, llm_service, make_story
 
-from inkspire_api import summaries
+from inkspire_api import context_summary, summaries
 from inkspire_api.context_summary import parse_section
+from inkspire_api.llm import LLMError
 from inkspire_api.storage import Scanner
 
 _PROMPTS = json.loads((Path(__file__).parent / "data" / "prompts.json").read_text(encoding="utf-8"))
@@ -73,6 +74,90 @@ def test_clean_summary_of_nothing_but_whitespace_is_empty() -> None:
     assert summaries.clean_summary("   \n\n   ") == ""
 
 
+# --- resummarise: the decision sequence `update` and `inkspire ink maintenance` ---
+# --- share (api#27) -----------------------------------------------------------
+
+_LONG_BODY = ("Jane Doe is the narrator. " * 400) + "\n\nThe end."
+
+
+def _resummarise(body, stored_section, *, tmp_path, handler, budget=50, respect_trigger=True):
+    service = llm_service(tmp_path, handler)
+    return asyncio.run(
+        summaries.resummarise(
+            body,
+            stored_section,
+            service=service,
+            model="p/model",
+            budget=budget,
+            respect_trigger=respect_trigger,
+        )
+    )
+
+
+def test_resummarise_answers_untrimmed_when_nothing_is_dropped(tmp_path: Path) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no model call was expected")
+
+    outcome = _resummarise("Short.", None, tmp_path=tmp_path, handler=handler, budget=10_000)
+
+    assert outcome.state == summaries.UNTRIMMED
+    assert outcome.dropped_chars == 0
+    assert outcome.section is None
+
+
+def test_resummarise_answers_current_when_not_due(tmp_path: Path) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no model call was expected")
+
+    stored = context_summary.render_section(
+        context_summary.ContextSummary(text="Already covered.", dropped_chars=len(_LONG_BODY))
+    )
+
+    outcome = _resummarise(_LONG_BODY, stored, tmp_path=tmp_path, handler=handler)
+
+    assert outcome.state == summaries.CURRENT
+    assert outcome.section is None
+
+
+def test_resummarise_ignores_the_trigger_when_told_to(tmp_path: Path) -> None:
+    """The one thing `inkspire ink maintenance` needs that `update` does not: a
+    summary `is_due` calls current still gets recomputed when asked."""
+    stored = context_summary.render_section(
+        context_summary.ContextSummary(text="Already covered.", dropped_chars=len(_LONG_BODY))
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    outcome = _resummarise(
+        _LONG_BODY, stored, tmp_path=tmp_path, handler=handler, respect_trigger=False
+    )
+
+    assert outcome.state == summaries.WRITTEN
+    assert outcome.section is not None
+
+
+def test_resummarise_answers_unusable_for_nothing_worth_storing(tmp_path: Path) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("   "))
+
+    outcome = _resummarise(_LONG_BODY, None, tmp_path=tmp_path, handler=handler)
+
+    assert outcome.state == summaries.UNUSABLE
+    assert outcome.section is None
+
+
+def test_resummarise_raises_rather_than_swallowing_a_provider_failure(tmp_path: Path) -> None:
+    """Unlike `update`, which logs and returns: a caller running this by hand wants
+    to see the failure, not have it disappear into a log nobody is watching."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(LLMError):
+        _resummarise(_LONG_BODY, None, tmp_path=tmp_path, handler=handler)
+
+
 # --- update: the background task, against a real scanner --------------------
 
 
@@ -91,9 +176,6 @@ def _one_chapter(data_root: Path, body: str) -> tuple[Scanner, str]:
     make_story(data_root, "example-story", chapters={"first.ink": body})
     scanner = Scanner(data_root)
     return scanner, next(iter(scanner.tree().chapters))
-
-
-_LONG_BODY = ("Jane Doe is the narrator. " * 400) + "\n\nThe end."
 
 
 def test_update_writes_a_section_when_the_body_is_over_budget_and_due(

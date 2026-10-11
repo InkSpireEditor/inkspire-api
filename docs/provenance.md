@@ -149,7 +149,7 @@ fixture. `autojunk=False` is not optional.
 **The walk is bounded by revisions, not by a clock.** A local git read does not hang, so what
 has to be limited is the work: a chapter with thousands of commits and one paragraph stale
 since the first of them would otherwise make thousands of blob reads inside a single request.
-`MAX_RECOVERY_REVISIONS` is the ceiling for a request; `ink reclassify` passes none.
+`MAX_RECOVERY_REVISIONS` is the ceiling for a request; `ink maintenance` passes none.
 
 **Notes can only ever reset.** `INKSPIRE_FILES_ROOT` is not a repository, so those files have
 no history and no recovery path. The format, the routes and the editor behave identically
@@ -177,30 +177,55 @@ drift at all. Four rules make that safe:
    happened per paragraph — `revision`, `recovered`, `reset`, `dropped` — so an interface can
    surface it. Nothing displays it today.
 
-## `inkspire ink reclassify`
+## `inkspire ink maintenance`
 
-The command is what persists a recovery without the writer saving.
+The command is what persists a recovery without the writer saving. It is one of two passes
+(`--provenance`, below; `--summaries` is api#18's own context summary, `docs/prompt.md`'s "A
+third prompt" section) a single command runs — naming neither runs both — because both are
+the same shape: a `.ink` file carries a section derived from its body, and something has to
+regenerate it when the thing it was derived from has moved on. `ink reclassify` was this
+command's name while there was only the one pass; api#27 broadened it and the name followed.
 
 ```
-$ inkspire ink reclassify
+$ inkspire ink maintenance --provenance
 stories/example-story/chapters/02.ink
   para 1  080e…6029  ok
   para 2  39f4…2890  STALE  -> recoverable from 07e9299, was 47f5…330e (3 runs)
   para 3  7f39…2f97  ok
-1 file checked, 1 stale, 1 recoverable, 0 would reset. Nothing written; pass --force to apply.
+1 file checked, 1 stale, 1 recoverable, 0 would reset, 0 resummarised. 1 file written.
 ```
 
-**Dry run is the default**, since this rewrites files in the story repository. `--force`/`-f`
-applies; `--dry-run`/`-n` is accepted explicitly so intent is visible in a script, and passing
-both is refused. A dry run exits non-zero if it found anything stale, so it can gate a commit;
-`--force` exits zero once it has resolved it.
+**It writes by default.** `INKSPIRE_DATA_ROOT` is a git working tree, so a bad rewrite here is
+recoverable with `git checkout` before it is ever committed; a note's provenance can only ever
+reset regardless of who runs this, so there is nothing a good write would have kept that a bad
+one destroys. `--dry-run`/`-n` reports and writes nothing instead, and — for the summary pass
+— calls no model either, so the cost of a run is knowable before it is spent. A dry run exits
+non-zero if it found anything stale, so it can gate a commit exactly as it always has; a
+summary merely being due never affects the exit code, since under the bypass below that is
+true of nearly every long chapter, which would make the gate fail on everything.
 
 A row shows the paragraph's **current** hash and names the stale key it was recovered from.
 Both are needed: the current hash is how a reader finds the paragraph, and the stale key is
 what was in the file. A clean file prints nothing at all, so running this over a whole
 repository is quiet unless there is news.
 
-Unlike the route it walks the whole history rather than stopping at a ceiling — it is run by
-hand, after a miss, and is worth however long that takes. A section that cannot be parsed is
-reported and left alone: there is no recovery to apply to one nobody can read, and rewriting it
-from nothing would discard whatever it was meant to say.
+Unlike the route the provenance pass walks the whole history rather than stopping at a
+ceiling — it is run by hand, after a miss, and is worth however long that takes. A section
+that cannot be parsed is reported and left alone: there is no recovery to apply to one nobody
+can read, and rewriting it from nothing would discard whatever it was meant to say.
+
+**The summary pass bypasses `context_summary.is_due` on purpose.** A manual run resummarises
+every file with anything trimmed at all, metric ignored — the forced recompute for a rewrite
+inside the dropped region that does not change its size, which the proportional metric cannot
+see by construction (`docs/prompt.md`'s own "Not yet built" list used to name this as the
+missing piece). `--model`/`-m` defaults to `INKSPIRE_LLM_SMALL_MODEL`, the same model the
+background call uses; asking for `--summaries` with neither configured is an error, while a
+bare run (both passes, the default) only warns and falls back to provenance alone. A file
+needing both a recovered hash and a fresh summary is written once, with both.
+
+`resummarise` (`summaries.py`) is the decision sequence shared between this command and the
+background call `documents.py` schedules on every save (api#18): is anything dropped, is a new
+call due — skipped here, by the `respect_trigger=False` this command alone passes — ask,
+clean. Only the model call and the cleanup are shared; this command reads and writes a `Path`
+directly rather than through a `Scanner`, since `Scanner`'s own scan skips a story directory
+with no `story.yaml` while this command's own file walk does not.

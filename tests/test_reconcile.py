@@ -307,7 +307,7 @@ def test_the_walk_stops_at_the_ceiling_it_is_given(committed: Repo, data_root: P
 
 
 def test_no_ceiling_walks_the_whole_history(committed: Repo, data_root: Path) -> None:
-    """What `ink reclassify` asks for: run by hand after a miss, and worth the time."""
+    """What `ink maintenance` asks for: run by hand after a miss, and worth the time."""
     _bury(committed, data_root, 4)
 
     _edit(data_root, NEW)

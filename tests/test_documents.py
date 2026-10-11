@@ -251,7 +251,7 @@ def test_recovering_on_read_does_not_modify_the_file(
     logged_in: TestClient, committed: Repo, data_root: Path
 ) -> None:
     """A GET must not dirty the story repository. The file stays stale on disk until the
-    next ordinary save; `ink reclassify --force` is the only thing that persists it."""
+    next ordinary save; a bare `ink maintenance` is the only thing that persists it."""
     path = data_root / CHAPTER
     stale = path.read_text(encoding="utf-8").replace(OLD, NEW)
     path.write_text(stale, encoding="utf-8")

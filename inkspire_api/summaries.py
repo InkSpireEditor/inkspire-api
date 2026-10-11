@@ -26,6 +26,16 @@ writer never waits on one. Best-effort: a save landing while a previous summary 
 the same file is still in flight is skipped, not queued, so the summary may sit one save
 behind until the next one catches up -- accepted, the same way `repository.reconcile`
 elsewhere in this codebase accepts "good enough" over "exactly right."
+
+`update`'s own decision sequence and model call -- is anything dropped, is a new call due,
+ask, clean -- is `resummarise`, below, shared with `inkspire ink maintenance`
+(`cli.py`, api#27): that command cannot call `update` itself, since `update` resolves a
+file by id through a `Scanner`, which skips a story directory with no `story.yaml`, while
+the command walks paths `rglob` finds regardless; and `update` is silent by construction,
+every no-op and failure a bare `return`, which a command report needs to tell apart.
+`resummarise` reads and writes nothing -- a `body` and a stored section's text in,
+an `Outcome` out -- so `update` is the only thing here that touches a scanner, and the
+command the only thing that touches a path.
 """
 
 from __future__ import annotations
@@ -47,6 +57,31 @@ SUMMARY_TEMPLATE = "summary.j2"
 #: Longest a stored summary may be. One or two sentences, not a second copy of the
 #: region it describes.
 MAX_SUMMARY_CHARS = 1000
+
+#: What `resummarise` decided, named so a caller's report does not have to infer it back
+#: from which field of `Outcome` is set.
+#:
+#: UNTRIMMED: nothing is dropped at this budget, so there is nothing to summarise.
+#: CURRENT: something is dropped, but `is_due` says the stored summary still covers it
+#:          closely enough -- never reached with `respect_trigger=False`.
+#: UNUSABLE: the model answered, but `clean_summary` found nothing worth storing.
+#: WRITTEN: `outcome.section` holds a fresh section's text, ready to write.
+UNTRIMMED, CURRENT, UNUSABLE, WRITTEN = "untrimmed", "current", "unusable", "written"
+
+
+@dataclasses.dataclass(frozen=True)
+class Outcome:
+    """What one call to `resummarise` decided.
+
+    `section` is the rendered `ink:context_summary` text to write, present only for
+    `WRITTEN`. `dropped_chars` is reported regardless of `state` -- even `UNTRIMMED`'s
+    `0` is informative, and the other three states are exactly what a caller would
+    otherwise have to recompute via `dropped()` just to report.
+    """
+
+    state: str
+    dropped_chars: int
+    section: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -85,6 +120,54 @@ def clean_summary(raw: str) -> str:
     return collapsed[:MAX_SUMMARY_CHARS]
 
 
+async def resummarise(
+    body: str,
+    stored_section: str | None,
+    *,
+    service: LLMService,
+    model: str,
+    budget: int,
+    respect_trigger: bool = True,
+) -> Outcome:
+    """Decides whether `body` needs a fresh `ink:context_summary` at `budget`
+    characters and, where it does, asks for and cleans one.
+
+    `respect_trigger` is `is_due`'s own gate: `True` for `update`, which must not spend
+    a call every single save; `False` for `inkspire ink maintenance`, which exists
+    specifically to resummarise everything a size-based trigger cannot tell is stale --
+    docs/prompt.md's own "hidden manual trigger" entry.
+
+    Reads and writes nothing; a caller with a scanner (`update`) or a path
+    (`cli.maintain_one`) does that with the `Outcome` this returns. Raises
+    `LLMError`/`UnknownModel` rather than swallowing them, unlike `update` itself --
+    a caller running by hand wants to see a provider failure, not have it logged where
+    nothing is watching.
+    """
+    dropped_text = dropped(body, budget)
+    dropped_chars = len(dropped_text)
+    if dropped_chars == 0:
+        # Nothing is being trimmed any more. Leaving a stale section in place is
+        # harmless -- prompt.assemble never renders a summary once nothing was
+        # trimmed -- and resummarising would spend a model call on an answer nobody
+        # reads.
+        return Outcome(UNTRIMMED, dropped_chars)
+
+    if respect_trigger:
+        stored = parse_section(stored_section) if stored_section else None
+        if not is_due(dropped_chars, stored.dropped_chars if stored is not None else 0):
+            return Outcome(CURRENT, dropped_chars)
+
+    rendered = render_summary(assemble_summary(dropped_text, budget=budget))
+    raw = await service.complete(model, rendered, options=service.defaults.overlay(think=False))
+
+    cleaned = clean_summary(raw)
+    if not cleaned:
+        return Outcome(UNUSABLE, dropped_chars)
+
+    section = render_section(ContextSummary(text=cleaned, dropped_chars=dropped_chars))
+    return Outcome(WRITTEN, dropped_chars, section)
+
+
 async def update(
     scanner: Scanner | NotesScanner,
     file_id: str,
@@ -109,34 +192,18 @@ async def update(
         logger.exception("could not read %s for a context summary", file_id)
         return
 
-    dropped_text = dropped(document.body, budget)
-    dropped_chars = len(dropped_text)
-    if dropped_chars == 0:
-        # Nothing is being trimmed any more. Leaving a stale section in place is
-        # harmless -- prompt.assemble never renders a summary once nothing was
-        # trimmed -- and overwriting it would spend a model call on an answer
-        # nobody reads.
-        return
-
-    stored = parse_section(document.context_summary) if document.context_summary else None
-    if not is_due(dropped_chars, stored.dropped_chars if stored is not None else 0):
-        return
-
     try:
-        rendered = render_summary(assemble_summary(dropped_text, budget=budget))
-        raw = await service.complete(
-            model, rendered, options=service.defaults.overlay(think=False)
+        outcome = await resummarise(
+            document.body, document.context_summary, service=service, model=model, budget=budget
         )
     except (LLMError, UnknownModel):
         logger.exception("the context-summary call failed for %s", file_id)
         return
 
-    cleaned = clean_summary(raw)
-    if not cleaned:
+    if outcome.section is None:
         return
 
-    section = render_section(ContextSummary(text=cleaned, dropped_chars=dropped_chars))
     try:
-        scanner.write_context_summary(file_id, document.body, section)
+        scanner.write_context_summary(file_id, document.body, outcome.section)
     except StorageError:
         logger.exception("could not write the context summary for %s", file_id)
