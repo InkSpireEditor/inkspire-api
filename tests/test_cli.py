@@ -1023,6 +1023,112 @@ def test_summary_with_nothing_usable_is_an_error(ask) -> None:
     assert "nothing usable" in result.output
 
 
+# --- llm complete (frontend#9) ------------------------------------------------
+
+
+def test_complete_show_prompt_asks_nothing(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body(" more.")),  # pragma: no cover
+        "complete",
+        "-m",
+        "p/model",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Propose one short sentence" in result.output
+    assert not seen
+
+
+def test_complete_show_prompt_carries_the_tail_not_the_head(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body(" more.")),  # pragma: no cover
+        "complete",
+        "-m",
+        "p/model",
+        "--budget",
+        "10",
+        "--show-prompt",
+        stdin=TEXT,
+    )
+    # Only what trim_to_tail would keep at this budget -- not the whole of stdin.
+    assert "Existing text:\n" in result.output
+    assert "The lantern guttered" not in result.output
+
+
+def test_complete_writes_the_cleaned_answer_to_stdout(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body(" The wax still held.  \n\n")),
+        "complete",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == " The wax still held.\n"
+
+
+def test_complete_sends_the_text_from_stdin_inside_the_prompt(ask) -> None:
+    _, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body(" more.")),
+        "complete",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert TEXT in seen[0]["messages"][0]["content"]
+    assert seen[0]["stream"] is False
+
+
+def test_complete_has_no_small_model_fallback(ask) -> None:
+    """Unlike `llm title` and `llm summary`, a completion asks the writer's own
+    model -- `--model` is required, and a configured small model changes nothing."""
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body(" more.")),  # pragma: no cover
+        "complete",
+        stdin=TEXT,
+        small_model="p/small",
+    )
+    assert result.exit_code != 0
+    assert not seen
+
+
+def test_complete_empty_input_is_an_error(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body(" more.")),  # pragma: no cover
+        "complete",
+        "-m",
+        "p/model",
+        stdin="   ",
+    )
+    assert result.exit_code == 1
+    assert "No text" in result.output
+
+
+def test_complete_an_unknown_model_is_reported_without_a_traceback(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body(" more.")),  # pragma: no cover
+        "complete",
+        "-m",
+        "absent/model",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "absent" in result.output
+
+
+def test_complete_with_nothing_usable_is_an_error(ask) -> None:
+    result, _ = ask(
+        lambda request: httpx.Response(200, text=answer_body("   ")),
+        "complete",
+        "-m",
+        "p/model",
+        stdin=TEXT,
+    )
+    assert result.exit_code == 1
+    assert "nothing usable" in result.output
+
+
 # --- ink check -------------------------------------------------------------
 
 

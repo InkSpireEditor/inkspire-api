@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     llm_limit: int = 20
     llm_interval: int = 60
 
+    # How many tokens an automatic completion proposal may be (frontend#9). A ghost
+    # sentence that keeps growing is worse than a short one; this is also the only
+    # brake on a hosted model being asked for one every few seconds of idling. Sent
+    # as num_predict to an Ollama provider and as max_tokens to a chat-completions
+    # one -- see `LLMService._chat_payload`.
+    llm_completion_tokens: int = Field(default=60, gt=0)
+
+    # Completion requests per authenticated account, against llm_interval. Its own
+    # budget, far larger than llm_limit: a completion fires on idle rather than on a
+    # click, and must never starve the writer's own Generate. Zero disables it.
+    llm_completion_limit: int = Field(default=120, ge=0)
+
     # Commit identity for the git routes. Left unset, `repository.py` falls back to
     # whatever `git config` resolves in the story repository itself (repository, then
     # global, then system) — set here only to commit as an identity the repository's

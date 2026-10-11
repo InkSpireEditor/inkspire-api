@@ -47,7 +47,7 @@ import typer
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from . import context_summary, ink, prompt, provenance, repository, summaries, titles
+from . import completions, context_summary, ink, prompt, provenance, repository, summaries, titles
 from .db import get_sessionmaker
 from .fs import write_atomically
 from .llm import LLMError, LLMService, UnknownModel
@@ -625,6 +625,78 @@ def summary_command(
     if not cleaned:
         fail("The model answered with nothing usable as a summary.")
     typer.secho(f"{len(dropped_text)} characters would be dropped.", fg=typer.colors.BLUE, err=True)
+    typer.echo(cleaned)
+
+
+@llm_app.command("complete")
+def complete_command(
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Model to ask, as listed by `llm models`. Required -- unlike "
+                "`llm title` and `llm summary`, a completion asks the writer's own "
+                "model (frontend#9), which has no server-side fallback."
+            ),
+        ),
+    ],
+    *,
+    budget: Annotated[
+        int,
+        typer.Option(
+            "--budget",
+            help=(
+                "The prompt budget to trim standard input against, as "
+                "INKSPIRE_LLM_PROMPT_BUDGET does for a real generation -- what "
+                "this command sends is the tail of standard input kept within it, "
+                "not the whole of it."
+            ),
+        ),
+    ] = 10_000,
+    show_prompt: Annotated[
+        bool,
+        typer.Option("--show-prompt", help="Print the rendered prompt and ask nothing."),
+    ] = False,
+) -> None:
+    """Propose one short sentence continuing the text read from standard input.
+
+        inkspire llm complete -m local-ollama/llama3 < chapter.ink
+        inkspire llm complete -m local-ollama/llama3 --show-prompt < chapter.ink
+
+    The only way to iterate on `templates/completion.j2` against a real model
+    without waiting out the editor's own idle timer. Always asks with thinking
+    disabled, as the route does, and caps the answer at
+    `INKSPIRE_LLM_COMPLETION_TOKENS` the same way the route does.
+    """
+    text = sys.stdin.read()
+    if not text.strip():
+        fail("No text on standard input. Pipe a file or type text and end with Ctrl-D.")
+
+    context = completions.assemble_completion(text, budget=budget)
+    rendered = completions.render_completion(context)
+
+    if show_prompt:
+        typer.echo(rendered)
+        return
+
+    svc = service(think=False)
+    try:
+        raw = asyncio.run(
+            svc.complete(
+                model,
+                rendered,
+                max_output_tokens=get_settings().llm_completion_tokens,
+            )
+        )
+    except (UnknownModel, LLMError) as error:
+        fail(str(error))
+        raise AssertionError from error  # unreachable: fail() exits
+
+    cleaned = completions.clean_completion(raw)
+    if not cleaned:
+        fail("The model answered with nothing usable as a completion.")
     typer.echo(cleaned)
 
 

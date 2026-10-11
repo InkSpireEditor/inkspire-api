@@ -439,6 +439,70 @@ a trailing full stop, or three alternatives on separate lines are all things a s
 reliably adds. `clean_title` is pure and tested on its own, separately from the route that calls
 it.
 
+## A third prompt: proposing a completion (frontend#9)
+
+`POST /api/stories/file/{id}/complete` and the `/api/notes` equivalent are not a fourth
+branch of the prompt above either, for almost the same reason `titles.py` is not one: "write
+one sentence and stop" directly contradicts the continuation branch's own "write at most two
+sentences," and a flag choosing between the two would re-verify every one of the (by now) 21
+pinned cases for a question that is still, at bottom, a continuation. So this is a third
+module (`completions.py`), a third context (`CompletionContext`), and a third template
+(`templates/completion.j2`) — which is also why it is not folded into `titles.py`: a title and
+a completion share the "small side question, answered in one response" shape, but nothing
+about *what* either one asks.
+
+`completion.j2` keeps the continuation branch's hard-won join rules close to verbatim — never
+echo the existing text, finish an interrupted word or sentence before carrying on, write a
+missing closing punctuation mark, begin with whatever joins on cleanly (no character
+mid-word, a space after a finished word, a newline for a new line, a blank line for a new
+paragraph) — and replaces only the length instruction, "write at most two sentences," with
+"write exactly one sentence, and stop at its end." `CompletionContext` carries one field,
+`prefix`, trimmed from the *tail* the same way a continuation's own prefix is (what matters is
+what the caret sits after), and deliberately nothing else: no synopsis, no dropped-context
+summary, no writer's instruction. Each would be another field and another pinned case on the
+cheapest, most frequent call this server makes, for a one-sentence join that does not need any
+of them.
+
+**The output cap this needed did not exist anywhere in the codebase before this.** Nothing
+capped how many tokens a model's answer could be — not a request field, not a server setting.
+An automatic proposal firing every few seconds of idling needs one regardless of what it asks,
+or a verbose model turns a ghost sentence into a ghost paragraph. `LLMService._chat_payload`
+gained a `max_output_tokens` parameter, sent as `num_predict` under Ollama's native `options`
+and as `max_tokens` on the chat-completions path; left unset (every caller except
+`completions.py`), neither key is emitted, so no existing payload changed. It is a plain
+parameter to `_chat_payload`/`complete`, not a `GenerationOptions` field: that dataclass is
+what `/llm/defaults` answers and the settings panel reads, and a cap on one automatic,
+server-shaped request is not a setting of the writer's generation, the same category
+`GenerateRequest`'s own docstring already puts the rate limit and the provider timeout in.
+`INKSPIRE_LLM_COMPLETION_TOKENS` (default 60) is the server-side ceiling; there is no
+per-request override.
+
+A model stopped mid-sentence by that cap is the normal case, not the exception, so
+`clean_completion` is built around it rather than modelled on `clean_title`. Two rules set it
+apart: **leading whitespace is kept**, because the template's own join instructions ask the
+model to open with exactly the whitespace the join needs, and stripping the front would undo
+that; and **the answer is cut back to its first complete sentence** — the first `.`/`!`/`?`/`…`,
+carrying a trailing quote or bracket with it — since a half-sentence ghost reads as a bug
+rather than a proposal, and an answer with no sentence end at all is kept whole rather than
+discarded.
+
+It reads whichever model the writer selected for their prose, unlike `titles.py` and
+`summaries.py`, which both read `INKSPIRE_LLM_SMALL_MODEL` instead — the proposal here is
+prose that may be accepted straight into the chapter, so the model that answers it is the one
+chosen to write that chapter. `settings.py`'s own reasoning against using the writer's model
+for a background call — it may be hosted and metered — still applies, and is answered three
+ways at once rather than by picking a different model: the output cap bounds what a single
+call can cost, `app.state.completion_limiter` is its own rate budget (from
+`INKSPIRE_LLM_COMPLETION_LIMIT`, default 120, against the shared `llm_interval`) separate from
+both `llm_limiter` and `summary_limiter` so an idle-triggered feature firing far more often
+than either can never starve them, and the frontend's own toggle (`sharedSettings.ts`'s
+`autoComplete`) defaults off. Always asks with `think=False`, for the same reason `titles.py`
+gives: a one-sentence proposal has no business reasoning out loud, and the writer's own model
+may well be a reasoning one.
+
+Both roots serve it, unlike `titles.py`'s stories-only route — nothing about a completion
+needs a story, and the editor opens a note through the same component it opens a chapter in.
+
 ## Not yet built
 
 - **Real token counting.** The budget is a character count calibrated on English; nothing here

@@ -328,14 +328,21 @@ class LLMService:
         prompt: str,
         *,
         options: GenerationOptions | None = None,
+        max_output_tokens: int | None = None,
     ) -> str:
         """Answers `prompt` in one response, for something short enough that
-        streaming it would buy nothing -- a proposed chapter title, today.
+        streaming it would buy nothing -- a proposed chapter title, a context
+        summary, or a completion proposal (frontend#9).
 
         `prompt` arrives already rendered: unlike `stream`, this knows nothing about
         `PromptContext` or any template, since what a title call sends is not the
         continuation/fill-in-the-middle/rewrite prompt `prompt_lib.assemble` builds.
         `options` defaults to `self.defaults` the same way `stream`'s does.
+
+        `max_output_tokens`, given, caps how much the provider may write --
+        `inkspire_api/completions.py` is the one caller that sets it, since an
+        automatic proposal that keeps growing is worse than a short one. `None`
+        leaves it unset, which is every other caller today.
 
         Raises `LLMError` if the provider cannot be reached, rejects the request, or
         answers nothing usable, and `UnknownModel` for a model naming no configured
@@ -354,7 +361,12 @@ class LLMService:
                     url,
                     headers=headers(config),
                     json=self._chat_payload(
-                        name, prompt, native=native, options=resolved, stream=False
+                        name,
+                        prompt,
+                        native=native,
+                        options=resolved,
+                        stream=False,
+                        max_output_tokens=max_output_tokens,
                     ),
                 )
                 await _raise_for_status(response)
@@ -395,6 +407,7 @@ class LLMService:
         native: bool,
         options: GenerationOptions,
         stream: bool,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         """The provider payload for one already-rendered prompt.
 
@@ -402,6 +415,14 @@ class LLMService:
         `complete` (a one-shot answer) -- the only difference between the two call
         sites, since everything below is about the protocol, not about what is being
         asked.
+
+        `max_output_tokens`, given, caps the provider's own answer -- `num_predict`
+        on the ollama path, `max_tokens` on the chat-completions one. `None` (every
+        caller except `completions.py`) emits neither key, so an existing payload is
+        unchanged. This is infrastructure for one automatic, server-shaped request
+        rather than a writer's own generation setting, which is why it is a plain
+        parameter here rather than a `GenerationOptions` field -- see
+        `docs/prompt.md`'s "A third prompt" section.
         """
         messages = [{"role": "user", "content": rendered}]
         if not native:
@@ -411,6 +432,8 @@ class LLMService:
                 "stream": stream,
                 "temperature": options.temperature,
             }
+            if max_output_tokens is not None:
+                payload["max_tokens"] = max_output_tokens
             return payload
 
         # Ollama takes sampling settings under "options" rather than at the top level,
@@ -421,6 +444,8 @@ class LLMService:
         sampling: dict[str, Any] = {"temperature": options.temperature}
         if options.num_ctx is not None:
             sampling["num_ctx"] = options.num_ctx
+        if max_output_tokens is not None:
+            sampling["num_predict"] = max_output_tokens
         payload = {
             "model": model,
             "messages": messages,

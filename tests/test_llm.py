@@ -57,13 +57,18 @@ _PROMPTS: dict[str, Any] = json.loads(
 CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
     name: case
     for name, case in _PROMPTS.items()
-    if name not in ("fim", "rewrite", "title", "synopsis", "summary", "context_summary")
+    if name
+    not in ("fim", "rewrite", "title", "synopsis", "summary", "context_summary", "completion")
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
 REWRITE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["rewrite"]
 #: Pinned here, alongside every other prompt shape, but rendered by
 #: `titles.render_title` rather than `prompt_lib.render` -- see test_titles.py.
 TITLE_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["title"]
+#: Pinned here, alongside every other prompt shape, but rendered by
+#: `completions.render_completion` rather than `prompt_lib.render` -- see
+#: test_completions.py (frontend#9).
+COMPLETION_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["completion"]
 #: A single case (api#17): a continuation with a synopsis above it. One is enough
 #: to prove the new section renders correctly without disturbing the other nine --
 #: it is not a new prompt shape the way fim/rewrite/title each are.
@@ -564,6 +569,53 @@ async def test_complete_sends_think_false_when_given(tmp_path: Path) -> None:
     service = llm_service(tmp_path, handler, protocol="ollama")
     await service.complete("p/model", "prompt", options=service.defaults.overlay(think=False))
     assert seen["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_complete_sends_num_predict_on_the_native_protocol_when_given(
+    tmp_path: Path,
+) -> None:
+    """The output cap a completion proposal needs (frontend#9) -- Ollama's own
+    sampling key, beside num_ctx and temperature, not the chat-completions one."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=answer_body("x", native=True))
+
+    service = llm_service(tmp_path, handler, protocol="ollama")
+    await service.complete("p/model", "prompt", max_output_tokens=60)
+    assert seen["options"]["num_predict"] == 60
+    assert "max_tokens" not in seen
+
+
+@pytest.mark.asyncio
+async def test_complete_sends_max_tokens_on_the_openai_protocol_when_given(
+    tmp_path: Path,
+) -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=answer_body("x"))
+
+    service = llm_service(tmp_path, handler)
+    await service.complete("p/model", "prompt", max_output_tokens=60)
+    assert seen["max_tokens"] == 60
+    assert "num_predict" not in seen
+
+
+@pytest.mark.asyncio
+async def test_complete_omits_the_output_cap_when_not_given(tmp_path: Path) -> None:
+    """Every caller except `completions.py` -- an existing payload is unchanged."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, text=answer_body("x", native=True))
+
+    await llm_service(tmp_path, handler, protocol="ollama").complete("p/model", "prompt")
+    assert "num_predict" not in seen["options"]
 
 
 @pytest.mark.asyncio
