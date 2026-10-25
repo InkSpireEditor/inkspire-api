@@ -32,7 +32,8 @@ and the continuations a language model streams back.
 - **Authenticates with JWTs in cookies**, rotating a refresh token, with accounts made
   from the shell rather than by registration.
 - **Ships two more commands**, `lorebook` and `timeline`, which read a story's knowledge
-  graph and its events from the same repository. Neither is wired to the API yet. See
+  graph and its events from the same repository. The API serves both read-only, and
+  generation does not use the lorebook yet. See
   [The lorebook and the timeline](#the-lorebook-and-the-timeline).
 
 ---
@@ -206,22 +207,9 @@ purpose: it is the forced recompute for a rewrite inside the dropped region that
 change its size, which that check cannot see on its own. One model call per file that needs
 one; `-n` reports which files those are and spends none of them.
 
-One story is one directory in the tree, and its chapters are that directory's files:
-
-| Route | |
-|---|---|
-| `GET /api/stories/tree` | every story. `files` is empty — a chapter belongs to a story |
-| `GET /api/stories/dir/{id}` | one story, the chapters in it, and which other views it has |
-| `POST /api/stories/dir` | create a story, with a `name` and an optional `summary` |
-| `PUT /api/stories/dir/{id}` | retitle a story, or rewrite its synopsis |
-| `DELETE /api/stories/dir/{id}` | delete a story and its chapters |
-| `POST /api/stories/file` | create a chapter, given a `name` and a `dir` |
-| `GET /api/stories/file/{id}` | one chapter: its name, status and summary |
-| `PUT /api/stories/file/{id}` | rename a chapter, or move it to another story |
-| `DELETE /api/stories/file/{id}` | delete a chapter |
-| `GET /api/stories/file/{id}/contents` | the chapter's prose, as `text/plain` |
-| `GET /api/stories/file/{id}/document` | the prose **and** its provenance, reconciled |
-| `PUT /api/stories/file/{id}/document` | replace both, in one write |
+One story is one directory in the tree, and its chapters are that directory's files. Every
+route, with what it takes, what it answers and how it fails, is in
+[`docs/routes.md`](docs/routes.md).
 
 Deleting a story is refused, with a 409, while its directory holds anything besides
 `story.yaml` and `chapters/`. A lorebook and a timeline are written by hand and are not
@@ -230,13 +218,8 @@ names them in `holds`. `?force=true` deletes the directory whole regardless.
 
 ### A story's timeline and lorebook
 
-Read-only, and read straight from the YAML the writer authored:
-
-| Route | |
-|---|---|
-| `GET /api/stories/dir/{id}/timeline` | the events laid out: coordinates, characters, arcs |
-| `GET /api/stories/dir/{id}/lore/graph` | the lorebook as nodes and links |
-| `GET /api/stories/dir/{id}/lore/entity/{local}` | one entity, its relations and its prose |
+Read-only, and read straight from the YAML the writer authored. The three routes are in
+[`docs/routes.md`](docs/routes.md).
 
 `GET /api/stories/dir/{id}` carries a `timeline` and a `lorebook` boolean, from whether the
 files those views read are there, so a client knows which to offer without asking for either.
@@ -270,16 +253,8 @@ entity typed with a class the vocabulary does not declare. Those are the writer'
 
 ### The story repository as git
 
-`INKSPIRE_DATA_ROOT` is a git working tree, and the API drives it directly:
-
-| Route | |
-|---|---|
-| `GET /api/git/status` | the branch, what has changed, and how far it is from its upstream |
-| `POST /api/git/commit` | body `{message}`. Commits only what the API itself writes |
-| `POST /api/git/push` | push the branch to its upstream |
-| `POST /api/git/pull` | fast-forward onto the upstream |
-| `GET /api/stories/file/{id}/history` | the chapter's commits, newest first |
-| `GET /api/stories/file/{id}/at/{rev}` | that chapter's prose at one commit, as `text/plain` |
+`INKSPIRE_DATA_ROOT` is a git working tree, and the API drives it directly: its status, a commit,
+a push, a pull, and a chapter's history, all in [`docs/routes.md`](docs/routes.md).
 
 Saving a chapter never commits — only `/commit` does, and only onto a story's own
 `story.yaml` and its `chapters/*.ink`. A hand-edited lorebook or `timeline.yaml` shows
@@ -378,7 +353,9 @@ client can tell which models can honour `think` at all. A provider that cannot b
 reached contributes nothing instead of failing the list. Results are held for an hour
 per provider, in the serving process. `GET /api/llm/defaults` answers the server's own
 generation settings — see below — so a client has something to show before it overrides
-anything.
+anything. `GET /api/llm/features` answers `{"title": bool, "summary": bool}`, which of the
+two features backed by `INKSPIRE_LLM_SMALL_MODEL` are on; both are on when that setting is
+configured and off otherwise.
 
 `POST /api/stories/file/{id}/generate` and its `/api/notes` counterpart take
 `{"model", ...}` and answer `text/event-stream`. The request carries no text: the server
@@ -432,6 +409,10 @@ out-of-range or inverted cursor/selection, or either pair with only one of its t
 — so a client only has to handle an error event once it is already displaying text. The
 generated text is not written to disk: the client owns the chapter and saves it.
 
+A title proposal and a completion proposal are two shorter requests that answer in one response
+instead of streaming, with prompts of their own described in [`docs/prompt.md`](docs/prompt.md).
+Their routes are in [`docs/routes.md`](docs/routes.md).
+
 Thinking is worth knowing about. A reasoning model produces its reasoning on a separate
 field, which is dropped and never appended to the chapter, but it still delays the
 first visible chunk by the whole reasoning pass. A model whose context window fills
@@ -466,10 +447,10 @@ generation alone, left unset applies the server's own setting.
 ## 📚 The lorebook and the timeline
 
 Two commands share this repository with the API: one dependency set, one `poetry install`,
-one virtualenv. **Neither is called by the API.** They are command-line tools that read the
-same story repository the API serves, and they are here so that the API can eventually call
-`lorebook` as a library — the long-term goal is generating text with the graph as retrieval
-context. Nothing is wired yet.
+one virtualenv. They are command-line tools that read the same story repository the API
+serves. The API imports both as libraries to answer the read-only routes in
+[A story's timeline and lorebook](#a-storys-timeline-and-lorebook). Generation does not call
+`lorebook` yet; the long-term goal is generating text with the graph as retrieval context.
 
 ### `lorebook` — a novel's lore as an RDF graph
 
@@ -598,6 +579,8 @@ Multiple documents under `docs/`, each on one subject:
 | [`entries.md`](docs/entries.md) | the classes a scan turns that into — `File`, `Folder` and what each root adds |
 | [`ink-format.md`](docs/ink-format.md) | the `.ink` file: its sections, its grammar, and the rules reading enforces |
 | [`provenance.md`](docs/provenance.md) | who wrote each character, and how that survives a hand edit |
+| [`routes.md`](docs/routes.md) | every route: what it takes, what it answers, how it fails |
+| [`prompt.md`](docs/prompt.md) | the generation prompt: what is sent, in what order, how it is trimmed, and the title and completion prompts |
 
 ---
 
