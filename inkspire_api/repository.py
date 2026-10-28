@@ -32,6 +32,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Annotated, NamedTuple
 
@@ -661,6 +662,139 @@ def content_at(repo: Repo, chapter: Chapter, rev: str) -> str:
         raise NotFound(f'"{rev}" is not a commit in this chapter\'s history.')
     text = repo.git.show(f"{match['sha']}:{match['path']}")
     return ink.parse(text).body
+
+
+# --- the story repository's history --------------------------------------------
+
+
+#: The most commits the activity reader looks at, newest first, whatever the window
+#: asks for. A history with more commits than this in the window is cut at its oldest
+#: end and the days that lose are the oldest ones; `docs/routes.md` says so.
+MAX_ACTIVITY_COMMITS = 5000
+
+
+def history_records(
+    repo: Repo, since: date
+) -> Iterator[tuple[date, list[tuple[str, str]]]]:
+    """Each non-merge commit's `(author date, (old text, new text) per file)`, newest first.
+
+    The files are the `.ink` ones under `stories/` -- chapters and one-shots; nothing
+    else. `old` is the file as the commit's first parent has it, `new` as the commit has
+    it, either `""` when there is no such blob (a new file, a deleted one, or a commit
+    with no parent). The texts are the whole files, sections included: a caller that
+    wants the prose parses them. `since` is the window's first day, by author date.
+
+    `iter_commits` runs `git rev-list`, whose `--since` filters on the **committer**
+    date. A commit's committer date is never earlier than its author date in practice,
+    so every commit authored inside the window is read here, and those authored before
+    `since` are dropped by author date. The root commit is included: `iter_commits("HEAD")`
+    walks it like any other. A repository with no commits yields nothing.
+
+    A generator, so a caller can count each commit's texts and let them go instead of
+    holding every commit's files at once.
+    """
+    if not repo.head.is_valid():
+        return
+    for revision in repo.iter_commits(
+        "HEAD", since=since.isoformat(), no_merges=True, max_count=MAX_ACTIVITY_COMMITS
+    ):
+        day = revision.authored_datetime.date()
+        if day < since:
+            continue
+        yield day, _changes_of(repo, revision)
+
+
+class NameStatus(NamedTuple):
+    """One line of `git diff-tree --name-status`: what happened, and to which paths.
+
+    `old` is `None` for an added file and `new` is `None` for a deleted one. A rename
+    carries both. A modification or a type change carries the one path twice.
+    """
+
+    code: str
+    old: str | None
+    new: str | None
+
+
+def parse_name_status(raw: str) -> list[NameStatus]:
+    """The entries of `git diff-tree --name-status -z` output, which has no commit header.
+
+    With `-z` the output is NUL-separated: a status, then one path, or two for a rename
+    or a copy (`R100`, `C75`), then the next status.
+    """
+    tokens = raw.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens.pop()
+
+    entries: list[NameStatus] = []
+    i = 0
+    while i < len(tokens):
+        code = tokens[i]
+        i += 1
+        if code[:1] in ("R", "C"):
+            entries.append(NameStatus(code, tokens[i], tokens[i + 1]))
+            i += 2
+        elif code[:1] == "A":
+            entries.append(NameStatus(code, None, tokens[i]))
+            i += 1
+        elif code[:1] == "D":
+            entries.append(NameStatus(code, tokens[i], None))
+            i += 1
+        else:
+            entries.append(NameStatus(code, tokens[i], tokens[i]))
+            i += 1
+    return entries
+
+
+def _changes_of(repo: Repo, revision) -> list[tuple[str, str]]:
+    """`(old text, new text)` per `.ink` file under `stories/` that `revision` changed.
+
+    `diff-tree --root` treats the root commit as a change from nothing, which is what a
+    new file needs, and `--no-commit-id` leaves out the line naming the commit, so the
+    output is only entries. `-M` turns a rename into one `R` entry carrying both paths,
+    so the old text is read from the old path and a rename that edits nothing adds
+    nothing. The old text is read from the commit's first parent's tree and the new text
+    from the commit's own tree; either side is `""` where it has no such blob.
+    """
+    raw = repo.git.diff_tree(
+        "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", revision.hexsha
+    )
+    parent_tree = revision.parents[0].tree if revision.parents else None
+
+    changes: list[tuple[str, str]] = []
+    for entry in parse_name_status(raw):
+        if not (_is_story_ink(entry.old) or _is_story_ink(entry.new)):
+            continue
+        changes.append((_blob_text(parent_tree, entry.old), _blob_text(revision.tree, entry.new)))
+    return changes
+
+
+def _is_story_ink(path: str | None) -> bool:
+    """Whether `path` is an `.ink` file under `stories/` -- a chapter or a one-shot."""
+    if path is None:
+        return False
+    parts = PurePosixPath(path).parts
+    return (
+        len(parts) >= 2
+        and parts[0] == STORIES
+        and parts[-1].endswith(CHAPTER_SUFFIX)
+    )
+
+
+def _blob_text(tree, path: str | None) -> str:
+    """A file's text as `tree` has it, or `""` when the tree has no such blob.
+
+    Read through GitPython's object reader, which keeps one `cat-file --batch` process
+    open, rather than one `git show` per blob. A blob that is not valid UTF-8 counts as
+    `""`, since prose that cannot be read adds no words.
+    """
+    if path is None or tree is None:
+        return ""
+    try:
+        blob = tree / path
+        return blob.data_stream.read().decode("utf-8")
+    except (KeyError, UnicodeDecodeError):
+        return ""
 
 
 # --- routes -----------------------------------------------------------------

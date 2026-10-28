@@ -1,7 +1,7 @@
 # Routes
 
-Every route the API serves, 46 in all, with what it takes, what it answers and how it fails. The
-routers are in `inkspire_api/`: `main.py` (`/api/me`), `auth.py`, `files.py`, `documents.py`, `llm.py`, `titles.py`,
+Every route the API serves, 47 in all, with what it takes, what it answers and how it fails. The
+routers are in `inkspire_api/`: `main.py` (`/api/me`), `auth.py`, `files.py`, `documents.py`, `activity.py`, `llm.py`, `titles.py`,
 `completions.py`, `timelines.py`, `lore.py` and `repository.py`. This document lists what those
 files declare, and `tests/test_routes_doc.py` fails if a route is added or removed without this
 document changing.
@@ -131,6 +131,12 @@ cannot be read.
 | `GET /api/stories/dir/{dir_id}/timeline` | `{"title", "maxHeight", "widthStep", "characters", "events", "arcs"}`. A character is `{"key", "name", "color", "events"}`, its events as event keys in date order. An event is `{"key", "date", "description", "characters", "href", "x1", "y1", "x2", "y2"}`, with `date` already formatted for display and the order of `events` the order in time. An arc is `{"name", "firstEvent", "lastEvent"}` |
 | `GET /api/stories/dir/{dir_id}/lore/graph` | `{"nodes", "links"}`. A node is `{"id", "label", "type", "types", "attrs", "degree"}`, with no prose. A link is `{"source", "target", "label"}` |
 | `GET /api/stories/dir/{dir_id}/lore/entity/{local}` | One entity: `id`, `local`, `types`, `aka`, its fields, its relations as labels, and `sections`, the prose in template order. 404 when nothing in the lorebook has that name |
+
+## Activity
+
+| Route | Takes | Answers |
+|---|---|---|
+| `GET /api/stories/activity` | `?days=` from 1 to 366, default 365 | A list, oldest first, of `{"date": "YYYY-MM-DD", "words": <count>}`, one entry per day that has any. The words are what the day's commits added to chapters and one-shots: the words in the new body that the old one lacked. Only committed work counts; a chapter typed today and not yet committed has no day. A day is the commit's author date, in its own offset, so one commit after a week of writing puts the whole week on one day. A rewrite counts the words it adds even when the passage ends no longer. Notes are not counted (the notes root is not a repository). A renamed chapter is not new prose. 401 without a token, like every `/api` route; 400 for a `days` outside the range. Only the newest 5000 commits of the window are read, so a history with more than that loses its oldest days. The answer is held against the repository's `HEAD` and today, and rebuilt only when either moves |
 
 ## Git
 
