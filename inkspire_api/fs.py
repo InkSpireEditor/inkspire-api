@@ -14,7 +14,8 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import yaml
@@ -204,6 +205,31 @@ def mtime(path: Path) -> int | None:
         return path.stat().st_mtime_ns
     except OSError:
         return None
+
+
+def format_mtime(nanoseconds: int) -> str:
+    """`nanoseconds` past the epoch as UTC ISO 8601, whole seconds, a trailing `Z`.
+
+    The sub-second part is dropped by the integer division, not rounded. Every value has
+    the same 20 characters (`2026-10-25T09:14:07Z`), so two of them compare in time order
+    as strings.
+    """
+    seconds = datetime.fromtimestamp(nanoseconds // 1_000_000_000, tz=timezone.utc)
+    return seconds.isoformat().replace("+00:00", "Z")
+
+
+def modified_at(path: Path) -> str | None:
+    """When the file at `path` last changed, as `format_mtime` writes it, or `None` when
+    it is not there to ask."""
+    time = mtime(path)
+    return format_mtime(time) if time is not None else None
+
+
+def newest_time(times: Iterable[str | None]) -> str | None:
+    """The latest of `times`, which `format_mtime` wrote, ignoring `None`; `None` when
+    there is nothing to choose from."""
+    known = [time for time in times if time is not None]
+    return max(known) if known else None
 
 
 def directories(directory: Path) -> list[Path]:

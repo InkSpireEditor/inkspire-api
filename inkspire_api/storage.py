@@ -33,7 +33,7 @@ from __future__ import annotations
 import copy
 import shutil
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -50,6 +50,8 @@ from .fs import (
     directories,
     dump_yaml,
     files_with_suffix,
+    modified_at,
+    newest_time,
     free_path,
     mtime,
     read_text,
@@ -250,6 +252,28 @@ class Scanner:
     def path(self, relpath: PurePosixPath) -> Path:
         """The absolute path of something in the repository."""
         return resolve_within(self.root, relpath, "story repository")
+
+    def modified(self, file: File) -> str | None:
+        """When `file` last changed, as UTC ISO 8601, or `None` when it cannot be read.
+
+        Read here rather than taken from the scan. A save restamps the scan and keeps
+        it, so a time stored in the scan would stay the one it had when the scan was
+        last built, however often the chapter was saved since.
+        """
+        return modified_at(self.path(file.relpath))
+
+    def directory_modified(
+        self, folder: Folder, file_times: Iterable[str | None]
+    ) -> str | None:
+        """When `folder` or anything in it last changed, as UTC ISO 8601, or `None`.
+
+        The newest of the manifest's time and `file_times`, the times `modified`
+        answered for the folder's chapters, so no chapter is asked about twice. A story
+        with no chapters still has its manifest's, and a new synopsis moves it. Read
+        when asked, for the same reason `modified` is.
+        """
+        manifest = modified_at(self.path(folder.relpath / MANIFEST))
+        return newest_time([manifest, *file_times])
 
     def _story_dirs(self) -> list[Path]:
         """The story directories, in name order. A symlinked directory is not one."""

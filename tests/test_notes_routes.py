@@ -8,6 +8,8 @@ places the shape differs from `/api/stories`: `dir: null` on create means the ro
 
 from __future__ import annotations
 
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -62,21 +64,24 @@ def test_the_tree_holds_the_folders_and_the_files_at_the_root(
 
     assert answered["user"] == EMAIL
     assert names(answered["files"]) == ["scratch"]
-    assert answered["dirs"] == [
-        {
-            "id": folder_id(logged_in, "research"),
-            "name": "research",
-            "summary": "Background reading.",
-            "files": [
-                {
-                    "id": note_id(logged_in, "Worldbuilding",
-                                  folder_id(logged_in, "research")),
-                    "name": "Worldbuilding",
-                    "status": "",
-                }
-            ],
-        }
-    ]
+    assert len(answered["dirs"]) == 1
+    research = answered["dirs"][0]
+    assert research.pop("modified")
+    for note in research["files"]:
+        assert note.pop("modified")
+    assert research == {
+        "id": folder_id(logged_in, "research"),
+        "name": "research",
+        "summary": "Background reading.",
+        "files": [
+            {
+                "id": note_id(logged_in, "Worldbuilding",
+                              folder_id(logged_in, "research")),
+                "name": "Worldbuilding",
+                "status": "",
+            }
+        ],
+    }
 
 
 def test_a_file_in_a_folder_is_not_at_the_root(
@@ -227,7 +232,9 @@ def test_a_file_answers_with_what_its_header_says(
     )
     identifier = note_id(logged_in, "Scratch Pad")
 
-    assert logged_in.get(f"/api/notes/file/{identifier}").json() == {
+    body = logged_in.get(f"/api/notes/file/{identifier}").json()
+    assert body.pop("modified")
+    assert body == {
         "id": identifier,
         "name": "Scratch Pad",
         "status": "draft",
@@ -506,3 +513,100 @@ def test_a_file_at_the_root_carries_its_status(
 ) -> None:
     make_note(files_root, "scratch.ink", "===== ink:meta\nstatus: draft\n===== ink:body\nA list.\n")
     assert entry_named(tree(logged_in)["files"], "scratch")["status"] == "draft"
+
+
+# --- when a file last changed ------------------------------------------------
+
+
+def set_time(path: Path, seconds: int) -> None:
+    """Sets a file's modification time, so a test does not depend on the clock."""
+    os.utime(path, (seconds, seconds))
+
+
+PAST = 1_700_000_000
+LATER = 1_760_000_000
+
+
+def test_a_note_in_a_folder_and_one_at_the_root_answer_when_they_last_changed(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    make_note(files_root, "scratch.ink", "A list.\n")
+    folder = make_folder(files_root, "research")
+    make_note(folder, "worldbuilding.ink", "Once.\n")
+    set_time(files_root / "scratch.ink", PAST)
+    set_time(folder / "worldbuilding.ink", LATER)
+
+    answered = tree(logged_in)
+    assert entry_named(answered["files"], "scratch")["modified"] == (
+        "2023-11-14T22:13:20Z"
+    )
+    assert entry_named(entry_named(answered["dirs"], "research")["files"],
+                       "worldbuilding")["modified"] == (
+        "2025-10-09T08:53:20Z"
+    )
+
+
+def test_a_folder_answers_the_newest_of_its_manifest_and_its_files(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    folder = make_folder(files_root, "research", context="Background reading.")
+    make_note(folder, "worldbuilding.ink", "Once.\n")
+    set_time(folder / "worldbuilding.ink", PAST)
+    set_time(folder / "manifest.yaml", LATER)
+
+    identifier = folder_id(logged_in, "research")
+    answered = logged_in.get(f"/api/notes/dir/{identifier}").json()
+    assert answered["modified"] == "2025-10-09T08:53:20Z"
+
+
+def test_a_folder_with_no_manifest_and_no_files_answers_null(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    make_folder(files_root, "research")
+
+    identifier = folder_id(logged_in, "research")
+    answered = logged_in.get(f"/api/notes/dir/{identifier}").json()
+    assert answered["modified"] is None
+
+
+def test_a_folder_with_a_manifest_only_answers_its_manifest_s_time(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    folder = make_folder(files_root, "research", context="Background reading.")
+    set_time(folder / "manifest.yaml", PAST)
+
+    identifier = folder_id(logged_in, "research")
+    answered = logged_in.get(f"/api/notes/dir/{identifier}").json()
+    assert answered["modified"] == "2023-11-14T22:13:20Z"
+
+
+def test_the_note_route_answers_when_a_file_last_changed(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    make_note(files_root, "scratch.ink", "A list.\n")
+    set_time(files_root / "scratch.ink", PAST)
+    identifier = note_id(logged_in, "scratch")
+
+    body = logged_in.get(f"/api/notes/file/{identifier}").json()
+    assert body["modified"] == "2023-11-14T22:13:20Z"
+
+
+def test_saving_a_note_moves_its_time(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    """A save restamps the held scan and keeps it, so a time the scan carried would
+    stay what it was when the scan was built. Nothing touches the file between the
+    first request, which builds the scan, and the save."""
+    make_note(files_root, "scratch.ink", "A list.\n")
+    set_time(files_root / "scratch.ink", PAST)
+    identifier = note_id(logged_in, "scratch")
+
+    before = logged_in.get(f"/api/notes/file/{identifier}").json()["modified"]
+    assert before == "2023-11-14T22:13:20Z"
+
+    logged_in.put(f"/api/notes/file/{identifier}/document", json={"body": "Twice.\n"})
+
+    after = logged_in.get(f"/api/notes/file/{identifier}").json()["modified"]
+    written = datetime.fromisoformat(after.replace("Z", "+00:00"))
+    assert written > datetime.fromisoformat(before.replace("Z", "+00:00"))
+    assert datetime.now(timezone.utc) - written < timedelta(minutes=1)

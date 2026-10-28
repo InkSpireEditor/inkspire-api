@@ -8,13 +8,15 @@ under `/api/notes`, is in `test_notes_routes.py`.
 
 from __future__ import annotations
 
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from inkspire_api.fs import MAX_FILE_BYTES
+from inkspire_api.fs import MAX_FILE_BYTES, format_mtime
 from inkspire_api.models import User
 from inkspire_api.security import hash_password
 
@@ -28,6 +30,11 @@ from tests.conftest import (
 )
 
 CONTENT_TYPE = {"Content-Type": "text/plain"}
+
+
+def set_time(path: Path, seconds: int) -> None:
+    """Sets a file's modification time, so a test does not depend on the clock."""
+    os.utime(path, (seconds, seconds))
 
 
 @pytest.fixture
@@ -83,7 +90,11 @@ def test_the_tree_lists_every_story(logged_in: TestClient, repository: Path) -> 
 
     assert body["user"] == EMAIL
     assert names(body["dirs"]) == ["Example Story", "Other Story"]
-    assert entry_named(body["dirs"], "Example Story") == {
+    story = entry_named(body["dirs"], "Example Story")
+    assert story.pop("modified")
+    for chapter in story["files"]:
+        assert chapter.pop("modified")
+    assert story == {
         "id": story_id(logged_in, "Example Story"),
         "name": "Example Story",
         "summary": "In one line.",
@@ -302,6 +313,7 @@ def one_shot_id(client: TestClient, name: str = "Solo") -> str:
 def test_a_one_shots_info_carries_no_dir(logged_in: TestClient, repository: Path) -> None:
     identifier = one_shot_id(logged_in)
     body = logged_in.get(f"/api/stories/file/{identifier}").json()
+    assert body.pop("modified")
     assert body == {"id": identifier, "name": "Solo", "status": "", "summary": ""}
 
 
@@ -552,7 +564,9 @@ def test_a_chapter_answers_with_what_its_header_says(
     listing = logged_in.get(f"/api/stories/dir/{identifier}").json()["files"]
     third = entry_named(listing, "The Letter")["id"]
 
-    assert logged_in.get(f"/api/stories/file/{third}").json() == {
+    body = logged_in.get(f"/api/stories/file/{third}").json()
+    assert body.pop("modified")
+    assert body == {
         "id": third,
         "name": "The Letter",
         "status": "draft",
@@ -564,7 +578,9 @@ def test_a_chapter_with_no_header_answers_with_empty_fields(
     logged_in: TestClient, repository: Path
 ) -> None:
     chapter = chapter_id(logged_in, "Example Story", "first-chapter")
-    assert logged_in.get(f"/api/stories/file/{chapter}").json() == {
+    body = logged_in.get(f"/api/stories/file/{chapter}").json()
+    assert body.pop("modified")
+    assert body == {
         "id": chapter,
         "name": "first-chapter",
         "status": "",
@@ -679,6 +695,141 @@ def test_contents_need_a_token(client: TestClient, repository: Path) -> None:
     )
 
 
+# --- when a file last changed -----------------------------------------------
+
+
+PAST = 1_700_000_000
+LATER = 1_760_000_000
+
+
+def test_a_chapter_and_a_one_shot_answer_when_they_last_changed(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    """A chapter in the tree, and a one-shot sitting loose at the root."""
+    chapter_path = data_root / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    set_time(chapter_path, PAST)
+    one_shot_path = data_root / "stories" / "solo.ink"
+    one_shot_path.write_text("===== ink:meta\ntitle: Solo\n===== ink:body\nOnce.\n", encoding="utf-8")
+    set_time(one_shot_path, LATER)
+
+    tree = logged_in.get("/api/stories/tree").json()
+    story = entry_named(tree["dirs"], "Example Story")
+    assert entry_named(story["files"], "first-chapter")["modified"] == (
+        "2023-11-14T22:13:20Z"
+    )
+    assert entry_named(tree["files"], "Solo")["modified"] == (
+        "2025-10-09T08:53:20Z"
+    )
+
+
+def test_a_story_and_an_empty_story_answer_when_they_last_changed(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    """A story's time is the newest of its manifest's and its chapters'; the
+    empty one has only its manifest."""
+    story_dir = data_root / "stories" / "example-story"
+    for chapter in (story_dir / "chapters").iterdir():
+        set_time(chapter, PAST)
+    set_time(story_dir / "story.yaml", LATER)
+    set_time(data_root / "stories" / "other-story" / "story.yaml", LATER)
+
+    tree = logged_in.get("/api/stories/tree").json()
+    assert entry_named(tree["dirs"], "Example Story")["modified"] == (
+        "2025-10-09T08:53:20Z"
+    )
+    assert entry_named(tree["dirs"], "Other Story")["modified"] == (
+        "2025-10-09T08:53:20Z"
+    )
+
+
+def test_a_manifest_newer_than_every_chapter_moves_a_story_s_time(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    story_dir = data_root / "stories" / "example-story"
+    for chapter in (story_dir / "chapters").iterdir():
+        set_time(chapter, PAST)
+    set_time(story_dir / "story.yaml", LATER)
+
+    tree = logged_in.get("/api/stories/tree").json()
+    assert entry_named(tree["dirs"], "Example Story")["modified"] == (
+        "2025-10-09T08:53:20Z"
+    )
+
+
+def test_the_directory_and_file_routes_answer_when_something_last_changed(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    story_dir = data_root / "stories" / "example-story"
+    for chapter in (story_dir / "chapters").iterdir():
+        set_time(chapter, PAST)
+    set_time(story_dir / "story.yaml", PAST)
+
+    identifier = story_id(logged_in, "Example Story")
+    story = logged_in.get(f"/api/stories/dir/{identifier}").json()
+    assert story["modified"] == "2023-11-14T22:13:20Z"
+    assert entry_named(story["files"], "first-chapter")["modified"] == (
+        "2023-11-14T22:13:20Z"
+    )
+
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    body = logged_in.get(f"/api/stories/file/{chapter}").json()
+    assert body["modified"] == "2023-11-14T22:13:20Z"
+
+
+def test_saving_a_chapter_moves_its_time(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    """A save restamps the held scan and keeps it, so a time the scan carried would
+    stay what it was when the scan was built. Nothing here touches the file between
+    the first request, which builds the scan, and the save, so the second answer can
+    only be newer if the time is read when the response is built."""
+    chapter_path = data_root / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    set_time(chapter_path, PAST)
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+
+    before = logged_in.get(f"/api/stories/file/{chapter}").json()["modified"]
+    assert before == format_mtime(PAST * 1_000_000_000)
+
+    logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": "Twice.\n"})
+
+    after = logged_in.get(f"/api/stories/file/{chapter}").json()["modified"]
+    written = datetime.fromisoformat(after.replace("Z", "+00:00"))
+    assert written > datetime.fromisoformat(before.replace("Z", "+00:00"))
+    assert datetime.now(timezone.utc) - written < timedelta(minutes=1)
+
+
+def test_a_save_moves_the_time_the_tree_and_the_directory_answer_too(
+    logged_in: TestClient, data_root: Path, repository: Path
+) -> None:
+    story_dir = data_root / "stories" / "example-story"
+    for path in (story_dir / "story.yaml", *(story_dir / "chapters").iterdir()):
+        set_time(path, PAST)
+    identifier = story_id(logged_in, "Example Story")
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    assert logged_in.get(f"/api/stories/dir/{identifier}").json()["modified"] == (
+        format_mtime(PAST * 1_000_000_000)
+    )
+
+    logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": "Twice.\n"})
+
+    story = logged_in.get(f"/api/stories/dir/{identifier}").json()
+    listed = entry_named(story["files"], "first-chapter")["modified"]
+    assert listed > format_mtime(PAST * 1_000_000_000)
+    assert story["modified"] == listed
+
+
+def test_the_modified_format(logged_in: TestClient, data_root: Path, repository: Path) -> None:
+    """UTC ISO 8601, whole seconds, a trailing `Z`."""
+    chapter_path = data_root / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    set_time(chapter_path, PAST)
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+
+    value = logged_in.get(f"/api/stories/file/{chapter}").json()["modified"]
+    assert value == format_mtime(PAST * 1_000_000_000)
+    assert value.endswith("Z")
+    assert datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo == timezone.utc
+
+
 # --- who can see what ------------------------------------------------------
 
 
@@ -759,9 +910,14 @@ def test_a_story_a_chapter_and_a_save(logged_in: TestClient, data_root: Path) ->
     tree = logged_in.get("/api/stories/tree").json()
     assert entry_named(tree["dirs"], "Example Story")["id"] == story["id"]
     listing = logged_in.get(f"/api/stories/dir/{story['id']}").json()["files"]
-    assert listing == [
-        {"id": chapter["id"], "name": "First Chapter", "status": "", "summary": ""}
-    ]
+    assert len(listing) == 1
+    assert listing[0].pop("modified")
+    assert listing[0] == {
+        "id": chapter["id"],
+        "name": "First Chapter",
+        "status": "",
+        "summary": "",
+    }
     assert (
         logged_in.get(f"/api/stories/file/{chapter['id']}/contents").text
         == "Once, on a cold morning."

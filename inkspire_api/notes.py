@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -37,6 +38,8 @@ from .fs import (
     directories,
     dump_yaml,
     files_with_suffix,
+    modified_at,
+    newest_time,
     free_path,
     mtime,
     read_text,
@@ -150,6 +153,27 @@ class NotesScanner:
     def path(self, relpath: PurePosixPath) -> Path:
         """The absolute path of something in this space."""
         return resolve_within(self.root, relpath, "files root")
+
+    def modified(self, file: File) -> str | None:
+        """When `file` last changed, as UTC ISO 8601, or `None` when it cannot be read.
+
+        Read here rather than taken from the scan. A save restamps the scan and keeps
+        it, so a time stored in the scan would stay the one it had when the scan was
+        last built, however often the note was saved since.
+        """
+        return modified_at(self.path(file.relpath))
+
+    def directory_modified(
+        self, folder: Folder, file_times: Iterable[str | None]
+    ) -> str | None:
+        """When `folder` or anything in it last changed, as UTC ISO 8601, or `None`.
+
+        The newest of the manifest's time, where the folder has one, and `file_times`,
+        the times `modified` answered for its notes, so no note is asked about twice.
+        Read when asked, for the same reason `modified` is.
+        """
+        manifest = modified_at(self.path(folder.relpath / MANIFEST))
+        return newest_time([manifest, *file_times])
 
     def _folders(self) -> list[Path]:
         """The directories at the root, in name order. A symlinked one is not listed."""

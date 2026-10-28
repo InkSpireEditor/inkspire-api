@@ -61,12 +61,12 @@ Each route exists under `/api/stories` and `/api/notes`.
 
 | Route | Takes | Answers |
 |---|---|---|
-| `GET /tree` | | `{"user", "dirs", "files"}`: every directory with its files, and every file at the root. Stories: `files` holds one-shots. Notes: `files` holds loose notes. Both lists are in the order to draw, and a story's chapters are in `story.yaml` order. A file entry is `{"id", "name", "status"}`; a directory entry is `{"id", "name", "summary", "files"}`, and a story also carries `"timeline"` and `"lorebook"` |
+| `GET /tree` | | `{"user", "dirs", "files"}`: every directory with its files, and every file at the root. Stories: `files` holds one-shots. Notes: `files` holds loose notes. Both lists are in the order to draw, and a story's chapters are in `story.yaml` order. A file entry is `{"id", "name", "status", "modified"}`; a directory entry is `{"id", "name", "summary", "modified", "files"}`, and a story also carries `"timeline"` and `"lorebook"`. `modified` is when the file last changed, or, for a directory, the newest of its manifest's and its files' times: an ISO 8601 string in UTC with whole seconds and a trailing `Z` (`"2026-10-25T09:14:07Z"`), or `null` when nothing can be read. It is the file's modification time on the server, so a `git pull` sets it to the moment of the pull, and a file edited outside the API shows that edit |
 | `GET /dir/{dir_id}` | | One directory as in the tree, with `summary` on each of its files too. A story also carries `timeline` and `lorebook`, which say whether the files those views read exist |
 | `POST /dir` | `{"name", "summary"?}` | 201 `{"id", "name", "summary"}` |
 | `PUT /dir/{dir_id}` | `{"name"?, "summary"?}`; an absent field is left as it is | `{"id", "name", "summary"}`. The id does not change: the directory keeps its slug |
 | `DELETE /dir/{dir_id}` | `?force=true` (stories only) | 204. A story is refused with 409 and `holds` while it contains anything besides `story.yaml` and `chapters/`; `force=true` deletes it whole. A folder is refused with 409 while it contains anything besides its files and its manifest |
-| `PUT /api/stories/dir/{dir_id}/chapters` | `{"order": [<chapter ids>]}` | The story as `GET /dir/{dir_id}` answers it. Writes `story.yaml` only. A chapter the list leaves out stays after the ones named; the last write wins |
+| `PUT /api/stories/dir/{dir_id}/chapters` | `{"order": [<chapter ids>]}` | The story as `GET /dir/{dir_id}` answers it, `modified` included. Writes `story.yaml` only. A chapter the list leaves out stays after the ones named; the last write wins |
 
 ## Files
 
@@ -76,7 +76,7 @@ a one-shot; under `/api/notes` it is a note.
 | Route | Takes | Answers |
 |---|---|---|
 | `POST /file` | `{"dir", "name"}`; `dir` is a directory id or `null` | 201 `{"id", "name", "dir"}`. Stories: `dir: null` creates a one-shot. Notes: `dir: null` creates a note at the root |
-| `GET /file/{file_id}` | | `{"id", "name", "status", "summary"}` |
+| `GET /file/{file_id}` | | `{"id", "name", "status", "summary", "modified"}`, with `modified` as in a tree's file entry |
 | `PUT /file/{file_id}` | `{"name"?, "dir"?, "status"?, "summary"?}` | `{"id", "name", "dir", "status", "summary"}`. A rename or a move changes the id; a status or a summary alone does not. `status` or `summary` of `""` removes the key from the file's header. Stories: a chapter's `dir` moves it to another story, `null` leaves it where it is, and a `dir` given for a one-shot is refused with 422. Notes: an absent `dir` leaves the note where it is and `null` moves it to the root |
 | `DELETE /file/{file_id}` | | 204 |
 | `GET /file/{file_id}/contents` | | The prose as `text/plain`, without the header or any section |

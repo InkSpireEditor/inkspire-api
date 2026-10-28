@@ -148,33 +148,46 @@ class ChapterOrder(BaseModel):
 # --- the shape both roots answer in -----------------------------------------
 
 
-def _file_entry(file: File, *, summary: bool = False) -> dict:
+def _file_entry(
+    scanner: Scanner | NotesScanner, file: File, *, summary: bool = False
+) -> dict:
     """One file in a listing. `summary` is left out where a listing covers every root."""
-    entry = {"id": file.id, "name": file.name, "status": file.status}
+    entry = {
+        "id": file.id,
+        "name": file.name,
+        "status": file.status,
+        "modified": scanner.modified(file),
+    }
     if summary:
         entry["summary"] = file.summary
     return entry
 
 
-def _story_entry(story: Story, *, summary: bool = False) -> dict:
+def _story_entry(scanner: Scanner, story: Story, *, summary: bool = False) -> dict:
     """One story in a listing, with its chapters in the order `story.yaml` sets."""
+    files = [_file_entry(scanner, chapter, summary=summary) for chapter in story.files]
     return {
         "id": story.id,
         "name": story.name,
         "summary": story.summary,
         "timeline": story.has_timeline,
         "lorebook": story.has_lorebook,
-        "files": [_file_entry(chapter, summary=summary) for chapter in story.files],
+        "modified": scanner.directory_modified(story, (e["modified"] for e in files)),
+        "files": files,
     }
 
 
-def _folder_entry(folder: Folder, *, summary: bool = False) -> dict:
+def _folder_entry(
+    scanner: NotesScanner, folder: Folder, *, summary: bool = False
+) -> dict:
     """One notes folder in a listing, with the notes in it in name order."""
+    files = [_file_entry(scanner, note, summary=summary) for note in folder.files]
     return {
         "id": folder.id,
         "name": folder.name,
         "summary": folder.summary,
-        "files": [_file_entry(note, summary=summary) for note in folder.files],
+        "modified": scanner.directory_modified(folder, (e["modified"] for e in files)),
+        "files": files,
     }
 
 
@@ -202,10 +215,13 @@ def tree(user: CurrentUser, scanner: ScannerDep) -> dict:
     return {
         "user": user.email,
         "files": _by_name(
-            [_file_entry(one_shot) for one_shot in scanner.tree().one_shots.values()]
+            [
+                _file_entry(scanner, one_shot)
+                for one_shot in scanner.tree().one_shots.values()
+            ]
         ),
         "dirs": _by_name(
-            [_story_entry(story) for story in scanner.tree().stories.values()]
+            [_story_entry(scanner, story) for story in scanner.tree().stories.values()]
         ),
     }
 
@@ -217,7 +233,7 @@ def dir_info(dir_id: str, scanner: ScannerDep) -> dict:
     `timeline` and `lorebook` say whether the files those views read are there, so a
     client knows which to offer without fetching either. Neither is read here.
     """
-    return _story_entry(scanner.story(dir_id), summary=True)
+    return _story_entry(scanner, scanner.story(dir_id), summary=True)
 
 
 @stories_router.post("/dir", status_code=status.HTTP_201_CREATED)
@@ -257,7 +273,9 @@ def reorder_chapters(dir_id: str, body: ChapterOrder, scanner: ScannerDep) -> di
 
     The last write wins. Nothing here reads or writes a chapter's text.
     """
-    return _story_entry(scanner.reorder_chapters(dir_id, body.order), summary=True)
+    return _story_entry(
+        scanner, scanner.reorder_chapters(dir_id, body.order), summary=True
+    )
 
 
 @stories_router.post("/file", status_code=status.HTTP_201_CREATED)
@@ -279,6 +297,7 @@ def file_info(file_id: str, scanner: ScannerDep) -> dict:
         "name": file.name,
         "status": file.status,
         "summary": file.summary,
+        "modified": scanner.modified(file),
     }
 
 
@@ -353,9 +372,9 @@ def notes_tree(user: CurrentUser, notes: NotesDep) -> dict:
     scan = notes.tree()
     return {
         "user": user.email,
-        "files": [_file_entry(note) for note in scan.root],
+        "files": [_file_entry(notes, note) for note in scan.root],
         "dirs": _by_name(
-            [_folder_entry(folder) for folder in scan.folders.values()]
+            [_folder_entry(notes, folder) for folder in scan.folders.values()]
         ),
     }
 
@@ -363,7 +382,7 @@ def notes_tree(user: CurrentUser, notes: NotesDep) -> dict:
 @notes_router.get("/dir/{dir_id}")
 def notes_dir_info(dir_id: str, notes: NotesDep) -> dict:
     """One folder, its context, and the files in it."""
-    return _folder_entry(notes.folder(dir_id), summary=True)
+    return _folder_entry(notes, notes.folder(dir_id), summary=True)
 
 
 @notes_router.post("/dir", status_code=status.HTTP_201_CREATED)
@@ -403,6 +422,7 @@ def notes_file_info(file_id: str, notes: NotesDep) -> dict:
         "name": note.name,
         "status": note.status,
         "summary": note.summary,
+        "modified": notes.modified(note),
     }
 
 
