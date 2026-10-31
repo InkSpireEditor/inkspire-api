@@ -56,6 +56,9 @@ class File:
     name: str
     status: str
     summary: str
+    #: The header's tags, as `ink.tags_of` reads them: lowercase, without repeats, in the
+    #: order written.
+    tags: tuple[str, ...]
 
     @property
     def filename(self) -> str:

@@ -55,7 +55,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, field_validator
 
 from .deps import CurrentUser, SettingsDep
 from .entries import File, Folder
@@ -64,6 +64,7 @@ from .fs import (
     MAX_STATUS_LENGTH,
     MAX_SUMMARY_LENGTH,
 )
+from .ink import normalise_tags
 from .notes import NotesScanner
 from .storage import Chapter, Scanner, Story
 
@@ -137,6 +138,15 @@ class FileUpdate(BaseModel):
     #: status can be cleared as well as set.
     status: Status | None = None
     summary: Summary | None = None
+    #: The file's whole list of tags, replacing the one it has; `[]` removes the key.
+    #: Each is trimmed and lowercased, repeats are dropped, and one that is not a valid
+    #: tag is a 400.
+    tags: list[str] | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def _valid_tags(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else normalise_tags(value)
 
 
 class ChapterOrder(BaseModel):
@@ -156,6 +166,7 @@ def _file_entry(
         "id": file.id,
         "name": file.name,
         "status": file.status,
+        "tags": list(file.tags),
         "modified": scanner.modified(file),
     }
     if summary:
@@ -296,6 +307,7 @@ def file_info(file_id: str, scanner: ScannerDep) -> dict:
         "id": file.id,
         "name": file.name,
         "status": file.status,
+        "tags": list(file.tags),
         "summary": file.summary,
         "modified": scanner.modified(file),
     }
@@ -319,12 +331,14 @@ def update_file(file_id: str, body: FileUpdate, scanner: ScannerDep) -> dict:
             story_id=body.dir,
             status=body.status,
             summary=body.summary,
+            tags=body.tags,
         )
         return {
             "id": chapter.id,
             "name": chapter.name,
             "dir": chapter.story_id,
             "status": chapter.status,
+            "tags": list(chapter.tags),
             "summary": chapter.summary,
         }
 
@@ -334,13 +348,18 @@ def update_file(file_id: str, body: FileUpdate, scanner: ScannerDep) -> dict:
             "A one-shot has no story to move into yet.",
         )
     one_shot = scanner.update_one_shot(
-        file_id, name=body.name, status=body.status, summary=body.summary
+        file_id,
+        name=body.name,
+        status=body.status,
+        summary=body.summary,
+        tags=body.tags,
     )
     return {
         "id": one_shot.id,
         "name": one_shot.name,
         "dir": None,
         "status": one_shot.status,
+        "tags": list(one_shot.tags),
         "summary": one_shot.summary,
     }
 
@@ -421,6 +440,7 @@ def notes_file_info(file_id: str, notes: NotesDep) -> dict:
         "id": note.id,
         "name": note.name,
         "status": note.status,
+        "tags": list(note.tags),
         "summary": note.summary,
         "modified": notes.modified(note),
     }
@@ -442,12 +462,14 @@ def notes_update_file(file_id: str, body: FileUpdate, notes: NotesDep) -> dict:
         folder_id=folder_id,
         status=body.status,
         summary=body.summary,
+        tags=body.tags,
     )
     return {
         "id": note.id,
         "name": note.name,
         "dir": note.folder_id,
         "status": note.status,
+        "tags": list(note.tags),
         "summary": note.summary,
     }
 

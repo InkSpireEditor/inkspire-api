@@ -215,6 +215,7 @@ class NotesScanner:
             name=ink.display_name(header, path.stem),
             status=str(header.get("status") or ""),
             summary=str(header.get("summary") or ""),
+            tags=ink.tags_of(header),
             folder_id=folder_id,
         )
 
@@ -344,6 +345,7 @@ class NotesScanner:
         folder_id: str | None,
         status: str | None = None,
         summary: str | None = None,
+        tags: list[str] | None = None,
     ) -> Note:
         """Renames a note, moves it to a folder or to the root, rewrites what its header
         says about it, or any combination of those.
@@ -351,8 +353,9 @@ class NotesScanner:
         `folder_id` says where the note should end up, `None` meaning the root, so a
         caller that means to leave it where it is passes the folder it is already in.
 
-        `status` and `summary` are written into the header, as they are for a chapter,
-        and either given as an empty string removes the key.
+        `status`, `summary` and `tags` are written into the header, as they are for a
+        chapter, and either given as an empty string (an empty list, for `tags`)
+        removes the key.
 
         The note's id changes whenever its path does, which a rename or a move both do.
         """
@@ -377,6 +380,7 @@ class NotesScanner:
             title=display if name is not None else None,
             status=status,
             summary=summary,
+            tags=tags,
         )
         if fields:
             self._write_header(target_relpath, fields)
@@ -384,7 +388,8 @@ class NotesScanner:
         self.invalidate()
         return self.note(derive_id(SPACE, str(target_relpath)))
 
-    def _write_header(self, relpath: PurePosixPath, fields: dict[str, str]) -> None:
+    def _write_header(self, relpath: PurePosixPath, fields: dict[str, str | list[str]]
+    ) -> None:
         """Applies `fields` to a file's header, leaving its prose as it is."""
         text = ink.with_header(ink.parse(self._text(relpath)), relpath.stem, fields)
         if text is not None:

@@ -21,8 +21,10 @@ creating a file and typing in it, and it stays legible to anything that reads te
 optional, and so is the section. `title` is the name the file is shown under, which is
 why a file can be renamed without being moved. `status` is a free string; the
 vocabulary suggested for it is `outline`, `draft`, `revised` and `done`. `summary` says
-what happens in the file. A key this module does not know is kept as it is, so a writer
-can add one and the application will not remove it.
+what happens in the file. `tags` is a list of tags, each a lowercase word of `a-z`,
+`0-9`, `-` and `_` up to `MAX_TAG_LENGTH` characters (`tags: [perso, priority]`); a file
+may have any number. A key this module does not know is kept as it is, so a writer can
+add one and the application will not remove it.
 
 `ink:body` is the prose, and is opaque here. `ink:provenance` is per-character
 provenance keyed by paragraph hash, and `ink:context_summary` is a summary of whatever a
@@ -84,7 +86,13 @@ SECTION_CONTEXT_SUMMARY = "context_summary"
 KNOWN_SECTIONS = (SECTION_META, SECTION_BODY, SECTION_PROVENANCE, SECTION_CONTEXT_SUMMARY)
 
 #: The header keys this module reads. Any other is kept but not understood.
-KNOWN_KEYS = ("title", "status", "summary")
+KNOWN_KEYS = ("title", "status", "summary", "tags")
+
+#: The longest a tag may be.
+MAX_TAG_LENGTH = 32
+
+#: What a tag is made of, once it is trimmed and lowercased.
+TAG_CHARACTERS = frozenset(string.ascii_lowercase + string.digits + "-_")
 
 #: The longest a section name may be.
 MAX_NAME_LENGTH = 32
@@ -259,18 +267,58 @@ def render(metadata: dict, body: str, sections: dict[str, str]) -> str:
     return "".join(parts)
 
 
+def normalise_tag(value: str) -> str:
+    """`value` as a tag: trimmed and lowercased. Raises `ValueError` where what is left is
+    empty, longer than `MAX_TAG_LENGTH`, or holds a character other than `a-z`, `0-9`, `-`
+    and `_`."""
+    tag = value.strip().lower()
+    if not tag:
+        raise ValueError("a tag cannot be empty")
+    if len(tag) > MAX_TAG_LENGTH:
+        raise ValueError(f'the tag "{tag}" is longer than {MAX_TAG_LENGTH} characters')
+    if not set(tag) <= TAG_CHARACTERS:
+        raise ValueError(f'the tag "{tag}" can only use a-z, 0-9, "-" and "_"')
+    return tag
+
+
+def normalise_tags(values: list[str]) -> list[str]:
+    """Every value of `values` as a tag, in the order first seen and without repeats.
+
+    Raises `ValueError` for the first value `normalise_tag` refuses.
+    """
+    tags: list[str] = []
+    for value in values:
+        tag = normalise_tag(value)
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def tags_of(metadata: dict) -> tuple[str, ...]:
+    """The tags a header records. Never raises: a `tags` value that is not a list of
+    valid tags reads as none, and `check` is where it is reported."""
+    value = metadata.get("tags")
+    if not isinstance(value, list) or not all(isinstance(entry, str) for entry in value):
+        return ()
+    try:
+        return tuple(normalise_tags(value))
+    except ValueError:
+        return ()
+
+
 def header_fields(
     *,
     title: str | None = None,
     status: str | None = None,
     summary: str | None = None,
-) -> dict[str, str]:
+    tags: list[str] | None = None,
+) -> dict[str, str | list[str]]:
     """The header fields an update asks to change, leaving out the ones it does not.
 
-    `None` means a field was not mentioned and is left alone; `""` means it was asked for
-    as empty, which `with_header` reads as a removal.
+    `None` means a field was not mentioned and is left alone; `""` (or `[]` for `tags`)
+    means it was asked for as empty, which `with_header` reads as a removal.
     """
-    given = {"title": title, "status": status, "summary": summary}
+    given = {"title": title, "status": status, "summary": summary, "tags": tags}
     return {key: value for key, value in given.items() if value is not None}
 
 
@@ -282,13 +330,14 @@ def with_header(document: Document, stem: str, fields: dict) -> str | None:
     filename already spells, and any field given as an empty string. So renaming a file
     to what it is already called leaves it with no header instead of one repeating its
     own name, and clearing a status removes the key instead of recording `status: ''`.
+    An empty list of tags is removed the same way.
 
     Keys `fields` does not mention are left alone, which is what keeps a status that was
     set by hand while a rename is saved.
     """
     metadata = dict(document.metadata)
     for key, value in fields.items():
-        if value == "" or (key == "title" and value == stem):
+        if not value or (key == "title" and value == stem):
             metadata.pop(key, None)
         else:
             metadata[key] = value
@@ -384,6 +433,8 @@ def _header_problems(section: _Section) -> list[Problem]:
         line = _key_line(section, str(key))
         if key not in KNOWN_KEYS:
             problems.append(Problem(line, WARNING, f'the key "{key}" means nothing here'))
+        elif key == "tags":
+            problems.extend(_tag_problems(value, line))
         elif not isinstance(value, str):
             problems.append(
                 Problem(
@@ -394,6 +445,34 @@ def _header_problems(section: _Section) -> list[Problem]:
             )
         elif key == "title" and "\n" in value:
             problems.append(Problem(line, ERROR, "a title cannot run over two lines"))
+    return problems
+
+
+def _tag_problems(value: object, line: int) -> list[Problem]:
+    """Everything wrong with the value of a `tags` key."""
+    if not isinstance(value, list):
+        return [
+            Problem(
+                line,
+                ERROR,
+                f'"tags" has to be a list of tags (this is {type(value).__name__})',
+            )
+        ]
+    problems: list[Problem] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            problems.append(
+                Problem(
+                    line,
+                    ERROR,
+                    f'a tag has to be text (this is {type(entry).__name__})',
+                )
+            )
+            continue
+        try:
+            normalise_tag(entry)
+        except ValueError as error:
+            problems.append(Problem(line, ERROR, str(error)))
     return problems
 
 

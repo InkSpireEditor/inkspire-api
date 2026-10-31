@@ -40,7 +40,7 @@ more than its chapters adds `"holds": [<names>]`. These statuses are used throug
 | 504 | A git command did not finish in time. |
 
 **Limits on text.** A name is 1 to 255 characters after trimming. A summary or a synopsis is at most
-2000 characters. A status is at most 64 characters, and `""` removes it. A commit message is 1 to
+2000 characters. A status is at most 64 characters, and `""` removes it. A tag is 1 to 32 characters of `a-z`, `0-9`, `-` and `_` once trimmed and lowercased (`ink-format.md`). A commit message is 1 to
 2000 characters. A generation instruction is at most 300 characters.
 
 ## Authentication
@@ -61,7 +61,7 @@ Each route exists under `/api/stories` and `/api/notes`.
 
 | Route | Takes | Answers |
 |---|---|---|
-| `GET /tree` | | `{"user", "dirs", "files"}`: every directory with its files, and every file at the root. Stories: `files` holds one-shots. Notes: `files` holds loose notes. Both lists are in the order to draw, and a story's chapters are in `story.yaml` order. A file entry is `{"id", "name", "status", "modified"}`; a directory entry is `{"id", "name", "summary", "modified", "files"}`, and a story also carries `"timeline"` and `"lorebook"`. `modified` is when the file last changed, or, for a directory, the newest of its manifest's and its files' times: an ISO 8601 string in UTC with whole seconds and a trailing `Z` (`"2026-10-25T09:14:07Z"`), or `null` when nothing can be read. It is the file's modification time on the server, so a `git pull` sets it to the moment of the pull, and a file edited outside the API shows that edit |
+| `GET /tree` | | `{"user", "dirs", "files"}`: every directory with its files, and every file at the root. Stories: `files` holds one-shots. Notes: `files` holds loose notes. Both lists are in the order to draw, and a story's chapters are in `story.yaml` order. A file entry is `{"id", "name", "status", "tags", "modified"}`; a directory entry is `{"id", "name", "summary", "modified", "files"}`, and a story also carries `"timeline"` and `"lorebook"`. `modified` is when the file last changed, or, for a directory, the newest of its manifest's and its files' times: an ISO 8601 string in UTC with whole seconds and a trailing `Z` (`"2026-10-25T09:14:07Z"`), or `null` when nothing can be read. It is the file's modification time on the server, so a `git pull` sets it to the moment of the pull, and a file edited outside the API shows that edit |
 | `GET /dir/{dir_id}` | | One directory as in the tree, with `summary` on each of its files too. A story also carries `timeline` and `lorebook`, which say whether the files those views read exist |
 | `POST /dir` | `{"name", "summary"?}` | 201 `{"id", "name", "summary"}` |
 | `PUT /dir/{dir_id}` | `{"name"?, "summary"?}`; an absent field is left as it is | `{"id", "name", "summary"}`. The id does not change: the directory keeps its slug |
@@ -76,8 +76,8 @@ a one-shot; under `/api/notes` it is a note.
 | Route | Takes | Answers |
 |---|---|---|
 | `POST /file` | `{"dir", "name"}`; `dir` is a directory id or `null` | 201 `{"id", "name", "dir"}`. Stories: `dir: null` creates a one-shot. Notes: `dir: null` creates a note at the root |
-| `GET /file/{file_id}` | | `{"id", "name", "status", "summary", "modified"}`, with `modified` as in a tree's file entry |
-| `PUT /file/{file_id}` | `{"name"?, "dir"?, "status"?, "summary"?}` | `{"id", "name", "dir", "status", "summary"}`. A rename or a move changes the id; a status or a summary alone does not. `status` or `summary` of `""` removes the key from the file's header. Stories: a chapter's `dir` moves it to another story, `null` leaves it where it is, and a `dir` given for a one-shot is refused with 422. Notes: an absent `dir` leaves the note where it is and `null` moves it to the root |
+| `GET /file/{file_id}` | | `{"id", "name", "status", "tags", "summary", "modified"}`, with `modified` as in a tree's file entry |
+| `PUT /file/{file_id}` | `{"name"?, "dir"?, "status"?, "summary"?, "tags"?}` | `{"id", "name", "dir", "status", "tags", "summary"}`. A rename or a move changes the id; a status, a summary or tags alone do not. `status` or `summary` of `""` removes the key from the file's header. `tags` is the file's whole list and replaces the one it has: each is trimmed and lowercased, repeats are dropped, `[]` removes the key, and a value that is not a tag is a 400 and writes nothing. Stories: a chapter's `dir` moves it to another story, `null` leaves it where it is, and a `dir` given for a one-shot is refused with 422. Notes: an absent `dir` leaves the note where it is and `null` moves it to the root |
 | `DELETE /file/{file_id}` | | 204 |
 | `GET /file/{file_id}/contents` | | The prose as `text/plain`, without the header or any section |
 | `GET /file/{file_id}/document` | | `{"body", "metadata", "reconciled"}`. `metadata` maps a paragraph's hash to its `[start, end, kind]` runs, and is `null` when the file has no provenance. `reconciled` is `null`, or `{"revision", "recovered", "reset", "dropped"}` listing the paragraphs whose records a hand edit left stale and what was done about each. Stories: recovered from git history. Notes: a stale record is dropped. Reading writes nothing |

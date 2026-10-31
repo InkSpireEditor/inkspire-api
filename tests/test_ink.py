@@ -479,3 +479,100 @@ def test_several_fields_are_applied_in_one_pass() -> None:
         {"title": "The Letter", "status": "draft", "summary": "She opens it."},
     )
     assert text == f"{META}title: The Letter\nstatus: draft\nsummary: She opens it.\n{BODY}Once.\n"
+
+
+# --- tags ------------------------------------------------------------------
+
+
+def test_a_tag_is_trimmed_and_lowercased() -> None:
+    assert ink.normalise_tag("  Perso ") == "perso"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "two words", "perso!", "café", "x" * 33])
+def test_a_value_that_is_not_a_tag_is_refused(value: str) -> None:
+    with pytest.raises(ValueError):
+        ink.normalise_tag(value)
+
+
+def test_a_tag_may_be_as_long_as_the_limit_and_use_dashes_digits_and_underscores() -> None:
+    assert ink.normalise_tag("x" * 32) == "x" * 32
+    assert ink.normalise_tag("to-revise_2") == "to-revise_2"
+
+
+def test_tags_keep_the_order_first_seen_and_lose_their_repeats() -> None:
+    assert ink.normalise_tags(["b", " A", "b", "a"]) == ["b", "a"]
+
+
+def test_one_bad_tag_refuses_the_whole_list() -> None:
+    with pytest.raises(ValueError, match="perso!"):
+        ink.normalise_tags(["priority", "perso!"])
+
+
+def test_tags_are_read_from_the_header() -> None:
+    document = ink.parse(f"{META}tags: [Perso, priority, perso]\n{BODY}Once.\n")
+    assert ink.tags_of(document.metadata) == ("perso", "priority")
+
+
+def test_a_file_with_no_tags_reads_as_none() -> None:
+    assert ink.tags_of({}) == ()
+    assert ink.tags_of(ink.parse("Once.\n").metadata) == ()
+
+
+@pytest.mark.parametrize("value", ["perso", "[[a], [b]]", "[1, 2]", "[perso!, priority]", "{a: b}"])
+def test_tags_that_cannot_be_read_read_as_none(value: str) -> None:
+    """Reading never fails; `check` is where a malformed value is reported."""
+    document = ink.parse(f"{META}tags: {value}\n{BODY}Once.\n")
+    assert ink.tags_of(document.metadata) == ()
+
+
+def test_a_list_of_tags_is_accepted_by_check() -> None:
+    assert ink.check(f"{META}tags: [perso, priority]\n{BODY}Once.\n") == []
+    assert ink.check(f"{META}tags:\n  - perso\n  - priority\n{BODY}Once.\n") == []
+
+
+def test_tags_that_are_not_a_list_are_an_error_on_their_own_line() -> None:
+    problems = ink.check(f"{META}title: One\ntags: perso\n{BODY}Once.\n")
+    assert [(p.line, p.level) for p in problems] == [(3, ink.ERROR)]
+    assert '"tags" has to be a list' in problems[0].message
+
+
+def test_a_tag_that_is_not_text_is_an_error() -> None:
+    problems = ink.check(f"{META}tags: [perso, 3]\n{BODY}Once.\n")
+    assert [(p.line, p.level) for p in problems] == [(2, ink.ERROR)]
+    assert "has to be text" in problems[0].message
+
+
+def test_each_bad_tag_is_reported() -> None:
+    problems = ink.check(f"{META}tags: [perso!, ok, {'x' * 33}]\n{BODY}Once.\n")
+    assert [p.level for p in problems] == [ink.ERROR, ink.ERROR]
+    assert "perso!" in problems[0].message
+    assert "longer than 32" in problems[1].message
+
+
+def test_tags_are_written_in_the_order_given() -> None:
+    text = ink.with_header(ink.parse("Once.\n"), "one", {"tags": ["perso", "priority"]})
+    assert text is not None
+    assert ink.parse(text).metadata == {"tags": ["perso", "priority"]}
+    assert ink.check(text) == []
+
+
+def test_tags_already_there_write_nothing() -> None:
+    document = ink.parse(f"{META}tags: [perso, priority]\n{BODY}Once.\n")
+    assert ink.with_header(document, "one", {"tags": ["perso", "priority"]}) is None
+
+
+def test_no_tags_removes_the_key() -> None:
+    document = ink.parse(f"{META}tags: [perso]\n{BODY}Once.\n")
+    assert ink.with_header(document, "one", {"tags": []}) == "Once.\n"
+
+
+def test_tags_are_left_alone_by_a_write_that_does_not_mention_them() -> None:
+    document = ink.parse(f"{META}tags: [perso]\n{BODY}Once.\n")
+    text = ink.with_header(document, "one", {"status": "draft"})
+    assert text is not None
+    assert ink.parse(text).metadata == {"tags": ["perso"], "status": "draft"}
+
+
+def test_header_fields_leaves_out_tags_not_mentioned_and_keeps_an_empty_list() -> None:
+    assert ink.header_fields(status="draft") == {"status": "draft"}
+    assert ink.header_fields(tags=[]) == {"tags": []}

@@ -17,6 +17,7 @@ classDiagram
         +str name
         +str status
         +str summary
+        +tuple tags
         +filename() str
     }
     class Chapter {
@@ -55,8 +56,9 @@ only the shapes a scan reads *into* are shared.
 
 ## `File`: one `.ink` file, wherever a scan found it
 
-`id`, `relpath`, `name`, `status`, `summary`, and a `filename` property. Built from
-exactly two calls, `ink.read_header` and `ink.display_name`, no matter which root's
+`id`, `relpath`, `name`, `status`, `summary`, `tags` (a tuple of lowercase words, `ink.tags_of`),
+and a `filename` property. Built from
+exactly three calls, `ink.read_header`, `ink.display_name` and `ink.tags_of`, no matter which root's
 scan does it — see `filesystem.md` for what the header itself looks like.
 
 - **`Chapter(File)`** adds `story_id: str`, required. A chapter always belongs to

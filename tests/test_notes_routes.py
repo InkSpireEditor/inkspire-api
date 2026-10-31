@@ -79,6 +79,7 @@ def test_the_tree_holds_the_folders_and_the_files_at_the_root(
                               folder_id(logged_in, "research")),
                 "name": "Worldbuilding",
                 "status": "",
+                "tags": [],
             }
         ],
     }
@@ -238,6 +239,7 @@ def test_a_file_answers_with_what_its_header_says(
         "id": identifier,
         "name": "Scratch Pad",
         "status": "draft",
+        "tags": [],
         "summary": "A list.",
     }
 
@@ -610,3 +612,65 @@ def test_saving_a_note_moves_its_time(
     written = datetime.fromisoformat(after.replace("Z", "+00:00"))
     assert written > datetime.fromisoformat(before.replace("Z", "+00:00"))
     assert datetime.now(timezone.utc) - written < timedelta(minutes=1)
+
+
+# --- tags ------------------------------------------------------------------
+
+
+def test_tags_are_set_on_a_note_in_a_folder_and_one_at_the_root(
+    logged_in: TestClient, workspace: Path
+) -> None:
+    in_folder = note_id(logged_in, "Worldbuilding", folder_id(logged_in, "research"))
+    at_root = note_id(logged_in, "scratch")
+
+    first = logged_in.put(f"/api/notes/file/{in_folder}", json={"tags": [" Perso"]})
+    second = logged_in.put(f"/api/notes/file/{at_root}", json={"tags": ["priority", "perso"]})
+
+    assert first.json()["tags"] == ["perso"]
+    assert second.json()["tags"] == ["priority", "perso"]
+    assert logged_in.get(f"/api/notes/file/{in_folder}").json()["tags"] == ["perso"]
+
+
+def test_tags_reach_the_tree_and_the_folders_listing(
+    logged_in: TestClient, workspace: Path
+) -> None:
+    folder = folder_id(logged_in, "research")
+    in_folder = note_id(logged_in, "Worldbuilding", folder)
+    logged_in.put(f"/api/notes/file/{in_folder}", json={"tags": ["perso"]})
+
+    answered = tree(logged_in)
+    research = entry_named(answered["dirs"], "research")
+    assert entry_named(research["files"], "Worldbuilding")["tags"] == ["perso"]
+    assert entry_named(answered["files"], "scratch")["tags"] == []
+    listing = logged_in.get(f"/api/notes/dir/{folder}").json()["files"]
+    assert entry_named(listing, "Worldbuilding")["tags"] == ["perso"]
+
+
+def test_a_note_written_by_hand_with_tags_is_read(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    make_note(
+        files_root,
+        "tagged.ink",
+        "===== ink:meta\ntags: [Perso, priority]\n===== ink:body\nOnce.\n",
+    )
+
+    listed = entry_named(tree(logged_in)["files"], "tagged")
+
+    assert listed["tags"] == ["perso", "priority"]
+
+
+def test_a_bad_note_tag_is_a_400_and_clearing_removes_the_key(
+    logged_in: TestClient, files_root: Path
+) -> None:
+    make_note(
+        files_root, "tagged.ink", "===== ink:meta\ntags: [perso]\n===== ink:body\nOnce.\n"
+    )
+    identifier = note_id(logged_in, "tagged")
+
+    bad = logged_in.put(f"/api/notes/file/{identifier}", json={"tags": ["no way"]})
+    cleared = logged_in.put(f"/api/notes/file/{identifier}", json={"tags": []})
+
+    assert bad.status_code == 400
+    assert cleared.json()["tags"] == []
+    assert (files_root / "tagged.ink").read_text(encoding="utf-8") == "Once.\n"

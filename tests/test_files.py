@@ -16,6 +16,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from inkspire_api import ink
 from inkspire_api.fs import MAX_FILE_BYTES, format_mtime
 from inkspire_api.models import User
 from inkspire_api.security import hash_password
@@ -102,9 +103,9 @@ def test_the_tree_lists_every_story(logged_in: TestClient, repository: Path) -> 
         "lorebook": False,
         "files": [
             {"id": chapter_id(logged_in, "Example Story", "first-chapter"),
-             "name": "first-chapter", "status": ""},
+             "name": "first-chapter", "status": "", "tags": []},
             {"id": chapter_id(logged_in, "Example Story", "second-chapter"),
-             "name": "second-chapter", "status": ""},
+             "name": "second-chapter", "status": "", "tags": []},
         ],
     }
 
@@ -314,7 +315,13 @@ def test_a_one_shots_info_carries_no_dir(logged_in: TestClient, repository: Path
     identifier = one_shot_id(logged_in)
     body = logged_in.get(f"/api/stories/file/{identifier}").json()
     assert body.pop("modified")
-    assert body == {"id": identifier, "name": "Solo", "status": "", "summary": ""}
+    assert body == {
+        "id": identifier,
+        "name": "Solo",
+        "status": "",
+        "tags": [],
+        "summary": "",
+    }
 
 
 def test_a_one_shots_contents_are_read_and_written(
@@ -570,6 +577,7 @@ def test_a_chapter_answers_with_what_its_header_says(
         "id": third,
         "name": "The Letter",
         "status": "draft",
+        "tags": [],
         "summary": "She opens it.",
     }
 
@@ -584,6 +592,7 @@ def test_a_chapter_with_no_header_answers_with_empty_fields(
         "id": chapter,
         "name": "first-chapter",
         "status": "",
+        "tags": [],
         "summary": "",
     }
 
@@ -916,6 +925,7 @@ def test_a_story_a_chapter_and_a_save(logged_in: TestClient, data_root: Path) ->
         "id": chapter["id"],
         "name": "First Chapter",
         "status": "",
+        "tags": [],
         "summary": "",
     }
     assert (
@@ -1152,3 +1162,127 @@ def test_a_status_is_set_on_a_note_too(logged_in: TestClient, files_root: Path) 
 
     assert response.json()["status"] == "draft"
     assert logged_in.get(f"/api/notes/file/{note}").json()["status"] == "draft"
+
+
+# --- tags ------------------------------------------------------------------
+
+
+def test_tags_are_set_through_the_header(logged_in: TestClient, repository: Path) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+
+    response = logged_in.put(
+        f"/api/stories/file/{chapter}", json={"tags": ["perso", "priority"]}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tags"] == ["perso", "priority"]
+    assert response.json()["id"] == chapter, "a tag change moves no file"
+    path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    assert ink.parse(path.read_text(encoding="utf-8")).metadata == {
+        "tags": ["perso", "priority"]
+    }
+
+
+def test_tags_reach_every_answer_that_describes_a_file(
+    logged_in: TestClient, repository: Path
+) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    logged_in.put(f"/api/stories/file/{chapter}", json={"tags": ["perso"]})
+
+    assert logged_in.get(f"/api/stories/file/{chapter}").json()["tags"] == ["perso"]
+    assert entry_named(story_files(logged_in, "Example Story"), "first-chapter")["tags"] == [
+        "perso"
+    ]
+    in_tree = entry_named(entry_named(dirs(logged_in), "Example Story")["files"], "first-chapter")
+    assert in_tree["tags"] == ["perso"]
+    other = entry_named(story_files(logged_in, "Example Story"), "second-chapter")
+    assert other["tags"] == [], "only the tagged file has them"
+
+
+def test_tags_are_normalised_and_replace_the_ones_there(
+    logged_in: TestClient, repository: Path
+) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    logged_in.put(f"/api/stories/file/{chapter}", json={"tags": ["old"]})
+
+    response = logged_in.put(
+        f"/api/stories/file/{chapter}", json={"tags": [" Perso", "perso", "Priority"]}
+    )
+
+    assert response.json()["tags"] == ["perso", "priority"]
+
+
+def test_an_empty_list_clears_the_tags(logged_in: TestClient, repository: Path) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    logged_in.put(f"/api/stories/file/{chapter}", json={"tags": ["perso"]})
+
+    response = logged_in.put(f"/api/stories/file/{chapter}", json={"tags": []})
+
+    assert response.json()["tags"] == []
+    path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    assert path.read_text(encoding="utf-8") == "Once."
+
+
+@pytest.mark.parametrize("tag", ["perso!", "two words", "", "x" * 33])
+def test_a_bad_tag_is_a_400_and_writes_nothing(
+    logged_in: TestClient, repository: Path, tag: str
+) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    before = path.read_text(encoding="utf-8")
+
+    response = logged_in.put(f"/api/stories/file/{chapter}", json={"tags": ["ok", tag]})
+
+    assert response.status_code == 400
+    assert set(response.json()) == {"code", "message"}
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_tags_and_status_are_set_apart_without_disturbing_each_other(
+    logged_in: TestClient, repository: Path
+) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    logged_in.put(f"/api/stories/file/{chapter}", json={"status": "draft"})
+
+    logged_in.put(f"/api/stories/file/{chapter}", json={"tags": ["perso"]})
+    after_tags = logged_in.get(f"/api/stories/file/{chapter}").json()
+    logged_in.put(f"/api/stories/file/{chapter}", json={"status": "done"})
+    after_status = logged_in.get(f"/api/stories/file/{chapter}").json()
+
+    assert (after_tags["status"], after_tags["tags"]) == ("draft", ["perso"])
+    assert (after_status["status"], after_status["tags"]) == ("done", ["perso"])
+
+
+def test_tags_are_set_together_with_a_rename(logged_in: TestClient, repository: Path) -> None:
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+
+    renamed = logged_in.put(
+        f"/api/stories/file/{chapter}", json={"name": "Opening", "tags": ["perso"]}
+    ).json()
+
+    assert renamed["id"] != chapter
+    assert logged_in.get(f"/api/stories/file/{renamed['id']}").json()["tags"] == ["perso"]
+
+
+def test_a_one_shot_has_tags_too(logged_in: TestClient, repository: Path) -> None:
+    identifier = one_shot_id(logged_in)
+
+    response = logged_in.put(f"/api/stories/file/{identifier}", json={"tags": ["perso"]})
+
+    assert response.json()["tags"] == ["perso"]
+    tree = logged_in.get("/api/stories/tree").json()
+    assert entry_named(tree["files"], "Solo")["tags"] == ["perso"]
+
+
+def test_a_tags_value_that_is_not_a_list_reads_as_none_and_survives_a_save(
+    logged_in: TestClient, repository: Path
+) -> None:
+    """`ink check` reports it; the application neither fails on it nor rewrites it."""
+    chapter = chapter_id(logged_in, "Example Story", "first-chapter")
+    path = repository / "stories" / "example-story" / "chapters" / "first-chapter.ink"
+    path.write_text("===== ink:meta\ntags: perso\n===== ink:body\nOnce.\n", encoding="utf-8")
+
+    logged_in.put(f"/api/stories/file/{chapter}/document", json={"body": "Twice."})
+
+    assert "tags: perso" in path.read_text(encoding="utf-8")
+    assert logged_in.get(f"/api/stories/file/{chapter}").json()["tags"] == []

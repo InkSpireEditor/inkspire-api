@@ -350,6 +350,7 @@ class Scanner:
                     name=ink.display_name(header, file.stem),
                     status=str(header.get("status") or ""),
                     summary=str(header.get("summary") or ""),
+                    tags=ink.tags_of(header),
                     story_id=story_id,
                 )
                 own.append(chapter)
@@ -381,6 +382,7 @@ class Scanner:
                 name=ink.display_name(header, file.stem),
                 status=str(header.get("status") or ""),
                 summary=str(header.get("summary") or ""),
+                tags=ink.tags_of(header),
             )
             one_shots[one_shot.id] = one_shot
         return one_shots
@@ -510,6 +512,7 @@ class Scanner:
         story_id: str | None = None,
         status: str | None = None,
         summary: str | None = None,
+        tags: list[str] | None = None,
     ) -> Chapter:
         """Renames a chapter, moves it to another story, rewrites what its header says
         about it, or any combination of those.
@@ -519,9 +522,10 @@ class Scanner:
         naming the old file is pointed at the new one, so a chapter that has a place in
         the order keeps it. A chapter moved to another story is listed last there.
 
-        `status` and `summary` are written into the header, and either given as an empty
-        string removes the key. Every field given is written in one pass, so a rename and
-        a status change in one request rewrite the file once.
+        `status`, `summary` and `tags` are written into the header, and either given as an
+        empty string (an empty list, for `tags`) removes the key. Every field given is
+        written in one pass, so a rename and a status change in one request rewrite the
+        file once.
 
         The chapter's id changes whenever its path does, which a rename or a move both
         do. The caller reads the returned chapter for the new one.
@@ -549,6 +553,7 @@ class Scanner:
             title=display if name is not None else None,
             status=status,
             summary=summary,
+            tags=tags,
         )
         if fields:
             self._write_header(target_relpath, fields)
@@ -567,7 +572,8 @@ class Scanner:
         self.invalidate()
         return self.chapter(derive_id(SPACE, str(target_relpath)))
 
-    def _write_header(self, relpath: PurePosixPath, fields: dict[str, str]) -> None:
+    def _write_header(self, relpath: PurePosixPath, fields: dict[str, str | list[str]]
+    ) -> None:
         """Applies `fields` to a chapter's header, leaving its prose as it is."""
         text = ink.with_header(ink.parse(self._text(relpath)), relpath.stem, fields)
         if text is not None:
@@ -580,6 +586,7 @@ class Scanner:
         name: str | None = None,
         status: str | None = None,
         summary: str | None = None,
+        tags: list[str] | None = None,
     ) -> OneShot:
         """Renames a one-shot, rewrites what its header says about it, or both.
 
@@ -599,7 +606,10 @@ class Scanner:
 
         target_relpath = PurePosixPath(STORIES) / target.name
         fields = ink.header_fields(
-            title=name if name is not None else None, status=status, summary=summary
+            title=name if name is not None else None,
+            status=status,
+            summary=summary,
+            tags=tags,
         )
         if fields:
             self._write_header(target_relpath, fields)

@@ -14,6 +14,7 @@ fence line or to the end of the file.
 ===== ink:meta
 title: The Letter in the Study
 status: draft
+tags: [perso, priority]
 summary: |
   She finally opens it, and it is not what she was told it was.
 ===== ink:body
@@ -77,10 +78,21 @@ flowchart LR
 
 ## The sections defined today
 
-**`ink:meta`** — a YAML mapping. `KNOWN_KEYS` is `("title", "status", "summary")`; any other
-key is preserved but not understood. `title` is the name the file is shown under, which is why
-a file can be renamed without being moved. `status` is a free string, with `outline`, `draft`,
-`revised` and `done` suggested. `summary` says what happens in the file.
+**`ink:meta`** — a YAML mapping. `KNOWN_KEYS` is `("title", "status", "summary", "tags")`; any
+other key is preserved but not understood. `title` is the name the file is shown under, which is
+why a file can be renamed without being moved. `status` is a free string, with `outline`,
+`draft`, `revised` and `done` suggested. `summary` says what happens in the file. `tags` is a
+list of tags, any number of them.
+
+A tag is a lowercase word: it is trimmed and lowercased, uses `a-z`, `0-9`, `-` and `_`, and is at
+most `MAX_TAG_LENGTH` (32) characters. `ink.normalise_tag` and `ink.normalise_tags` are the one
+definition, used by `check`, by the `PUT /file/{id}` body and, through `ink.tags_of`, by the scan,
+which drops repeats and keeps the order written. `check` reports a `tags` value that is not a
+list, an entry that is not text, and an entry that is not a tag, each as an error. Reading never
+fails: `tags_of` answers no tags for a value `check` would reject, and the text stays in the
+file, as any header value does, until a write replaces it. A tag written by hand with capitals is
+read in lowercase and left as written. `with_header` writes the list in block style, in the order
+given, and removes the key for an empty list.
 
 **It has to come first.** `read_header` reads only the first `MAX_HEADER_BYTES` of a file so
 that listing a tree does not load every chapter in it, so a header further down would not be
