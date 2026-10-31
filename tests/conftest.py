@@ -424,11 +424,15 @@ def llm_settings(
     num_ctx: int | None = None,
     ttl: int = 3600,
     small_model: str | None = None,
+    refused_tags: list[str] | None = None,
 ) -> Settings:
-    """Settings with one provider, named `p`, reachable at https://provider.test."""
+    """Settings with one provider, named `p`, reachable at https://provider.test.
+
+    `refused_tags`, given, is written as the provider's own key of that name."""
     providers = tmp_path / "providers.yaml"
+    refusal = f"  refused_tags: {refused_tags}\n" if refused_tags is not None else ""
     providers.write_text(
-        f"p:\n  url: https://provider.test\n  key: secret\n  protocol: {protocol}\n",
+        f"p:\n  url: https://provider.test\n  key: secret\n  protocol: {protocol}\n{refusal}",
         encoding="utf-8",
     )
     return Settings(

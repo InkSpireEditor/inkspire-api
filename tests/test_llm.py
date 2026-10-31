@@ -377,7 +377,7 @@ async def test_an_unprefixed_model_is_refused_before_any_request(tmp_path: Path)
         raise AssertionError("no request should be made")
 
     with pytest.raises(UnknownModel, match="prefixed"):
-        await collect(llm_service(tmp_path, handler).stream("bare-name", "text"))
+        await collect(llm_service(tmp_path, handler).stream("bare-name", "text", tags=()))
 
 
 @pytest.mark.asyncio
@@ -386,7 +386,7 @@ async def test_an_unconfigured_provider_is_refused(tmp_path: Path) -> None:
         raise AssertionError("no request should be made")
 
     with pytest.raises(UnknownModel, match="absent"):
-        await collect(llm_service(tmp_path, handler).stream("absent/model", "text"))
+        await collect(llm_service(tmp_path, handler).stream("absent/model", "text", tags=()))
 
 
 @pytest.mark.asyncio
@@ -400,7 +400,7 @@ async def test_chat_completions_deltas_are_streamed_in_order(tmp_path: Path) -> 
         assert request.headers["authorization"] == "Bearer secret"
         return httpx.Response(200, text=sse_body(delta("Hel"), delta("lo")))
 
-    assert await collect(llm_service(tmp_path, handler).stream("p/model", "text")) == ["Hel", "lo"]
+    assert await collect(llm_service(tmp_path, handler).stream("p/model", "text", tags=())) == ["Hel", "lo"]
 
 
 @pytest.mark.asyncio
@@ -418,7 +418,7 @@ async def test_the_native_protocol_posts_to_api_chat(tmp_path: Path) -> None:
         )
 
     streamed = await collect(
-        llm_service(tmp_path, handler, protocol="ollama").stream("p/model", "text")
+        llm_service(tmp_path, handler, protocol="ollama").stream("p/model", "text", tags=())
     )
     assert streamed == ["Hi"]
 
@@ -431,7 +431,7 @@ async def test_think_is_omitted_unless_configured(tmp_path: Path) -> None:
         seen.update(json.loads(request.content))
         return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
 
-    await collect(llm_service(tmp_path, handler, protocol="ollama").stream("p/m", "t"))
+    await collect(llm_service(tmp_path, handler, protocol="ollama").stream("p/m", "t", tags=()))
     assert "think" not in seen
 
 
@@ -446,7 +446,7 @@ async def test_think_is_sent_when_configured(tmp_path: Path, think: bool) -> Non
         return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
 
     await collect(
-        llm_service(tmp_path, handler, protocol="ollama", think=think).stream("p/m", "t")
+        llm_service(tmp_path, handler, protocol="ollama", think=think).stream("p/m", "t", tags=())
     )
     assert seen["think"] is think
 
@@ -463,7 +463,7 @@ async def test_a_per_request_think_overrides_the_setting(tmp_path: Path) -> None
 
     service = llm_service(tmp_path, handler, protocol="ollama", think=True)
     await collect(
-        service.stream("p/m", "t", options=service.defaults.overlay(think=False))
+        service.stream("p/m", "t", tags=(), options=service.defaults.overlay(think=False))
     )
     assert seen["think"] is False
 
@@ -480,7 +480,7 @@ async def test_a_per_request_think_of_none_falls_back_to_the_setting(
 
     service = llm_service(tmp_path, handler, protocol="ollama", think=True)
     await collect(
-        service.stream("p/m", "t", options=service.defaults.overlay(think=None))
+        service.stream("p/m", "t", tags=(), options=service.defaults.overlay(think=None))
     )
     assert seen["think"] is True
 
@@ -494,7 +494,7 @@ async def test_num_ctx_is_sent_only_when_configured(tmp_path: Path) -> None:
         return httpx.Response(200, text='{"message":{"content":"x"},"done":true}\n')
 
     await collect(
-        llm_service(tmp_path, handler, protocol="ollama", num_ctx=4096).stream("p/m", "t")
+        llm_service(tmp_path, handler, protocol="ollama", num_ctx=4096).stream("p/m", "t", tags=())
     )
     assert seen["options"]["num_ctx"] == 4096
 
@@ -507,7 +507,7 @@ async def test_the_rendered_prompt_is_what_gets_sent(tmp_path: Path) -> None:
         seen.update(json.loads(request.content))
         return httpx.Response(200, text=sse_body(delta("x")))
 
-    await collect(llm_service(tmp_path, handler).stream("p/m", "the house was"))
+    await collect(llm_service(tmp_path, handler).stream("p/m", "the house was", tags=()))
     sent = seen["messages"][0]["content"]
     assert sent == render_prompt("the house was")
     assert sent.endswith("the house was")
@@ -519,7 +519,7 @@ async def test_a_refused_request_raises_with_the_providers_words(tmp_path: Path)
         return httpx.Response(404, text='{"error":"model not found"}')
 
     with pytest.raises(LLMError, match="404"):
-        await collect(llm_service(tmp_path, handler).stream("p/m", "t"))
+        await collect(llm_service(tmp_path, handler).stream("p/m", "t", tags=()))
 
 
 @pytest.mark.asyncio
@@ -528,7 +528,7 @@ async def test_an_unreachable_provider_raises(tmp_path: Path) -> None:
         raise httpx.ConnectError("refused")
 
     with pytest.raises(LLMError, match="unreachable"):
-        await collect(llm_service(tmp_path, handler).stream("p/m", "t"))
+        await collect(llm_service(tmp_path, handler).stream("p/m", "t", tags=()))
 
 
 @pytest.mark.asyncio
@@ -548,7 +548,7 @@ async def test_thinking_until_the_context_runs_out_is_an_error(tmp_path: Path) -
 
     with pytest.raises(LLMError, match="context limit"):
         await collect(
-            llm_service(tmp_path, handler, protocol="ollama").stream("p/m", "t")
+            llm_service(tmp_path, handler, protocol="ollama").stream("p/m", "t", tags=())
         )
 
 
@@ -561,7 +561,7 @@ async def test_an_empty_completion_without_that_reason_is_not_an_error(
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=sse_body())
 
-    assert await collect(llm_service(tmp_path, handler).stream("p/m", "t")) == []
+    assert await collect(llm_service(tmp_path, handler).stream("p/m", "t", tags=())) == []
 
 
 # --- complete(): a non-streamed answer --------------------------------------
@@ -575,7 +575,7 @@ async def test_complete_posts_without_streaming_and_returns_the_text(tmp_path: P
         assert body["stream"] is False
         return httpx.Response(200, text=answer_body("A Title"))
 
-    assert await llm_service(tmp_path, handler).complete("p/model", "prompt") == "A Title"
+    assert await llm_service(tmp_path, handler).complete("p/model", "prompt", tags=()) == "A Title"
 
 
 @pytest.mark.asyncio
@@ -586,7 +586,7 @@ async def test_complete_against_the_native_protocol(tmp_path: Path) -> None:
         assert body["stream"] is False
         return httpx.Response(200, text=answer_body("A Title", native=True))
 
-    answer = await llm_service(tmp_path, handler, protocol="ollama").complete("p/model", "prompt")
+    answer = await llm_service(tmp_path, handler, protocol="ollama").complete("p/model", "prompt", tags=())
     assert answer == "A Title"
 
 
@@ -599,7 +599,7 @@ async def test_complete_sends_think_false_when_given(tmp_path: Path) -> None:
         return httpx.Response(200, text=answer_body("x", native=True))
 
     service = llm_service(tmp_path, handler, protocol="ollama")
-    await service.complete("p/model", "prompt", options=service.defaults.overlay(think=False))
+    await service.complete("p/model", "prompt", tags=(), options=service.defaults.overlay(think=False))
     assert seen["think"] is False
 
 
@@ -616,7 +616,7 @@ async def test_complete_sends_num_predict_on_the_native_protocol_when_given(
         return httpx.Response(200, text=answer_body("x", native=True))
 
     service = llm_service(tmp_path, handler, protocol="ollama")
-    await service.complete("p/model", "prompt", max_output_tokens=60)
+    await service.complete("p/model", "prompt", tags=(), max_output_tokens=60)
     assert seen["options"]["num_predict"] == 60
     assert "max_tokens" not in seen
 
@@ -632,7 +632,7 @@ async def test_complete_sends_max_tokens_on_the_openai_protocol_when_given(
         return httpx.Response(200, text=answer_body("x"))
 
     service = llm_service(tmp_path, handler)
-    await service.complete("p/model", "prompt", max_output_tokens=60)
+    await service.complete("p/model", "prompt", tags=(), max_output_tokens=60)
     assert seen["max_tokens"] == 60
     assert "num_predict" not in seen
 
@@ -646,7 +646,7 @@ async def test_complete_omits_the_output_cap_when_not_given(tmp_path: Path) -> N
         seen.update(json.loads(request.content))
         return httpx.Response(200, text=answer_body("x", native=True))
 
-    await llm_service(tmp_path, handler, protocol="ollama").complete("p/model", "prompt")
+    await llm_service(tmp_path, handler, protocol="ollama").complete("p/model", "prompt", tags=())
     assert "num_predict" not in seen["options"]
 
 
@@ -656,7 +656,7 @@ async def test_complete_raises_for_a_response_with_nothing_usable(tmp_path: Path
         return httpx.Response(200, text=json.dumps({"choices": [{"message": {}}]}))
 
     with pytest.raises(LLMError, match="nothing usable"):
-        await llm_service(tmp_path, handler).complete("p/model", "prompt")
+        await llm_service(tmp_path, handler).complete("p/model", "prompt", tags=())
 
 
 @pytest.mark.asyncio
@@ -665,7 +665,7 @@ async def test_complete_wraps_a_provider_failure(tmp_path: Path) -> None:
         return httpx.Response(500, text="boom")
 
     with pytest.raises(LLMError, match="HTTP 500"):
-        await llm_service(tmp_path, handler).complete("p/model", "prompt")
+        await llm_service(tmp_path, handler).complete("p/model", "prompt", tags=())
 
 
 # --- listing models --------------------------------------------------------
@@ -678,8 +678,8 @@ async def test_models_are_prefixed_with_their_provider(tmp_path: Path) -> None:
         return httpx.Response(200, json={"data": [{"id": "one"}, {"id": "two"}]})
 
     assert await llm_service(tmp_path, handler).models() == [
-        {"name": "p/one", "protocol": "openai"},
-        {"name": "p/two", "protocol": "openai"},
+        {"name": "p/one", "protocol": "openai", "refused_tags": []},
+        {"name": "p/two", "protocol": "openai", "refused_tags": []},
     ]
 
 
@@ -690,7 +690,7 @@ async def test_native_models_come_from_api_tags(tmp_path: Path) -> None:
         return httpx.Response(200, json={"models": [{"model": "llama3:latest"}]})
 
     listed = await llm_service(tmp_path, handler, protocol="ollama").models()
-    assert listed == [{"name": "p/llama3:latest", "protocol": "ollama"}]
+    assert listed == [{"name": "p/llama3:latest", "protocol": "ollama", "refused_tags": []}]
 
 
 @pytest.mark.asyncio
@@ -788,7 +788,7 @@ def test_the_models_endpoint_returns_the_prefixed_list(llm_client) -> None:
     )
     response = llm_client.get("/api/llm/models")
     assert response.status_code == 200
-    assert response.json() == [{"name": "p/one", "protocol": "openai"}]
+    assert response.json() == [{"name": "p/one", "protocol": "openai", "refused_tags": []}]
 
 
 def test_the_defaults_endpoint_answers_the_servers_own_settings(llm_client) -> None:
@@ -1623,3 +1623,21 @@ def test_generation_is_rate_limited_per_account(llm_client, app, data_root: Path
     )
     assert refused.status_code == 429
     assert "message" in refused.json()
+
+
+def test_the_model_list_carries_each_providers_refused_tags(
+    app, settings, tmp_path: Path, user
+) -> None:
+    built = llm_service(
+        tmp_path,
+        lambda request: httpx.Response(200, json={"data": [{"id": "one"}]}),
+        refused_tags=["perso", "priority"],
+    )
+    app.dependency_overrides[llm.get_service] = lambda: built
+    with TestClient(app) as client:
+        client.post("/auth", json={"username": EMAIL, "password": PASSWORD})
+        response = client.get("/api/llm/models")
+
+    assert response.json() == [
+        {"name": "p/one", "protocol": "openai", "refused_tags": ["perso", "priority"]}
+    ]

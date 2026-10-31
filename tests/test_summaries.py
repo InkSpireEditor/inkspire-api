@@ -103,6 +103,7 @@ def _resummarise(
             model="p/model",
             prompt_budget=budget,
             summary_num_ctx=summary_num_ctx,
+            tags=(),
             respect_trigger=respect_trigger,
         )
     )
@@ -268,6 +269,7 @@ def test_resummarise_sends_the_summary_models_own_num_ctx_and_output_cap(tmp_pat
             model="p/model",
             prompt_budget=50,
             summary_num_ctx=32_768,
+            tags=(),
             respect_trigger=False,
         )
     )
@@ -298,6 +300,7 @@ def _update(
             model="p/model",
             prompt_budget=budget,
             summary_num_ctx=summary_num_ctx,
+            tags=(),
         )
     )
 

@@ -31,7 +31,7 @@ from . import prompt as prompt_lib
 from .deps import CurrentUser, SettingsDep
 from .files import ScannerDep
 from .fs import MAX_NAME_LENGTH
-from .llm import LLMError, ServiceDep, UnknownModel
+from .llm import LLMError, RefusedProvider, ServiceDep, UnknownModel
 
 router = APIRouter(prefix="/stories/file", tags=["titles"])
 
@@ -169,7 +169,8 @@ async def propose_title(
     if settings.llm_small_model is None:
         raise HTTPException(status.HTTP_409_CONFLICT, NO_SMALL_MODEL)
 
-    current_title = scanner.file(file_id).name
+    file = scanner.file(file_id)
+    current_title = file.name
     text = scanner.read_document(file_id).body
     if not text.strip():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, EMPTY_TITLE_FILE)
@@ -187,10 +188,15 @@ async def propose_title(
         # window can spend all of it thinking and answer nothing -- explicit here
         # rather than left to whatever INKSPIRE_LLM_THINK happens to be.
         raw = await service.complete(
-            settings.llm_small_model, prompt, options=service.defaults.overlay(think=False)
+            settings.llm_small_model,
+            prompt,
+            tags=file.tags,
+            options=service.defaults.overlay(think=False),
         )
     except UnknownModel as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+    except RefusedProvider as error:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     except LLMError as error:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(error)) from error
 

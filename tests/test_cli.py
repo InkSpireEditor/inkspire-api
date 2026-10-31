@@ -444,6 +444,7 @@ def ask(monkeypatch, tmp_path):
         stdin: str = "",
         protocol: str = "openai",
         small_model: str | None = None,
+        refused_tags: list[str] | None = None,
     ):
         seen: list[dict] = []
 
@@ -452,7 +453,9 @@ def ask(monkeypatch, tmp_path):
                 seen.append(json.loads(request.content))
             return handler(request)
 
-        settings = llm_settings(tmp_path, protocol=protocol, small_model=small_model)
+        settings = llm_settings(
+            tmp_path, protocol=protocol, small_model=small_model, refused_tags=refused_tags
+        )
         monkeypatch.setattr(cli, "get_settings", lambda: settings)
         monkeypatch.setattr(
             cli,
@@ -1330,7 +1333,12 @@ def maintenance(monkeypatch, tmp_path):
     # same root and nothing fixes which one pytest resolves first.
     (data_root / "stories").mkdir(parents=True, exist_ok=True)
 
-    def run(*args: str, handler=unexpected, small_model: str | None = None):
+    def run(
+        *args: str,
+        handler=unexpected,
+        small_model: str | None = None,
+        refused_tags: list[str] | None = None,
+    ):
         seen: list[dict] = []
 
         def record(request: httpx.Request) -> httpx.Response:
@@ -1338,7 +1346,9 @@ def maintenance(monkeypatch, tmp_path):
                 seen.append(json.loads(request.content))
             return handler(request)
 
-        settings = llm_settings(tmp_path, small_model=small_model).model_copy(
+        settings = llm_settings(
+            tmp_path, small_model=small_model, refused_tags=refused_tags
+        ).model_copy(
             update={
                 "data_root": data_root,
                 "files_root": tmp_path / "files",
@@ -1638,3 +1648,67 @@ def test_a_provider_failure_is_reported_and_does_not_abort_the_walk(
     assert result.exit_code == 1
     assert "provider error" in result.output
     assert "2 file" in result.output  # both files were still checked
+
+
+# --- providers that refuse a file's tags -----------------------------------
+
+TAGGED_TEXT = "===== ink:meta\ntags: [perso]\n===== ink:body\nOnce upon a time.\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("generate", "-m", "p/m"),
+        ("complete", "-m", "p/m"),
+        ("title", "-m", "p/m"),
+        ("summary", "-m", "p/m", "--budget", "5"),
+    ],
+)
+def test_an_llm_command_refuses_a_text_whose_tags_its_provider_refuses(
+    ask, arguments: tuple[str, ...]
+) -> None:
+    def unexpected(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("the provider must not be called")
+
+    result, seen = ask(unexpected, *arguments, stdin=TAGGED_TEXT, refused_tags=["perso"])
+
+    assert result.exit_code != 0
+    assert '"p" is not used for files tagged "perso"' in result.output
+    assert seen == []
+
+
+def test_an_llm_command_answers_a_text_with_other_tags(ask) -> None:
+    result, seen = ask(
+        lambda request: httpx.Response(200, text=answer_body("Then it rained.")),
+        "complete",
+        "-m",
+        "p/m",
+        stdin=TAGGED_TEXT,
+        refused_tags=["priority"],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+
+
+def test_the_summary_pass_skips_a_file_whose_tag_the_provider_refuses(
+    maintenance, tmp_path
+) -> None:
+    refused = write_chapter(
+        tmp_path, "one.ink", f"===== ink:meta\ntags: [perso]\n===== ink:body\n{_LONG_BODY}\n"
+    )
+    allowed = write_chapter(tmp_path, "two.ink", ink_file(_LONG_BODY))
+    refused_before = refused.read_bytes()
+
+    result, seen = maintenance(
+        "--summaries",
+        handler=lambda request: httpx.Response(200, text=answer_body("Jane Doe is the narrator.")),
+        small_model="p/model",
+        refused_tags=["perso"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1, "only the file without the tag is sent to the model"
+    assert refused.read_bytes() == refused_before
+    assert "ink:context_summary" in allowed.read_text(encoding="utf-8")
+    assert "skipped: " in result.output
+    assert "1 file skipped" in result.output

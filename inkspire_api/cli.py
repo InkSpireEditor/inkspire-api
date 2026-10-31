@@ -41,6 +41,7 @@ import secrets
 import sys
 import time
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, cast
@@ -52,7 +53,7 @@ from sqlalchemy.exc import IntegrityError
 from . import completions, context_summary, ink, prompt, provenance, repository, summaries, titles
 from .db import get_sessionmaker
 from .fs import write_atomically
-from .llm import LLMError, LLMService, UnknownModel
+from .llm import LLMError, LLMService, RefusedProvider, UnknownModel
 from .models import MAX_EMAIL_LENGTH, RefreshToken, User, utcnow
 from .security import hash_password
 from .settings import SecretNotConfigured, Settings, get_settings
@@ -471,6 +472,7 @@ def generate(
             send_selection=send_selection,
             synopsis=synopsis,
             instruction=instruction,
+            tags=tags_in(text),
         )
     )
 
@@ -554,8 +556,8 @@ def title_command(
         raise AssertionError  # unreachable: fail() exits
 
     try:
-        raw = asyncio.run(svc.complete(chosen_model, rendered))
-    except (UnknownModel, LLMError) as error:
+        raw = asyncio.run(svc.complete(chosen_model, rendered, tags=tags_in(text)))
+    except (UnknownModel, RefusedProvider, LLMError) as error:
         fail(str(error))
         raise AssertionError from error  # unreachable: fail() exits
 
@@ -649,11 +651,12 @@ def summary_command(
             svc.complete(
                 chosen_model,
                 rendered,
+                tags=tags_in(text),
                 options=svc.defaults.overlay(num_ctx=chosen_num_ctx),
                 max_output_tokens=summaries.SUMMARY_OUTPUT_TOKENS,
             )
         )
-    except (UnknownModel, LLMError) as error:
+    except (UnknownModel, RefusedProvider, LLMError) as error:
         fail(str(error))
         raise AssertionError from error  # unreachable: fail() exits
 
@@ -723,10 +726,11 @@ def complete_command(
             svc.complete(
                 model,
                 rendered,
+                tags=tags_in(text),
                 max_output_tokens=get_settings().llm_completion_tokens,
             )
         )
-    except (UnknownModel, LLMError) as error:
+    except (UnknownModel, RefusedProvider, LLMError) as error:
         fail(str(error))
         raise AssertionError from error  # unreachable: fail() exits
 
@@ -764,6 +768,7 @@ async def _stream(
     send_selection: bool | None = None,
     synopsis: str = "",
     instruction: str = "",
+    tags: Collection[str] = (),
 ) -> None:
     started = time.monotonic()
     first_chunk_at: float | None = None
@@ -771,7 +776,7 @@ async def _stream(
 
     try:
         async for chunk in service(think, send_selection).stream(
-            model, text, cursor=cursor, selection=selection, synopsis=synopsis, instruction=instruction
+            model, text, tags=tags, cursor=cursor, selection=selection, synopsis=synopsis, instruction=instruction
         ):
             if first_chunk_at is None:
                 first_chunk_at = time.monotonic()
@@ -780,7 +785,7 @@ async def _stream(
             # streaming, since nothing would appear until the generation finished.
             sys.stdout.write(chunk)
             sys.stdout.flush()
-    except (UnknownModel, LLMError, prompt.CursorOutOfRange) as error:
+    except (UnknownModel, RefusedProvider, LLMError, prompt.CursorOutOfRange) as error:
         sys.stdout.flush()
         fail(str(error))
 
@@ -805,6 +810,12 @@ async def _stream(
 def plural(number: int, thing: str) -> str:
     """`1 file`, `2 files`."""
     return f"{number} {thing}" if number == 1 else f"{number} {thing}s"
+
+
+def tags_in(text: str) -> tuple[str, ...]:
+    """The tags the header of `text` records, none for text with no header: what an
+    `llm` command reads from standard input is a file's text, or bare prose."""
+    return ink.tags_of(ink.parse(text).metadata)
 
 
 def shown(path: Path) -> str:
@@ -1117,8 +1128,13 @@ async def run_summary_pass(
             model=model,
             prompt_budget=budget,
             summary_num_ctx=summary_num_ctx,
+            tags=ink.tags_of(document.metadata),
             respect_trigger=False,
         )
+    except RefusedProvider as error:
+        typer.secho(f"  summary  skipped: {error}", fg=typer.colors.YELLOW)
+        counts["refused"] += 1
+        return
     except (LLMError, UnknownModel) as error:
         typer.secho(f"  summary  provider error: {error}", fg=typer.colors.RED)
         counts["failed"] += 1
@@ -1370,6 +1386,11 @@ def maintenance(
             raise typer.Exit(code=1)
         return
 
+    if counts["refused"]:
+        summary += (
+            f" {plural(counts['refused'], 'file')} skipped, "
+            "for a tag the summary model's provider refuses."
+        )
     typer.secho(
         f"{summary} {plural(counts['written'], 'file')} written.", fg=typer.colors.GREEN, err=True
     )

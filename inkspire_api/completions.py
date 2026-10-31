@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Collection
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -39,7 +40,7 @@ from pydantic import BaseModel, Field
 from . import prompt as prompt_lib
 from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
-from .llm import MAX_MODEL_LENGTH, LLMError, ServiceDep, UnknownModel
+from .llm import MAX_MODEL_LENGTH, LLMError, RefusedProvider, ServiceDep, UnknownModel
 
 stories_router = APIRouter(prefix="/stories/file", tags=["completions"])
 notes_router = APIRouter(prefix="/notes/file", tags=["completions"])
@@ -148,6 +149,7 @@ def clean_completion(raw: str) -> str:
 
 async def _complete(
     text: str,
+    tags: Collection[str],
     body: CompletionRequest,
     *,
     request: Request,
@@ -156,7 +158,8 @@ async def _complete(
     settings: SettingsDep,
 ) -> dict:
     """Shared body of both routes: the limiter, the empty-file check, the model
-    call and the cleanup. `text` is the caller's own `read_document(...).body`."""
+    call and the cleanup. `text` is the caller's own `read_document(...).body`, and
+    `tags` the file's, which a provider may refuse."""
     if not request.app.state.completion_limiter.consume(user.email):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
     if not text.strip():
@@ -173,11 +176,14 @@ async def _complete(
         raw = await service.complete(
             body.model,
             prompt,
+            tags=tags,
             options=service.defaults.overlay(think=False),
             max_output_tokens=settings.llm_completion_tokens,
         )
     except UnknownModel as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+    except RefusedProvider as error:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     except LLMError as error:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(error)) from error
 
@@ -201,7 +207,7 @@ async def complete_story(
     """Proposes one short sentence continuing this chapter or one-shot."""
     text = scanner.read_document(file_id).body
     return await _complete(
-        text, body, request=request, user=user, service=service, settings=settings
+        text, scanner.file(file_id).tags, body, request=request, user=user, service=service, settings=settings
     )
 
 
@@ -219,5 +225,5 @@ async def complete_note(
     """Proposes one short sentence continuing this note."""
     text = notes.read_document(file_id).body
     return await _complete(
-        text, body, request=request, user=user, service=service, settings=settings
+        text, notes.note(file_id).tags, body, request=request, user=user, service=service, settings=settings
     )

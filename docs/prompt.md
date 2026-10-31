@@ -554,6 +554,33 @@ may well be a reasoning one.
 Both roots serve it, unlike `titles.py`'s stories-only route — nothing about a completion
 needs a story, and the editor opens a note through the same component it opens a chapter in.
 
+## Providers that refuse a file's tags
+
+A provider in `config/providers.yaml` may list `refused_tags`. A file whose `ink:meta` carries
+one of those tags is never sent to a model of that provider: a file tagged `perso` can be kept
+away from a hosted provider while a local one still serves it.
+
+The rule has one implementation, `LLMService.check_allowed`, and `stream` and `complete` call
+it before they build a request. Both take the file's tags as a required keyword argument, so a
+new caller has to say which file it is working for; text that comes from no file passes `()`.
+The callers read the tags from the scan entry they already look up:
+
+| Caller | Result for a refused file |
+|---|---|
+| `POST .../generate` | 403, before any chunk |
+| `POST /stories/file/{id}/title` | 403 |
+| `POST .../complete` | 403 |
+| the background context summary (`documents._schedule_summary`) | skipped without a message, before the account's summary budget is spent; `summaries.update` also logs and swallows a `RefusedProvider`, so one cannot escape the background task |
+| `inkspire llm generate`, `title`, `summary`, `complete` | exit non-zero with the same message, for a text whose header carries the tag |
+| `inkspire ink maintenance --summaries` | the file is reported as skipped and counted in the summary line, and is not a failure |
+
+A dry run of `ink maintenance` does not know which model it would use, so it still lists a
+refused file as due for a summary. Which models a file may use is also in `GET /api/llm/models`,
+where each model carries its provider's `refused_tags`, so a client can disable them without a
+request per file. The tags are compared after both sides are trimmed and lowercased
+(`ink.normalise_tags`); a `refused_tags` entry that is not a valid tag stops the server from
+starting, naming the file and the provider.
+
 ## Not yet built
 
 - **Real token counting.** The budget is a character count calibrated on English; nothing here

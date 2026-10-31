@@ -30,6 +30,7 @@ more than its chapters adds `"holds": [<names>]`. These statuses are used throug
 |---|---|
 | 400 | The body is not valid. `message` is the first problem, as `field: reason`. |
 | 401 | No token, an invalid token, or wrong credentials. |
+| 403 | A model call was refused because the model's provider refuses a tag the file carries (`refused_tags`, [`prompt.md`](prompt.md)). Nothing was sent to the provider. |
 | 404 | No file or directory in that root has the id, or the story has no timeline or lorebook. |
 | 409 | The operation would destroy something, or git refused it. |
 | 413 | A file body over 4 MiB. |
@@ -94,7 +95,7 @@ Under `/api/stories` only:
 
 | Route | Takes | Answers |
 |---|---|---|
-| `GET /api/llm/models` | | A list of `{"name": "<provider>/<model>", "protocol": "openai" or "ollama"}`. A provider that cannot be reached contributes nothing. Held for an hour per provider |
+| `GET /api/llm/models` | | A list of `{"name": "<provider>/<model>", "protocol": "openai" or "ollama", "refused_tags": [<tags>]}`; `refused_tags` is the provider's own list, the tags of files it is never used for. A provider that cannot be reached contributes nothing. Held for an hour per provider |
 | `GET /api/llm/defaults` | | The server's own generation settings: `temperature`, `prompt_budget`, `prefix_share`, `num_ctx`, `think`, `send_selection` |
 | `GET /api/llm/features` | | `{"title": bool, "summary": bool}`; both are `true` exactly when `INKSPIRE_LLM_SMALL_MODEL` is set |
 | `POST /api/stories/file/{file_id}/generate` | see below | `text/event-stream` |
@@ -108,7 +109,7 @@ server reads the file as saved. The cursor fields choose a continuation (neither
 at the end of the file), a fill-in-the-middle (a caret elsewhere) or a rewrite (both pairs); one
 field of a pair without the other is refused. The events are `{"delta": "<text>"}`, then
 `[DONE]`; `{"error": "<text>"}` if the provider fails after the stream has started. Before any text,
-a failure is a status: 422 for an unknown model or a cursor out of range or inverted, 429 over 20
+a failure is a status: 403 for a provider that refuses a tag the file carries, 422 for an unknown model or a cursor out of range or inverted, 429 over 20
 generations per minute per account, 500 for a provider that cannot be reached. Nothing is written
 to the file. The prompt is described in [`prompt.md`](prompt.md).
 
@@ -116,8 +117,8 @@ Two shorter calls answer in one response:
 
 | Route | Takes | Answers |
 |---|---|---|
-| `POST /api/stories/file/{file_id}/title` | `{"instruction"?}`, or no body | `{"title"}`. Uses `INKSPIRE_LLM_SMALL_MODEL`; 409 when it is not set. 422 for an empty file, 429 over the generation limit it shares, 502 when the model answers with nothing usable |
-| `POST /api/stories/file/{file_id}/complete`, `POST /api/notes/file/{file_id}/complete` | `{"model"}` | `{"completion"}`: up to `INKSPIRE_LLM_COMPLETION_TOKENS` tokens, cut at the first complete sentence. 422 for an empty file or an unknown model, 429 over its own limit (`INKSPIRE_LLM_COMPLETION_LIMIT` per interval), 502 when the model answers with nothing usable |
+| `POST /api/stories/file/{file_id}/title` | `{"instruction"?}`, or no body | `{"title"}`. Uses `INKSPIRE_LLM_SMALL_MODEL`; 409 when it is not set, 403 when that model's provider refuses a tag the file carries. 422 for an empty file, 429 over the generation limit it shares, 502 when the model answers with nothing usable |
+| `POST /api/stories/file/{file_id}/complete`, `POST /api/notes/file/{file_id}/complete` | `{"model"}` | `{"completion"}`: up to `INKSPIRE_LLM_COMPLETION_TOKENS` tokens, cut at the first complete sentence. 403 when the model's provider refuses a tag the file carries, 422 for an empty file or an unknown model, 429 over its own limit (`INKSPIRE_LLM_COMPLETION_LIMIT` per interval), 502 when the model answers with nothing usable |
 
 ## A story's timeline and lorebook
 

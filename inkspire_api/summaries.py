@@ -42,11 +42,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from collections.abc import Collection
 
 from . import prompt as prompt_lib
 from .context_summary import ContextSummary, dropped, is_due, parse_section, render_section
 from .fs import StorageError
-from .llm import LLMError, LLMService, UnknownModel
+from .llm import LLMError, LLMService, RefusedProvider, UnknownModel
 from .notes import NotesScanner
 from .storage import Scanner
 
@@ -158,6 +159,7 @@ async def resummarise(
     model: str,
     prompt_budget: int,
     summary_num_ctx: int,
+    tags: Collection[str],
     respect_trigger: bool = True,
 ) -> Outcome:
     """Decides whether `body` needs a fresh `ink:context_summary` at `prompt_budget`
@@ -176,9 +178,12 @@ async def resummarise(
     specifically to resummarise everything a size-based trigger cannot tell is stale --
     docs/prompt.md's own "hidden manual trigger" entry.
 
+    `tags` are the file's own: a `model` whose provider refuses one of them is not
+    called, and `RefusedProvider` is raised instead.
+
     Reads and writes nothing; a caller with a scanner (`update`) or a path
     (`cli.maintain_one`) does that with the `Outcome` this returns. Raises
-    `LLMError`/`UnknownModel` rather than swallowing them, unlike `update` itself --
+    `LLMError`/`UnknownModel`/`RefusedProvider` rather than swallowing them, unlike `update` itself --
     a caller running by hand wants to see a provider failure, not have it logged where
     nothing is watching.
     """
@@ -200,6 +205,7 @@ async def resummarise(
     raw = await service.complete(
         model,
         rendered,
+        tags=tags,
         options=service.defaults.overlay(think=False, num_ctx=summary_num_ctx),
         max_output_tokens=SUMMARY_OUTPUT_TOKENS,
     )
@@ -220,6 +226,7 @@ async def update(
     model: str,
     prompt_budget: int,
     summary_num_ctx: int,
+    tags: Collection[str],
 ) -> None:
     """The background task: summarises what a trim of `file_id`'s body at
     `prompt_budget` characters would drop, if a new summary is due, and writes the
@@ -246,8 +253,9 @@ async def update(
             model=model,
             prompt_budget=prompt_budget,
             summary_num_ctx=summary_num_ctx,
+            tags=tags,
         )
-    except (LLMError, UnknownModel):
+    except (LLMError, UnknownModel, RefusedProvider):
         logger.exception("the context-summary call failed for %s", file_id)
         return
 

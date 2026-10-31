@@ -45,7 +45,7 @@ from . import provenance, repository, summaries
 from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
 from .fs import MAX_FILE_BYTES
-from .llm import ServiceDep
+from .llm import RefusedProvider, ServiceDep
 from .notes import NotesScanner
 from .storage import Scanner
 
@@ -160,14 +160,21 @@ def _schedule_summary(
     settings: SettingsDep,
 ) -> None:
     """Schedules `summaries.update` for `file_id` after this response is sent, unless
-    one of three things says not to (api#18): no small model is configured, one is
-    already running for this file, or this account's own summary rate budget
+    one of four things says not to (api#18): no small model is configured, one is
+    already running for this file, the small model's provider refuses one of the file's
+    tags, or this account's own summary rate budget
     (`app.state.summary_limiter`, separate from generation's own) is spent. Each of
     these skips silently -- there is no response left to answer a refusal into, and
     the next save's own call catches up regardless.
     """
     model = settings.llm_small_model
     if model is None or file_id in _SUMMARIZING:
+        return
+    entry = scanner.file(file_id) if isinstance(scanner, Scanner) else scanner.note(file_id)
+    tags = entry.tags
+    try:
+        service.check_allowed(model, tags)
+    except RefusedProvider:
         return
     if not request.app.state.summary_limiter.consume(user.email):
         return
@@ -185,6 +192,7 @@ def _schedule_summary(
                 model=model,
                 prompt_budget=prompt_budget,
                 summary_num_ctx=summary_num_ctx,
+                tags=tags,
             )
         finally:
             _SUMMARIZING.discard(file_id)

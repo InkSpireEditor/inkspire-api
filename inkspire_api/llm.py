@@ -24,7 +24,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Collection
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, NamedTuple
@@ -33,13 +33,14 @@ import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from . import prompt as prompt_lib
 from .context_summary import parse_section as parse_context_summary
 from .deps import CurrentUser, SettingsDep
 from .files import NotesDep, ScannerDep
 from .fs import MAX_FILE_BYTES
+from .ink import normalise_tags
 from .settings import Settings
 from .storage import Chapter
 
@@ -70,6 +71,15 @@ class ProviderConfig(BaseModel):
     url: str
     key: str | None = None
     protocol: Protocol = Protocol.openai
+    #: Tags that keep this provider away from a file: a model of this provider is never
+    #: called for a file carrying any of them. Written as in a file's header, so each is
+    #: trimmed and lowercased and one that is not a valid tag fails the load.
+    refused_tags: list[str] = Field(default_factory=list)
+
+    @field_validator("refused_tags")
+    @classmethod
+    def _valid_tags(cls, value: list[str]) -> list[str]:
+        return normalise_tags(value)
 
 
 class LLMError(RuntimeError):
@@ -78,6 +88,10 @@ class LLMError(RuntimeError):
 
 class UnknownModel(ValueError):
     """The model identifier names no configured provider."""
+
+
+class RefusedProvider(ValueError):
+    """The model's provider refuses a tag the file carries (`ProviderConfig.refused_tags`)."""
 
 
 def load_providers(path: Path) -> dict[str, ProviderConfig]:
@@ -89,8 +103,11 @@ def load_providers(path: Path) -> dict[str, ProviderConfig]:
           url: http://127.0.0.1:11434
           key: null
           protocol: ollama
+          refused_tags: []
 
     The name becomes the prefix of every model identifier that provider offers.
+    `refused_tags` is optional: a file carrying one of those tags is never sent to a
+    model of that provider.
     """
     if not path.is_file():
         return {}
@@ -107,7 +124,14 @@ def load_providers(path: Path) -> dict[str, ProviderConfig]:
                 'optional "key". Found: '
                 f"{type(config).__name__}."
             )
-        providers[str(name)] = ProviderConfig(**config)
+        try:
+            providers[str(name)] = ProviderConfig(**config)
+        except ValidationError as error:
+            details = "; ".join(
+                f"{'.'.join(str(part) for part in problem['loc'])}: {problem['msg']}"
+                for problem in error.errors()
+            )
+            raise ValueError(f'{path}: provider "{name}": {details}') from error
     return providers
 
 
@@ -120,9 +144,9 @@ class ModelCache:
 
     def __init__(self, ttl: int) -> None:
         self.ttl = ttl
-        self._entries: dict[str, tuple[float, list[dict[str, str]]]] = {}
+        self._entries: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
-    def get(self, provider: str) -> list[dict[str, str]] | None:
+    def get(self, provider: str) -> list[dict[str, Any]] | None:
         entry = self._entries.get(provider)
         if entry is None:
             return None
@@ -132,7 +156,7 @@ class ModelCache:
             return None
         return models
 
-    def put(self, provider: str, models: list[dict[str, str]]) -> None:
+    def put(self, provider: str, models: list[dict[str, Any]]) -> None:
         self._entries[provider] = (time.monotonic() + self.ttl, models)
 
     def clear(self) -> None:
@@ -207,13 +231,28 @@ class LLMService:
             raise UnknownModel(f'Unknown provider "{provider}".')
         return self.providers[provider], name
 
-    async def models(self) -> list[dict[str, str]]:
+    def check_allowed(self, model: str, tags: Collection[str]) -> None:
+        """Raises `RefusedProvider` if `model`'s provider refuses any of `tags`.
+
+        A model naming no configured provider passes here: `parse_model` is what
+        refuses it, with its own message. Every call to a provider goes through
+        `stream` or `complete`, which call this first, so the rule has one place.
+        """
+        provider = model.partition("/")[0]
+        config = self.providers.get(provider)
+        if config is None:
+            return
+        found = [f'"{tag}"' for tag in tags if tag in config.refused_tags]
+        if found:
+            raise RefusedProvider(f'"{provider}" is not used for files tagged {", ".join(found)}.')
+
+    async def models(self) -> list[dict[str, Any]]:
         """Every provider's models, prefixed with the provider name.
 
         A provider that cannot be reached contributes nothing rather than failing the
         whole list, so one dead endpoint does not hide the others.
         """
-        collected: list[dict[str, str]] = []
+        collected: list[dict[str, Any]] = []
         for name, config in self.providers.items():
             cached = self.cache.get(name)
             if cached is None:
@@ -224,7 +263,7 @@ class LLMService:
 
     async def _fetch_models(
         self, provider: str, config: ProviderConfig
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         native = config.protocol is Protocol.ollama
         url = (
             f"{config.url.rstrip('/')}/api/tags"
@@ -245,11 +284,17 @@ class LLMService:
         # Ollama names a model under "models"/"model"; chat-completions under "data"/"id".
         entries = payload.get("models", []) if native else payload.get("data", [])
         field = "model" if native else "id"
-        # Carried so a client can tell which models can honour a request like `think`
-        # at all -- the chat-completions protocol has no equivalent, native or not.
+        # `protocol` is carried so a client can tell which models can honour a request
+        # like `think` at all -- the chat-completions protocol has no equivalent, native
+        # or not. `refused_tags` is the provider's, so a client can tell which models a
+        # file with a given tag may not use without asking per file.
         protocol = config.protocol.value
         return [
-            {"name": f"{provider}/{entry[field]}", "protocol": protocol}
+            {
+                "name": f"{provider}/{entry[field]}",
+                "protocol": protocol,
+                "refused_tags": list(config.refused_tags),
+            }
             for entry in entries
             if isinstance(entry, dict) and entry.get(field)
         ]
@@ -259,6 +304,7 @@ class LLMService:
         model: str,
         text: str,
         *,
+        tags: Collection[str],
         cursor: prompt_lib.Cursor | None = None,
         selection: prompt_lib.CursorRange | None = None,
         options: GenerationOptions | None = None,
@@ -297,15 +343,18 @@ class LLMService:
         and passes the result here; `think` reaches the provider only on the ollama
         path -- the chat-completions protocol has no equivalent, native or otherwise.
 
+        `tags` are the tags of the file `text` comes from, `()` for text that comes from
+        no file. A provider that refuses one of them is not called (`RefusedProvider`).
+
         Raises `LLMError` if the provider cannot be reached or rejects the request,
-        `UnknownModel` for a model naming no configured provider, and
-        `CursorOutOfRange` (or its `InvertedRange` subclass) for a cursor or a
+        `UnknownModel` for a model naming no configured provider, `RefusedProvider`
+        for one whose provider refuses a tag, and `CursorOutOfRange` (or its `InvertedRange` subclass) for a cursor or a
         selection that does not address a character of `text`. Once chunks have
         started arriving, a failure raises mid-iteration.
         """
+        self.check_allowed(model, tags)
         config, name = self.parse_model(model)
         native = config.protocol is Protocol.ollama
-        url = _chat_url(config, native=native)
         resolved = options if options is not None else self.defaults
 
         try:
@@ -314,7 +363,7 @@ class LLMService:
             ) as client:
                 async with client.stream(
                     "POST",
-                    url,
+                    _chat_url(config, native=native),
                     headers=headers(config),
                     json=self._payload(
                         name,
@@ -339,6 +388,7 @@ class LLMService:
         model: str,
         prompt: str,
         *,
+        tags: Collection[str],
         options: GenerationOptions | None = None,
         max_output_tokens: int | None = None,
     ) -> str:
@@ -349,7 +399,8 @@ class LLMService:
         `prompt` arrives already rendered: unlike `stream`, this knows nothing about
         `PromptContext` or any template, since what a title call sends is not the
         continuation/fill-in-the-middle/rewrite prompt `prompt_lib.assemble` builds.
-        `options` defaults to `self.defaults` the same way `stream`'s does.
+        `options` defaults to `self.defaults` the same way `stream`'s does. `tags` are
+        the tags of the file the prompt is about, as in `stream`.
 
         `max_output_tokens`, given, caps how much the provider may write --
         `inkspire_api/completions.py` is the one caller that sets it, since an
@@ -357,9 +408,10 @@ class LLMService:
         leaves it unset, which is every other caller today.
 
         Raises `LLMError` if the provider cannot be reached, rejects the request, or
-        answers nothing usable, and `UnknownModel` for a model naming no configured
-        provider.
+        answers nothing usable, `UnknownModel` for a model naming no configured
+        provider, and `RefusedProvider` for one whose provider refuses a tag.
         """
+        self.check_allowed(model, tags)
         config, name = self.parse_model(model)
         native = config.protocol is Protocol.ollama
         url = _chat_url(config, native=native)
@@ -666,7 +718,7 @@ class GenerateRequest(BaseModel):
 
 
 @router.get("/models")
-async def list_models(service: ServiceDep) -> list[dict[str, str]]:
+async def list_models(service: ServiceDep) -> list[dict[str, Any]]:
     try:
         return await service.models()
     except ValueError as error:  # a provider file that cannot be read
@@ -763,6 +815,7 @@ async def _stream_generation(
     user: CurrentUser,
     service: LLMService,
     *,
+    tags: Collection[str],
     synopsis: str = "",
     summary: str = "",
 ) -> StreamingResponse:
@@ -773,7 +826,9 @@ async def _stream_generation(
     context, looked up by the caller -- this function knows nothing about either
     root, so it only ever passes the string along. `summary` (api#18) is the
     file's own stored context summary, looked up by the caller the same way.
-    `instruction` (api#19) needs no such lookup -- it is already sitting on `body`,
+    `tags` are the file's own, which the caller already has from the scan entry it
+    looked up; a provider that refuses one is answered with a 403 before anything is
+    sent to it. `instruction` (api#19) needs no such lookup -- it is already sitting on `body`,
     so it is read here rather than threaded through every caller.
 
     Each event is `{"delta": "..."}` with text to append, `{"error": "..."}` if the
@@ -794,6 +849,7 @@ async def _stream_generation(
     chunks = service.stream(
         body.model,
         text,
+        tags=tags,
         cursor=anchor.cursor,
         selection=anchor.selection,
         options=options,
@@ -806,6 +862,9 @@ async def _stream_generation(
     except UnknownModel as error:
         await chunks.aclose()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+    except RefusedProvider as error:
+        await chunks.aclose()
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     except prompt_lib.CursorOutOfRange as error:
         await chunks.aclose()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
@@ -866,7 +925,7 @@ async def generate_story(
     synopsis = scanner.story(file.story_id).summary if isinstance(file, Chapter) else ""
     summary = _stored_summary(document.context_summary)
     return await _stream_generation(
-        text, body, request, user, service, synopsis=synopsis, summary=summary
+        text, body, request, user, service, tags=file.tags, synopsis=synopsis, summary=summary
     )
 
 
@@ -890,5 +949,5 @@ async def generate_note(
     synopsis = notes.folder(note.folder_id).summary if note.folder_id is not None else ""
     summary = _stored_summary(document.context_summary)
     return await _stream_generation(
-        text, body, request, user, service, synopsis=synopsis, summary=summary
+        text, body, request, user, service, tags=note.tags, synopsis=synopsis, summary=summary
     )

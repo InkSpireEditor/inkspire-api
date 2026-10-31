@@ -340,13 +340,16 @@ local-ollama:
 hosted:
   url: https://api.example.com/v1
   key: sk-...
+  refused_tags: [perso]
 ```
 
 The provider name becomes the prefix of every model it offers, so models are addressed
 as `local-ollama/llama3`. `protocol` is `openai` by default, for any chat-completions
 endpoint. Use `ollama` for an Ollama instance: its compatibility layer accepts `think`
 and ignores it, so reasoning cannot be turned off through it, and sampling options
-cannot be set either.
+cannot be set either. `refused_tags` is optional: a file whose header carries one of those
+tags is never sent to a model of that provider (the API answers 403, and a save does not
+schedule a context summary from it). See `docs/prompt.md`.
 
 `GET /api/llm/models` lists every provider's models, each carrying its `protocol` so a
 client can tell which models can honour `think` at all. A provider that cannot be
