@@ -17,7 +17,7 @@ ENV VITE_API_URL=/api VITE_AUTH_URL=/auth
 RUN npm run build-only
 
 # --- the API's dependencies ----------------------------------------------
-FROM python:3.14-slim@sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8 AS build
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS build
 WORKDIR /app
 # Poetry installs from poetry.lock and stays in this stage.
 RUN pip install --no-cache-dir poetry==2.4.1 \
@@ -30,7 +30,7 @@ COPY timeline/ ./timeline/
 RUN poetry install --only main --no-interaction --no-ansi
 
 # --- what runs --------------------------------------------------------------
-FROM python:3.14-slim@sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8 AS runtime
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913 AS runtime
 
 LABEL org.opencontainers.image.title="InkSpire" \
       org.opencontainers.image.source="https://github.com/InkSpireEditor/inkspire-api" \
