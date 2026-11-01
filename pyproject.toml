@@ -51,7 +51,7 @@ pytest = "*"
 httpx = "*"
 pytest-asyncio = "^1.4.0"
 anyio = "^4.15.1"
-pylint = "^4.0.8"
+pylint = "^4.0.9"
 ty = "^0.0.80"
 pytest-cov = "^7.1.0"
 
