@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # The actions in .github/workflows are pinned to a commit SHA; this moves the pins.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # The base images in the Dockerfile are pinned to a digest; this moves the digests.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
