@@ -1,0 +1,26 @@
+# An allowlist: everything is left out unless it is named below, so a file added to this
+# repository later (a key, a database, a local override) cannot enter an image by default.
+*
+
+!pyproject.toml
+!poetry.lock
+!LICENSE
+!alembic.ini
+!.env
+!docker_entrypoint.sh
+!inkspire_api
+!lorebook
+!timeline
+!alembic
+
+# The frontend checkout the release workflow places here.
+!frontend-src
+frontend-src/.git
+frontend-src/.env.*
+frontend-src/node_modules
+frontend-src/dist
+frontend-src/coverage
+frontend-src/tmp.log
+
+**/__pycache__
+**/*.pyc

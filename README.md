@@ -584,6 +584,7 @@ Multiple documents under `docs/`, each on one subject:
 | [`provenance.md`](docs/provenance.md) | who wrote each character, and how that survives a hand edit |
 | [`routes.md`](docs/routes.md) | every route: what it takes, what it answers, how it fails |
 | [`prompt.md`](docs/prompt.md) | the generation prompt: what is sent, in what order, how it is trimmed, and the title and completion prompts |
+| [`deployment.md`](docs/deployment.md) | the container image: what is in it, what to mount, what to set, how to check it |
 
 ---
 
