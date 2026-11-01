@@ -41,7 +41,7 @@ more than its chapters adds `"holds": [<names>]`. These statuses are used throug
 | 504 | A git command did not finish in time. |
 
 **Limits on text.** A name is 1 to 255 characters after trimming. A summary or a synopsis is at most
-2000 characters. A status is at most 64 characters, and `""` removes it. A tag is 1 to 32 characters of `a-z`, `0-9`, `-` and `_` once trimmed and lowercased (`ink-format.md`). A commit message is 1 to
+2000 characters. A status is at most 64 characters, and `""` removes it. A tag is 1 to 32 characters of `a-z`, `0-9`, `-` and `_` once trimmed and lowercased (`ink_format.md`). A commit message is 1 to
 2000 characters. A generation instruction is at most 300 characters.
 
 ## Authentication

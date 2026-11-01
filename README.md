@@ -138,7 +138,7 @@ is a model's text the writer has since corrected, and the writer's own is the de
 is never stored. Keying by content rather than by position means editing one paragraph leaves
 every other paragraph's record untouched.
 
-**`docs/ink-format.md` and `docs/provenance.md`** are these two in full — the grammar, what
+**`docs/ink_format.md` and `docs/provenance.md`** are these two in full — the grammar, what
 reading forgives and what `ink check` reports, the paragraph-split contract the frontend has
 to match byte for byte, and how a record left stale by a hand edit is recovered.
 
@@ -580,7 +580,7 @@ Multiple documents under `docs/`, each on one subject:
 |---|---|
 | [`filesystem.md`](docs/filesystem.md) | what is actually on disk: the two roots, the manifests, the ids |
 | [`entries.md`](docs/entries.md) | the classes a scan turns that into — `File`, `Folder` and what each root adds |
-| [`ink-format.md`](docs/ink-format.md) | the `.ink` file: its sections, its grammar, and the rules reading enforces |
+| [`ink_format.md`](docs/ink_format.md) | the `.ink` file: its sections, its grammar, and the rules reading enforces |
 | [`provenance.md`](docs/provenance.md) | who wrote each character, and how that survives a hand edit |
 | [`routes.md`](docs/routes.md) | every route: what it takes, what it answers, how it fails |
 | [`prompt.md`](docs/prompt.md) | the generation prompt: what is sent, in what order, how it is trimmed, and the title and completion prompts |

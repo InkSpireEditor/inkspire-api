@@ -27,7 +27,7 @@ not a repository — so a paragraph it cannot account for resets.
 `INKSPIRE_LLM_SMALL_MODEL` is configured: `summaries.update` runs after the response has
 already been sent, and may write a fresh `ink:context_summary` section a few seconds
 later. This is the one section ever written outside the body's own atomic write
-(`summaries.py` and `docs/ink-format.md`'s "Two rules" have why that is safe here and
+(`summaries.py` and `docs/ink_format.md`'s "Two rules" have why that is safe here and
 nowhere else), which is why it is scheduled from this module rather than left to the
 generate route that reads it back.
 """

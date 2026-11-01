@@ -104,7 +104,7 @@ next fence or to the end of the file. Every section is optional, and **a file wi
 fence line anywhere is entirely prose** — which is what a writer gets by creating a
 file and typing in it, and which is named after its own filename rather than a `title`.
 
-`ink-format.md` in this same folder is the format in full: the grammar, what each
+`ink_format.md` in this same folder is the format in full: the grammar, what each
 section means, which rules reading enforces and which `ink check` reports instead, and
 why a body is never written without the sections derived from it. `provenance.md`
 describes `ink:provenance`, the one section `ink.py` carries without reading.

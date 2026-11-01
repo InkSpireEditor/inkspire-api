@@ -253,7 +253,7 @@ exist at worst. This is the same two-newline, verified-by-rendering guarded bloc
 optional section in `prompt.j2` uses, captured once near the top of the template and emitted at
 the slot each of the three branches already reserves for it.
 
-**Stored in the body's own file, as `ink:context_summary`** (`docs/ink-format.md`), the one
+**Stored in the body's own file, as `ink:context_summary`** (`docs/ink_format.md`), the one
 section ever written outside the body's own atomic write -- a stale summary is a worse summary,
 not corruption of a correctness record the way stale provenance would be, which is what makes
 writing it on its own, in the background, safe here and nowhere else. `write_context_summary`
