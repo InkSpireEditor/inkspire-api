@@ -1,0 +1,46 @@
+name: Pull request image build
+
+# Builds the container image when a pull request changes what it is made from, so that a
+# change to a base image or to the locked dependencies shows here whether the image still
+# builds. Nothing is pushed or published; the release workflow does that for a tag.
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker_entrypoint.sh
+      - poetry.lock
+      - pyproject.toml
+      - .github/workflows/pr_image_build.yaml
+
+permissions: {}
+
+concurrency:
+  group: pr-image-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the API
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Dockerfile builds the frontend from frontend-src/. The frontend's main branch is
+      # what the API's main is built against between releases.
+      - name: Check out the frontend
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: InkSpireEditor/inkspire-frontend
+          ref: main
+          path: frontend-src
+          persist-credentials: false
+
+      - name: Build
+        run: docker build --pull --tag inkspire:pull-request .
