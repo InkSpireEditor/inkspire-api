@@ -21,6 +21,7 @@ from . import (
     completions,
     documents,
     files,
+    frontend,
     llm,
     lore,
     repository,
@@ -61,7 +62,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.jwt_secret_or_raise()
         yield
 
-    application = FastAPI(title="InkSpire API", lifespan=lifespan)
+    # The interactive docs need no login and list every route.
+    application = FastAPI(
+        title="InkSpire API",
+        lifespan=lifespan,
+        docs_url="/docs" if settings.expose_docs else None,
+        redoc_url="/redoc" if settings.expose_docs else None,
+        openapi_url="/openapi.json" if settings.expose_docs else None,
+    )
     application.state.login_throttle = LoginThrottle(
         settings.login_max_attempts, settings.login_interval
     )
@@ -168,6 +176,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(repository.router)
     api.include_router(repository.history_router)
     application.include_router(api)
+    # Last, because its catch-all would answer any route registered after it.
+    if settings.frontend_dir is not None:
+        frontend.mount(application, settings.frontend_dir)
     return application
 
 

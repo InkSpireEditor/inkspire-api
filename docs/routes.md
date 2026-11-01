@@ -150,3 +150,21 @@ pull share one non-blocking lock: a second one while the first runs is refused w
 | `POST /api/git/commit` | `{"message"}` | The status, and `sha`, `message` and `committed`. Commits only a story's `story.yaml` and its `chapters/*.ink`; anything else changed, or staged by hand, is left as it was. 409 when nothing committable has changed |
 | `POST /api/git/push` | | The new status. 409 without an upstream, or when the remote has commits the branch does not; 502 when the remote cannot be reached |
 | `POST /api/git/pull` | | The new status. Fast-forward only: 409 without an upstream or when the branch has diverged; 502 when the remote cannot be reached |
+
+## The frontend
+
+Only when `INKSPIRE_FRONTEND_DIR` names a built frontend (`dist/`); without it the API serves no
+page, and it is not part of the route count above. One catch-all answers `GET` and `HEAD` for every
+path no other route took, and nothing else (a `POST` there is a 405).
+
+- A path under `/api` or `/auth` that no route took answers `{"code": 404, "message": "Not found"}`,
+  with or without a login. It never answers the page.
+- A path that is a regular file inside the build is that file. Anything else, including a
+  directory, a path that leaves the build by `..` or by a symlink, and a frontend route such as
+  `/stories/<id>`, answers `index.html`.
+- Every answer carries a `Content-Security-Policy` that allows this origin only, with no inline
+  script, no inline `<style>` except three listed by hash (the ones the lorebook graph's libraries
+  inject), no frame and no `<base>`. `index.html` is `Cache-Control: no-cache`; a file
+  directly under `assets/`, whose name is a hash of its content, is
+  `public, max-age=31536000, immutable`.
+- The directory must hold an `index.html`, or the application does not start.

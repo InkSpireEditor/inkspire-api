@@ -88,7 +88,7 @@ def login(
         response,
         jwt_token=token,
         refresh_token=refresh_token,
-        secure=is_secure(request),
+        secure=is_secure(request, settings),
         settings=settings,
     )
     return {"token": token}
@@ -126,14 +126,16 @@ def refresh(
         response,
         jwt_token=create_jwt(user, settings),
         refresh_token=stored.token,
-        secure=is_secure(request),
+        secure=is_secure(request, settings),
         settings=settings,
     )
     return {"success": True}
 
 
 @router.post("/auth/logout")
-def logout(request: Request, response: Response, session: SessionDep) -> dict:
+def logout(
+    request: Request, response: Response, session: SessionDep, settings: SettingsDep
+) -> dict:
     """Revokes the refresh token and clears the cookies.
 
     Succeeds whether or not a session was live, so a client can call it to clean up
@@ -148,5 +150,5 @@ def logout(request: Request, response: Response, session: SessionDep) -> dict:
             session.delete(stored)
             session.commit()
 
-    clear_auth_cookies(response, secure=is_secure(request))
+    clear_auth_cookies(response, secure=is_secure(request, settings))
     return {"success": True}

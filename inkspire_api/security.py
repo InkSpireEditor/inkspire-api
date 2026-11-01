@@ -62,7 +62,11 @@ def decode_jwt(token: str, settings: Settings) -> dict:
     return jwt.decode(token, settings.jwt_secret_or_raise(), algorithms=[ALGORITHM])
 
 
-def is_secure(request: Request) -> bool:
+def is_secure(request: Request, settings: Settings) -> bool:
+    """Whether the cookies are marked `Secure`: always when the settings say so, otherwise
+    when this request arrived over https."""
+    if settings.cookie_secure is not None:
+        return settings.cookie_secure
     return request.url.scheme == "https"
 
 

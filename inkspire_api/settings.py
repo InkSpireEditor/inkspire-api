@@ -8,6 +8,7 @@ defaults below.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -57,6 +58,20 @@ class Settings(BaseSettings):
     login_interval: int = 60
 
     cors_allow_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$"
+
+    #: A built frontend (`dist/`) for the API to serve, so one process answers both. Unset,
+    #: the API serves no page at all, which is how it runs next to the dev server.
+    frontend_dir: Path | None = None
+
+    #: Whether the auth cookies always carry `Secure`. Unset, they carry it when the request
+    #: arrived over https. Behind a proxy that ends TLS the request arrives over http unless
+    #: the proxy's forwarded headers are trusted, so a deployment sets this to true and a
+    #: lost header cannot send the cookies in the clear.
+    cookie_secure: bool | None = None
+
+    #: Whether `/docs`, `/redoc` and `/openapi.json` answer. They need no login and list
+    #: every route, so a deployment turns them off.
+    expose_docs: bool = True
 
     #: Maps a provider name to its base URL and optional API key. Holds API keys, so
     #: it is not committed. Absent on an installation with no provider configured, in
@@ -143,11 +158,11 @@ class Settings(BaseSettings):
     # talks to the remote and can hang; a commit does not, but a hook might.
     git_timeout: float = 60.0
 
-    @field_validator("data_root", "files_root", "llm_providers_file")
+    @field_validator("data_root", "files_root", "llm_providers_file", "frontend_dir")
     @classmethod
-    def _expand_user(cls, value: Path) -> Path:
+    def _expand_user(cls, value: Path | None) -> Path | None:
         """`~` in a path is expanded, since these are paths a person types."""
-        return value.expanduser()
+        return value.expanduser() if value is not None else None
 
     def jwt_secret_or_raise(self) -> str:
         """The signing secret, or `SecretNotConfigured` naming where to put one."""
@@ -162,5 +177,13 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """The process-wide settings. Cached, so `.env` is read once."""
-    return Settings()
+    """The process-wide settings. Cached, so `.env` is read once.
+
+    `INKSPIRE_SECRETS_DIR` names a directory with one file per setting, as a container
+    runtime mounts secrets (`/run/secrets/INKSPIRE_JWT_SECRET`). A file there is read
+    after the environment and `.env`, so it is the lowest source: a deployment that mounts
+    its secrets sets no `.env.local`. It is read from the environment here rather than
+    declared in `model_config`, which warns on every start when the directory is absent.
+    """
+    secrets_dir = os.environ.get("INKSPIRE_SECRETS_DIR")
+    return Settings(_secrets_dir=secrets_dir) if secrets_dir else Settings()
