@@ -60,6 +60,13 @@ COPY alembic.ini .env ./
 COPY docker_entrypoint.sh /usr/local/bin/docker_entrypoint.sh
 COPY --from=frontend /src/dist ./frontend
 
+# Nothing is installed while the container runs, so pip has no use in it. It is removed from
+# the base image and from the copied virtual environment. Its bundled libraries are also what
+# an image scanner reports against pip's own bill of materials.
+RUN python -m pip uninstall -y pip \
+    && rm -rf /app/.venv/lib/python*/site-packages/pip /app/.venv/lib/python*/site-packages/pip-*.dist-info \
+              /app/.venv/lib/python*/site-packages/pip-*.virtualenv /app/.venv/bin/pip*
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
