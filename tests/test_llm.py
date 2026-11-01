@@ -724,6 +724,82 @@ async def test_a_model_list_is_fetched_once_while_it_is_cached(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_a_provider_that_was_down_is_listed_as_soon_as_it_answers(tmp_path: Path) -> None:
+    up = {"now": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not up["now"]:
+            raise httpx.ConnectError("refused")
+        return httpx.Response(200, json={"data": [{"id": "one"}]})
+
+    built = llm_service(tmp_path, handler)
+    assert await built.models() == []
+    up["now"] = True
+    assert [entry["name"] for entry in await built.models()] == ["p/one"]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_that_errored_is_asked_again_at_the_next_listing(tmp_path: Path) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(503, text="loading")
+
+    built = llm_service(tmp_path, handler)
+    await built.models()
+    await built.models()
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_is_not_json_is_asked_again_at_the_next_listing(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, text="<html>not an api</html>")
+
+    built = llm_service(tmp_path, handler)
+    assert await built.models() == []
+    await built.models()
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_provider_with_no_models_is_held_like_any_answer(tmp_path: Path) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, json={"data": []})
+
+    built = llm_service(tmp_path, handler)
+    assert await built.models() == []
+    await built.models()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_provider_that_goes_down_keeps_its_held_list_until_it_expires(
+    tmp_path: Path,
+) -> None:
+    up = {"now": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not up["now"]:
+            raise httpx.ConnectError("refused")
+        return httpx.Response(200, json={"data": [{"id": "one"}]})
+
+    built = llm_service(tmp_path, handler)
+    assert len(await built.models()) == 1
+    up["now"] = False
+    assert len(await built.models()) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_expired_model_list_is_fetched_again(tmp_path: Path) -> None:
     calls = []
 

@@ -250,20 +250,27 @@ class LLMService:
         """Every provider's models, prefixed with the provider name.
 
         A provider that cannot be reached contributes nothing rather than failing the
-        whole list, so one dead endpoint does not hide the others.
+        whole list, so one dead endpoint does not hide the others. Only a list the
+        provider answered is held: one that could not be read is asked for again at the
+        next listing, so a provider that was down (a machine that is switched off) is
+        back as soon as it answers, not when an earlier failure expires.
         """
         collected: list[dict[str, Any]] = []
         for name, config in self.providers.items():
             cached = self.cache.get(name)
             if cached is None:
                 cached = await self._fetch_models(name, config)
+                if cached is None:
+                    continue
                 self.cache.put(name, cached)
             collected.extend(cached)
         return collected
 
     async def _fetch_models(
         self, provider: str, config: ProviderConfig
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
+        """The provider's models, `[]` when it answers that it has none, and None when
+        it could not be read: unreachable, an error status, or an answer that is not JSON."""
         native = config.protocol is Protocol.ollama
         url = (
             f"{config.url.rstrip('/')}/api/tags"
@@ -276,10 +283,10 @@ class LLMService:
             ) as client:
                 response = await client.get(url, headers=headers(config))
             if response.status_code != 200:
-                return []
+                return None
             payload = response.json()
         except (httpx.HTTPError, json.JSONDecodeError):
-            return []
+            return None
 
         # Ollama names a model under "models"/"model"; chat-completions under "data"/"id".
         entries = payload.get("models", []) if native else payload.get("data", [])

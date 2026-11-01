@@ -353,8 +353,9 @@ schedule a context summary from it). See `docs/prompt.md`.
 
 `GET /api/llm/models` lists every provider's models, each carrying its `protocol` so a
 client can tell which models can honour `think` at all. A provider that cannot be
-reached contributes nothing instead of failing the list. Results are held for an hour
-per provider, in the serving process. `GET /api/llm/defaults` answers the server's own
+reached contributes nothing instead of failing the list, and is asked again at the next
+request, so one that was switched off is listed as soon as it answers. A provider's answer is
+held for an hour, in the serving process. `GET /api/llm/defaults` answers the server's own
 generation settings — see below — so a client has something to show before it overrides
 anything. `GET /api/llm/features` answers `{"title": bool, "summary": bool}`, which of the
 two features backed by `INKSPIRE_LLM_SMALL_MODEL` are on; both are on when that setting is

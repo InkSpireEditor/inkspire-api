@@ -95,7 +95,7 @@ Under `/api/stories` only:
 
 | Route | Takes | Answers |
 |---|---|---|
-| `GET /api/llm/models` | | A list of `{"name": "<provider>/<model>", "protocol": "openai" or "ollama", "refused_tags": [<tags>]}`; `refused_tags` is the provider's own list, the tags of files it is never used for. A provider that cannot be reached contributes nothing. Held for an hour per provider |
+| `GET /api/llm/models` | | A list of `{"name": "<provider>/<model>", "protocol": "openai" or "ollama", "refused_tags": [<tags>]}`; `refused_tags` is the provider's own list, the tags of files it is never used for. A provider that cannot be reached contributes nothing, and is asked again at the next request. A provider's answer is held for an hour |
 | `GET /api/llm/defaults` | | The server's own generation settings: `temperature`, `prompt_budget`, `prefix_share`, `num_ctx`, `think`, `send_selection` |
 | `GET /api/llm/features` | | `{"title": bool, "summary": bool}`; both are `true` exactly when `INKSPIRE_LLM_SMALL_MODEL` is set |
 | `POST /api/stories/file/{file_id}/generate` | see below | `text/event-stream` |
