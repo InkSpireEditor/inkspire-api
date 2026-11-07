@@ -2,7 +2,8 @@
 #
 # The build context is this repository with the matching frontend checkout in
 # `frontend-src/` (the release workflow puts it there). Every base image is pinned by
-# digest; Dependabot moves the digests.
+# digest; Dependabot moves the digests. The runtime stage also applies the operating system's
+# pending security updates while it is built.
 
 # --- the frontend ---------------------------------------------------------
 FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS frontend
@@ -17,7 +18,7 @@ ENV VITE_API_URL=/api VITE_AUTH_URL=/auth
 RUN npm run build-only
 
 # --- the API's dependencies ----------------------------------------------
-FROM python:3.14-slim@sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8 AS build
+FROM python:3.14-slim@sha256:af8a5aa14780025dbfbcfbc81bd8a91ebd87711dd5b0f48ed71090949dd7cb1d AS build
 WORKDIR /app
 # Poetry installs from poetry.lock and stays in this stage.
 RUN pip install --no-cache-dir poetry==2.4.1 \
@@ -30,15 +31,18 @@ COPY timeline/ ./timeline/
 RUN poetry install --only main --no-interaction --no-ansi
 
 # --- what runs --------------------------------------------------------------
-FROM python:3.14-slim@sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8 AS runtime
+FROM python:3.14-slim@sha256:af8a5aa14780025dbfbcfbc81bd8a91ebd87711dd5b0f48ed71090949dd7cb1d AS runtime
 
 LABEL org.opencontainers.image.title="InkSpire" \
       org.opencontainers.image.source="https://github.com/InkSpireEditor/inkspire-api" \
       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 
-# git for the story repository (GitPython runs it); openssh-client for its remote. The
-# last step removes every setuid and setgid bit, which nothing here needs.
+# The base image is rebuilt less often than Debian publishes security fixes, so the packages it
+# holds are brought up to date first. Then git for the story repository (GitPython runs it) and
+# openssh-client for its remote. The last step removes every setuid and setgid bit, which
+# nothing here needs.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends git openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1001 inkspire \
