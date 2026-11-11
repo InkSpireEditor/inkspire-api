@@ -1712,3 +1712,69 @@ def test_the_summary_pass_skips_a_file_whose_tag_the_provider_refuses(
     assert "ink:context_summary" in allowed.read_text(encoding="utf-8")
     assert "skipped: " in result.output
     assert "1 file skipped" in result.output
+
+
+# --- ink maintenance --provenance --generated (api#43) ----------------------
+
+
+def test_generated_records_the_inserted_text_as_gen(maintenance, story_repo) -> None:
+    path = edit(story_repo, NEW_PARA)
+
+    result, seen = maintenance("--provenance", "--generated")
+
+    assert result.exit_code == 0
+    assert not seen
+    text = path.read_text(encoding="utf-8")
+    assert (
+        f'"{NEW_KEY}": [[16, 21, "gen"], [23, 50, "gen"], [50, 59, "fix"], [59, 80, "gen"]]'
+        in text
+    )
+
+
+def test_generated_dry_run_says_how_many_characters_are_gen(maintenance, story_repo) -> None:
+    path = edit(story_repo, NEW_PARA)
+    before = path.read_bytes()
+
+    result, _ = maintenance("--provenance", "--generated", "-n")
+
+    assert result.exit_code == 1
+    assert path.read_bytes() == before
+    assert "(4 runs, 53 characters generated)" in result.output
+
+
+def test_generated_records_a_paragraph_nothing_explains_as_all_gen(
+    maintenance, story_repo
+) -> None:
+    """A paragraph added to a file whose other paragraphs still match."""
+    added = "A new paragraph."
+    path = edit(story_repo, f"{OLD_PARA}\n\n{added}")
+
+    dry, _ = maintenance("--provenance", "--generated", "-n")
+    assert dry.exit_code == 1
+    assert "-> all generated (16 characters)" in dry.output
+    assert "1 all generated" in dry.output
+
+    result, _ = maintenance("--provenance", "--generated")
+    assert result.exit_code == 0
+    text = path.read_text(encoding="utf-8")
+    assert f'"{provenance.paragraph_hash(added)}": [[0, 16, "gen"]]' in text
+
+
+def test_without_the_flag_a_paragraph_nothing_explains_is_still_plain(
+    maintenance, story_repo
+) -> None:
+    path = edit(story_repo, f"{OLD_PARA}\n\nA new paragraph.")
+
+    result, _ = maintenance("--provenance")
+
+    assert result.exit_code == 0
+    assert f'"{provenance.paragraph_hash("A new paragraph.")}": []' in path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_generated_without_provenance_is_refused(maintenance, story_repo) -> None:
+    result, _ = maintenance("--generated")
+
+    assert result.exit_code != 0
+    assert "--provenance" in result.output

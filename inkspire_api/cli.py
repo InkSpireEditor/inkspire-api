@@ -922,12 +922,14 @@ class Verdict:
     index: int
     #: The hash the paragraph has now.
     digest: str
-    #: `ok`, `recovered` or `reset`.
+    #: `ok`, `recovered`, `reset` or `generated`.
     state: str
     #: The stale key this was recovered from, where it was.
     was: str | None = None
     #: How many runs came through.
     runs: int = 0
+    #: How many characters the paragraph has as `gen` once the section is written.
+    generated: int = 0
 
 
 def brief(digest: str) -> str:
@@ -949,15 +951,25 @@ def repository_for(path: Path, settings: Settings) -> Path | None:
     return settings.data_root if (settings.data_root / ".git").exists() else None
 
 
+def generated_characters(runs: list[provenance.Run]) -> int:
+    """How many characters `runs` records as written by a model."""
+    return sum(end - start for start, end, kind in runs if kind == provenance.GEN)
+
+
 def verdicts_for(
-    body: str, stored: provenance.Metadata, recovery: repository.Recovery
+    body: str,
+    stored: provenance.Metadata,
+    recovery: repository.Recovery,
+    inserted: str = provenance.USER,
 ) -> list[Verdict]:
     """One verdict per paragraph of `body`.
 
     A paragraph whose hash was already stored was never stale. One whose hash was not
     is stale, and `recovery.sources` says which stored key explained it — that pairing
     is decided by similarity (§7.5), so it has to be reported by the recovery rather
-    than reconstructed here from the key sets, which could only guess.
+    than reconstructed here from the key sets, which could only guess. Where `inserted`
+    is `gen`, a paragraph nothing explains is `generated` and not `reset`, since it is
+    written as one `gen` run and not as plain prose.
     """
     found: list[Verdict] = []
     for index, digest in enumerate(provenance.hashes_of(body), start=1):
@@ -971,6 +983,16 @@ def verdicts_for(
                     "recovered",
                     was=recovery.sources[digest],
                     runs=len(recovery.metadata[digest]),
+                    generated=generated_characters(recovery.metadata[digest]),
+                )
+            )
+        elif inserted == provenance.GEN:
+            found.append(
+                Verdict(
+                    index,
+                    digest,
+                    "generated",
+                    generated=generated_characters(recovery.metadata[digest]),
                 )
             )
         else:
@@ -978,8 +1000,13 @@ def verdicts_for(
     return found
 
 
-def reclassify_file(path: Path, settings: Settings) -> tuple[list[Verdict], str | None, str | None]:
+def reclassify_file(
+    path: Path, settings: Settings, *, inserted: str = provenance.USER
+) -> tuple[list[Verdict], str | None, str | None]:
     """What one file needs, as verdicts, the revision used, and the text to write.
+
+    `inserted` is the kind given to text no stored run accounts for (`provenance.GEN`
+    for `--generated`).
 
     The text is `None` where there is nothing to write — the file has no provenance
     section, or every paragraph's hash already matches. A file whose section cannot be
@@ -998,7 +1025,7 @@ def reclassify_file(path: Path, settings: Settings) -> tuple[list[Verdict], str 
     root = repository_for(path, settings)
     if root is None:
         recovery = repository.reconciled(
-            None, PurePosixPath(path.name), document.body, stored
+            None, PurePosixPath(path.name), document.body, stored, inserted=inserted
         )
     else:
         relpath = PurePosixPath(path.resolve().relative_to(root.resolve()))
@@ -1006,10 +1033,10 @@ def reclassify_file(path: Path, settings: Settings) -> tuple[list[Verdict], str 
             # No ceiling here, unlike a request: this is run by hand, after a miss, and
             # is worth however long the whole history takes.
             recovery = repository.reconciled(
-                repo, relpath, document.body, stored, limit=None
+                repo, relpath, document.body, stored, limit=None, inserted=inserted
             )
 
-    found = verdicts_for(document.body, stored, recovery)
+    found = verdicts_for(document.body, stored, recovery, inserted)
     if set(recovery.metadata) == set(stored):
         return found, None, None
     return (
@@ -1024,7 +1051,7 @@ def reclassify_file(path: Path, settings: Settings) -> tuple[list[Verdict], str 
     )
 
 
-def report_provenance(verdict: Verdict, revision: str | None) -> None:
+def report_provenance(verdict: Verdict, revision: str | None, generated: bool = False) -> None:
     """One paragraph's line of the report."""
     if verdict.state == "ok":
         typer.secho(f"  para {verdict.index}  {brief(verdict.digest)}  ok")
@@ -1033,7 +1060,20 @@ def report_provenance(verdict: Verdict, revision: str | None) -> None:
         was = f", was {brief(verdict.was)}" if verdict.was else ""
         typer.secho(
             f"  para {verdict.index}  {brief(verdict.digest)}  STALE  -> recoverable"
-            f" from {revision}{was} ({plural(verdict.runs, 'run')})",
+            f" from {revision}{was} ({plural(verdict.runs, 'run')}"
+            + (
+                f", {plural(verdict.generated, 'character')} generated"
+                if generated
+                else ""
+            )
+            + ")",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    if verdict.state == "generated":
+        typer.secho(
+            f"  para {verdict.index}  {brief(verdict.digest)}  STALE  -> all generated"
+            f" ({plural(verdict.generated, 'character')})",
             fg=typer.colors.YELLOW,
         )
         return
@@ -1050,7 +1090,12 @@ def report_summary(dropped_chars: int, verdict: str, *, colour: str) -> None:
 
 
 def run_provenance_pass(
-    path: Path, settings: Settings, *, counts: Counter[str], sections: dict[str, str]
+    path: Path,
+    settings: Settings,
+    *,
+    counts: Counter[str],
+    sections: dict[str, str],
+    inserted: str = provenance.USER,
 ) -> bool:
     """Runs the provenance pass on one file: recovers or resets every stale
     paragraph, reports what it found, and folds the result into `counts` and
@@ -1063,7 +1108,7 @@ def run_provenance_pass(
     of duplicating what it does.
     """
     try:
-        found, revision, patched = reclassify_file(path, settings)
+        found, revision, patched = reclassify_file(path, settings, inserted=inserted)
     except (OSError, UnicodeDecodeError) as error:
         typer.secho(f"{shown(path)}: cannot be read as text: {error}", fg=typer.colors.RED)
         counts["failed"] += 1
@@ -1073,8 +1118,11 @@ def run_provenance_pass(
 
     typer.secho(shown(path))
     for verdict in found:
-        report_provenance(verdict, revision)
-        if verdict.state == "recovered":
+        report_provenance(verdict, revision, inserted == provenance.GEN)
+        if verdict.state == "generated":
+            counts["stale"] += 1
+            counts["all_generated"] += 1
+        elif verdict.state == "recovered":
             counts["stale"] += 1
             counts["recoverable"] += 1
         elif verdict.state == "reset":
@@ -1159,6 +1207,7 @@ async def maintain_one(
     model: str | None,
     budget: int,
     summary_num_ctx: int,
+    inserted: str = provenance.USER,
 ) -> Counter[str]:
     """Runs the requested passes against one file, reports what each found, and --
     unless `dry_run` -- writes every section either pass changed in one write.
@@ -1184,7 +1233,9 @@ async def maintain_one(
 
     header_printed = False
     if "provenance" in passes:
-        header_printed = run_provenance_pass(path, settings, counts=counts, sections=sections)
+        header_printed = run_provenance_pass(
+            path, settings, counts=counts, sections=sections, inserted=inserted
+        )
     if "summaries" in passes:
         await run_summary_pass(
             document,
@@ -1217,6 +1268,7 @@ async def maintain_all(
     model: str | None,
     budget: int,
     summary_num_ctx: int,
+    inserted: str = provenance.USER,
 ) -> Counter[str]:
     """`maintain_one`, over every file, inside one `asyncio.run` -- so a provider
     connection the summary pass needs is made once for the whole walk rather than
@@ -1233,6 +1285,7 @@ async def maintain_all(
             model=model,
             budget=budget,
             summary_num_ctx=summary_num_ctx,
+            inserted=inserted,
         )
     return counts
 
@@ -1258,6 +1311,17 @@ def maintenance(
         bool,
         typer.Option(
             "--summaries", help="Only resummarise dropped context. Bypasses the usual staleness check."
+        ),
+    ] = False,
+    generated: Annotated[
+        bool,
+        typer.Option(
+            "--generated",
+            help=(
+                "Record text that no stored run accounts for as written by a model "
+                "(gen), not by hand. For a file a model edited directly. Needs "
+                "--provenance."
+            ),
         ),
     ] = False,
     model: Annotated[
@@ -1307,6 +1371,13 @@ def maintenance(
     cannot explain resets to plain prose rather than being guessed at. A notes file has
     no history and can only ever reset.
 
+    **`--generated`** (with `--provenance`) is for a file a model edited directly. What
+    the edit inserted is recorded as `gen` instead of `user`, and a paragraph nothing
+    explains becomes one `gen` run over its whole length instead of resetting. Commit
+    before the edit: with no earlier text in history to compare against, the whole
+    paragraph is recorded as `gen`, the writer's own words included. Anything typed by
+    hand between that commit and this run is recorded as `gen` too.
+
     **Summaries.** Resummarises what a trim at `--budget` characters would drop from
     every file that has anything trimmed, regardless of whether `context_summary.is_due`
     would call it due -- that bypass is the point: it is the forced recompute for a
@@ -1325,6 +1396,8 @@ def maintenance(
 
     With no argument this covers both roots, as `ink check` does.
     """
+    if generated and not provenance_only:
+        fail("--generated applies to the provenance pass: give --provenance with it.")
     passes = {
         name
         for name, chosen in (("provenance", provenance_only), ("summaries", summaries_only))
@@ -1363,6 +1436,7 @@ def maintenance(
             model=chosen_model,
             budget=budget,
             summary_num_ctx=chosen_num_ctx,
+            inserted=provenance.GEN if generated else provenance.USER,
         )
     )
 
@@ -1370,7 +1444,8 @@ def maintenance(
     summary = (
         f"{plural(len(files), 'file')} checked, {counts['stale']} stale, "
         f"{counts['recoverable']} recoverable, {counts['would_reset']} would reset, "
-        f"{resummarised} {'due for a new summary' if dry_run else 'resummarised'}."
+        + (f"{counts['all_generated']} all generated, " if generated else "")
+        + f"{resummarised} {'due for a new summary' if dry_run else 'resummarised'}."
     )
 
     if dry_run:

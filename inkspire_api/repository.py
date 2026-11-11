@@ -559,6 +559,7 @@ def recover(
     metadata: provenance.Metadata,
     *,
     limit: int | None = MAX_RECOVERY_REVISIONS,
+    inserted: str = provenance.USER,
 ) -> Recovery:
     """`metadata` rekeyed to `body`'s paragraphs, recovering what history can explain.
 
@@ -567,6 +568,10 @@ def recover(
     is looked for in the file's history, diffed forward to what the paragraph says now,
     and its runs replayed over the result (§7.5). What history cannot explain resets to
     an empty list, which renders as plain prose. Nothing is invented.
+
+    `inserted` is the kind of a character no stored run accounts for: `user` for an edit
+    the writer made, `gen` for one a model wrote straight into the file. It applies to
+    inserted characters of a paired paragraph and to every character of an unpaired one.
 
     Answers the new metadata and the revision it was recovered from, or `None` where
     nothing was recovered — either because nothing was stale or because the walk found
@@ -582,13 +587,13 @@ def recover(
 
     nothing_to_do = not stale or all(digest in metadata for digest in hashes)
     if nothing_to_do:
-        return Recovery(provenance.without_recovery(body, metadata), None, {})
+        return Recovery(provenance.without_recovery(body, metadata, inserted=inserted), None, {})
 
     found, revision = _stale_texts(repo, relpath, stale, limit)
     if not found:
-        return Recovery(provenance.without_recovery(body, metadata), None, {})
+        return Recovery(provenance.without_recovery(body, metadata, inserted=inserted), None, {})
 
-    return _replayed(zip(hashes, paragraphs), metadata, found, revision)
+    return _replayed(zip(hashes, paragraphs), metadata, found, revision, inserted)
 
 
 def _replayed(
@@ -596,6 +601,7 @@ def _replayed(
     metadata: provenance.Metadata,
     found: dict[str, str],
     revision: str | None,
+    inserted: str = provenance.USER,
 ) -> Recovery:
     """Each paragraph's runs: its own where its hash is stored, replayed where it is not.
 
@@ -615,9 +621,11 @@ def _replayed(
             continue
         key = _best_match(paragraph, found)
         if key is None:
-            runs[digest] = []
+            runs[digest] = provenance.whole(paragraph, inserted)
             continue
-        runs[digest] = provenance.reconcile(found.pop(key), metadata[key], paragraph)
+        runs[digest] = provenance.reconcile(
+            found.pop(key), metadata[key], paragraph, inserted=inserted
+        )
         sources[digest] = key
     return Recovery(runs, revision, sources)
 
@@ -629,6 +637,7 @@ def reconciled(
     metadata: provenance.Metadata,
     *,
     limit: int | None = MAX_RECOVERY_REVISIONS,
+    inserted: str = provenance.USER,
 ) -> Recovery:
     """`metadata` rekeyed to `body`, recovering from history where there is any.
 
@@ -638,8 +647,8 @@ def reconciled(
     either case a paragraph that is no longer accounted for resets (§7.5).
     """
     if repo is None:
-        return Recovery(provenance.without_recovery(body, metadata), None, {})
-    return recover(repo, relpath, body, metadata, limit=limit)
+        return Recovery(provenance.without_recovery(body, metadata, inserted=inserted), None, {})
+    return recover(repo, relpath, body, metadata, limit=limit, inserted=inserted)
 
 
 def content_at(repo: Repo, chapter: Chapter, rev: str) -> str:

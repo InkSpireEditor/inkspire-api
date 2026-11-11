@@ -55,6 +55,11 @@ GEN = "gen"
 #: Written by a model and then corrected by hand.
 FIX = "fix"
 
+#: How many characters an unchanged stretch between two changed ones must have to count as
+#: text that was kept. Shorter ones are taken for chance matches when the changes are
+#: recorded as written by a model (`reconcile` with `inserted`).
+MIN_KEPT = 8
+
 #: One stretch of one kind: `(start, end, kind)`, offsets relative to the paragraph and
 #: `end` exclusive. A sequence of three is accepted anywhere one is read, so the lists
 #: a YAML section parses to need no conversion first.
@@ -185,11 +190,14 @@ def _matcher(old: str, new: str) -> difflib.SequenceMatcher:
     return difflib.SequenceMatcher(a=old, b=new, autojunk=False)
 
 
-def reconcile(old_text: str, old_runs: Sequence[Sequence], new_text: str) -> list[Run]:
+def reconcile(
+    old_text: str, old_runs: Sequence[Sequence], new_text: str, *, inserted: str = USER
+) -> list[Run]:
     """`old_runs`, recomputed against `new_text`.
 
-    A character that survived the edit keeps the kind it had; an inserted one is `user`,
-    because the writer typed it; a deleted one contributes nothing. So an insertion
+    A character that survived the edit keeps the kind it had; an inserted one is
+    `inserted`, `user` unless the caller knows a model wrote the edit; a deleted one
+    contributes nothing. So an insertion
     before a run shifts it, an insertion inside one splits it in two, and replacing a
     whole run leaves nothing of it.
 
@@ -201,10 +209,18 @@ def reconcile(old_text: str, old_runs: Sequence[Sequence], new_text: str) -> lis
     if old_text == new_text:
         return collapse_runs(old_kinds)
 
-    new_kinds = [USER] * len(new_text)
-    for tag, old_start, old_end, new_start, new_end in _matcher(old_text, new_text).get_opcodes():
-        if tag == "equal":
-            new_kinds[new_start:new_end] = old_kinds[old_start:old_end]
+    new_kinds = [inserted] * len(new_text)
+    opcodes = _matcher(old_text, new_text).get_opcodes()
+    for index, (tag, old_start, old_end, new_start, new_end) in enumerate(opcodes):
+        if tag != "equal":
+            continue
+        kept = old_kinds[old_start:old_end]
+        if inserted != USER and 0 < index < len(opcodes) - 1 and len(kept) < MIN_KEPT:
+            # A few characters the diff matched between two changed stretches (the `r`
+            # of `groaned` against the `r` of `creaked`) are a coincidence of spelling.
+            # They take the inserted kind, unless the old text already marked them.
+            kept = [inserted if kind == USER else kind for kind in kept]
+        new_kinds[new_start:new_end] = kept
     return collapse_runs(new_kinds)
 
 
@@ -213,19 +229,33 @@ def similarity(old_text: str, new_text: str) -> float:
     return _matcher(old_text, new_text).ratio()
 
 
-def without_recovery(body: str, metadata: Metadata) -> Metadata:
+def without_recovery(body: str, metadata: Metadata, *, inserted: str = USER) -> Metadata:
     """The metadata `body` would have with no history to consult.
 
     Every paragraph whose hash is stored keeps its runs; every paragraph whose hash is
-    not gets an empty list and renders as plain prose. Keys for paragraphs that are no
-    longer in the body are dropped. This is what a notes file always gets — its root is
+    not gets an empty list and renders as plain prose, or, where `inserted` is not
+    `user`, one run of that kind over the whole paragraph. Keys for paragraphs that are
+    no longer in the body are dropped. This is what a notes file always gets — its root is
     not a repository, so there is nothing to recover from — and what a story file gets
     where the walk finds no match.
     """
-    return {
-        digest: list(metadata.get(digest, []))
-        for digest in hashes_of(body)
-    }
+    paragraphs, _ = split_paragraphs(body)
+    answered: Metadata = {}
+    for paragraph in paragraphs:
+        digest = paragraph_hash(paragraph)
+        if digest in metadata:
+            answered[digest] = list(metadata[digest])
+        else:
+            answered[digest] = whole(paragraph, inserted)
+    return answered
+
+
+def whole(paragraph: str, kind: str) -> list[Run]:
+    """The runs of a paragraph written entirely as `kind`: none for `user`, which is
+    never stored, and none for an empty paragraph."""
+    if kind == USER or not paragraph:
+        return []
+    return [(0, len(paragraph), kind)]
 
 
 # --- the section on disk ---------------------------------------------------

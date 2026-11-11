@@ -214,6 +214,46 @@ ceiling — it is run by hand, after a miss, and is worth however long that take
 that cannot be parsed is reported and left alone: there is no recovery to apply to one nobody
 can read, and rewriting it from nothing would discard whatever it was meant to say.
 
+### `--generated`: text a model wrote into the file (api#43)
+
+A model that edits a `.ink` file directly, such as an agent reviewing the prose, leaves its
+words recorded as the writer's own, because an edit outside the editor inserts `user`
+characters. `inkspire ink maintenance --provenance --generated` records them as `gen`
+instead, in the two places the pass chose `user` before:
+
+- the characters an edit inserted into a paragraph that is paired with its earlier text
+  (`provenance.reconcile(..., inserted="gen")`). An unchanged stretch of fewer than
+  `MIN_KEPT` (8) characters between two changed stretches also takes `gen`, unless the old
+  text marked it `gen` or `fix` already: the diff is by character, so `r` of "groaned"
+  would otherwise match the `r` of "creaked" and stay `user` in the middle of new text;
+- a paragraph with no earlier text to pair with (new, or rewritten past
+  `MIN_PAIRING_SIMILARITY`) is one `gen` run over its whole length, where it would reset to
+  plain prose.
+
+```
+$ inkspire ink maintenance --provenance --generated -n
+stories/example-story/chapters/02.ink
+  para 2  39f4…2890  STALE  -> recoverable from 07e9299, was 47f5…330e (4 runs, 53 characters generated)
+  para 4  7f39…2f97  STALE  -> all generated (16 characters)
+```
+
+What it needs:
+
+- **Commit the chapter before the model edits it.** The earlier text is found in git by its
+  hash. A paragraph that was saved but not committed has none, so the whole paragraph is
+  recorded as `gen`, including words the writer typed. The dry run shows that as
+  `-> all generated`.
+- **No hand edits between that commit and the run.** Whatever differs from the committed text
+  is recorded as `gen`, whoever typed it.
+- **The model edits the body only.** The `ink:meta`, `ink:provenance` and
+  `ink:context_summary` sections are left as they are.
+- **The chapter is not open in the editor** while it is edited from outside, since an
+  autosave writes the editor's own copy over the file.
+- **The file has an `ink:provenance` section.** A chapter the editor has never saved has none,
+  and the pass leaves it alone, as it does without the flag.
+
+The flag is refused without `--provenance`. A run without it is unchanged.
+
 **The summary pass bypasses `context_summary.is_due` on purpose.** A manual run resummarises
 every file with anything trimmed at all, metric ignored — the forced recompute for a rewrite
 inside the dropped region that does not change its size, which the proportional metric cannot

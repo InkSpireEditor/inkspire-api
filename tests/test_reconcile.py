@@ -109,6 +109,64 @@ def test_an_empty_paragraph_either_side_is_handled() -> None:
     assert provenance.reconcile("abc", [(0, 3, "gen")], "") == []
 
 
+# --- text a model inserted ---------------------------------------------------
+
+
+def test_an_inserted_character_takes_the_kind_it_is_given() -> None:
+    assert provenance.reconcile("abcdef", [], "abXYcdef", inserted="gen") == [(2, 4, "gen")]
+
+
+def test_an_insertion_inside_a_gen_run_joins_it() -> None:
+    assert provenance.reconcile(
+        "abcdef", [(0, 6, "gen")], "abcXYdef", inserted="gen"
+    ) == [(0, 8, "gen")]
+
+
+def test_a_fix_run_stays_fix_when_text_is_inserted_next_to_it() -> None:
+    assert provenance.reconcile(
+        "abcdef", [(0, 3, "fix")], "abcdefXY", inserted="gen"
+    ) == [(0, 3, "fix"), (6, 8, "gen")]
+
+
+def test_the_default_for_an_inserted_character_is_still_user() -> None:
+    assert provenance.reconcile("abcdef", [], "abXYcdef") == []
+
+
+def test_a_few_characters_matched_inside_rewritten_text_are_not_left_as_user() -> None:
+    old = "The door creaked. He did not turn around."
+    new = "The old door groaned on its hinges, and he kept his back to it."
+    runs = provenance.reconcile(old, [], new, inserted="gen")
+    assert runs == [(3, 62, "gen")]
+    assert new[3:62] == " old door groaned on its hinges, and he kept his back to it"
+
+
+def test_a_few_matched_characters_keep_a_kind_the_old_text_gave_them() -> None:
+    old = "abcdefgh"
+    new = "XXabYYYYYYYYYY"
+    assert provenance.reconcile(old, [(0, 2, "fix")], new, inserted="gen") == [
+        (0, 2, "gen"),
+        (2, 4, "fix"),
+        (4, 14, "gen"),
+    ]
+
+
+def test_text_kept_at_either_end_of_a_paragraph_stays_user() -> None:
+    assert provenance.reconcile("Yes.", [], "Yes, she said.", inserted="gen") == [(3, 13, "gen")]
+
+
+def test_a_paragraph_written_whole_as_one_kind() -> None:
+    assert provenance.whole("abc", "gen") == [(0, 3, "gen")]
+    assert provenance.whole("abc", "user") == []
+    assert provenance.whole("", "gen") == []
+
+
+def test_without_recovery_records_an_unknown_paragraph_as_one_gen_run() -> None:
+    body = "One.\n\nTwo.\n"
+    first, second = provenance.hashes_of(body)
+    answered = provenance.without_recovery(body, {first: [(0, 2, "fix")]}, inserted="gen")
+    assert answered == {first: [(0, 2, "fix")], second: [(0, 4, "gen")]}
+
+
 # --- expanding and collapsing ----------------------------------------------
 
 
@@ -191,6 +249,19 @@ def test_a_match_in_an_older_revision_is_recovered(committed: Repo, data_root: P
     assert recovery.revision == committed.head.commit.hexsha[:7]
 
 
+def test_a_match_in_an_older_revision_records_the_insertion_as_gen(
+    committed: Repo, data_root: Path
+) -> None:
+    _edit(data_root, NEW)
+    recovery = repository.recover(
+        committed, RELPATH, NEW, {OLD_HASH: OLD_RUNS}, inserted=provenance.GEN
+    )
+    # " open" is the inserted text; the full stop and space after it are the writer's.
+    assert recovery.metadata == {
+        NEW_HASH: [(16, 21, "gen"), (23, 50, "gen"), (50, 59, "fix"), (59, 80, "gen")]
+    }
+
+
 def test_no_match_in_any_revision_resets_that_paragraph(committed: Repo, data_root: Path) -> None:
     """The edited state was never committed, so nothing can say what the runs described.
     Nothing is invented."""
@@ -199,6 +270,21 @@ def test_no_match_in_any_revision_resets_that_paragraph(committed: Repo, data_ro
         committed, RELPATH, NEW, {"deadbeefdeadbeef": [(0, 4, "gen")]}
     )
     assert recovery.metadata == {NEW_HASH: []}
+    assert recovery.revision is None
+
+
+def test_no_match_in_any_revision_records_the_paragraph_as_gen(
+    committed: Repo, data_root: Path
+) -> None:
+    _edit(data_root, NEW)
+    recovery = repository.recover(
+        committed,
+        RELPATH,
+        NEW,
+        {"deadbeefdeadbeef": [(0, 4, "gen")]},
+        inserted=provenance.GEN,
+    )
+    assert recovery.metadata == {NEW_HASH: [(0, len(NEW), "gen")]}
     assert recovery.revision is None
 
 
