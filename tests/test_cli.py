@@ -298,7 +298,7 @@ def test_an_invalid_email_is_rejected(invoke, session: Session) -> None:
 def test_a_short_password_is_rejected(invoke, session: Session) -> None:
     result = invoke("create", NEW_EMAIL, "--password", "abc")
     assert result.exit_code == 1
-    assert "at least 6 characters" in result.output
+    assert "at least 12 characters" in result.output
     assert find(session, NEW_EMAIL) is None
 
 
@@ -398,7 +398,7 @@ def test_reset_on_an_unknown_email_fails(invoke) -> None:
 def test_reset_rejects_a_short_password(invoke, user: User, session: Session) -> None:
     result = invoke("reset-password", EMAIL, "--password", "abc")
     assert result.exit_code == 1
-    assert "at least 6 characters" in result.output
+    assert "at least 12 characters" in result.output
 
     account = find(session, EMAIL)
     assert account is not None

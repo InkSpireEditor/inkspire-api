@@ -62,7 +62,7 @@ from .storage import CHAPTER_SUFFIX
 #: Bytes of randomness behind a generated password. Hex-encoded, so 24 characters.
 GENERATED_PASSWORD_BYTES = 12
 
-MIN_PASSWORD_LENGTH = 6
+MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_LENGTH = 4096
 
 #: A local part, an @, and a domain containing a dot. This catches a mistyped

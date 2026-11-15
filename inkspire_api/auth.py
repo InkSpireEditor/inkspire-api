@@ -56,7 +56,7 @@ def login(
 ) -> dict:
     throttle = request.app.state.login_throttle
     key = _client_key(request)
-    if throttle.blocked(key):
+    if not throttle.admit(key):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many failed login attempts; please try again later.",
@@ -68,7 +68,6 @@ def login(
     # are created from the shell and cannot be enumerated any other way, so the
     # cost of hashing a dummy password on every miss is not worth paying.
     if user is None or not verify_password(payload.password, user.password):
-        throttle.record_failure(key)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials.")
 
     throttle.reset(key)

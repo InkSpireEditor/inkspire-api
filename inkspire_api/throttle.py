@@ -9,6 +9,7 @@ workers.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict
 
@@ -41,27 +42,36 @@ class SlidingWindow:
 
 
 class LoginThrottle:
-    """Refuses logins from an address that keeps failing.
+    """Refuses logins from an address that has used up its attempts.
 
-    Only failures are counted, and a successful login clears the count, so someone who
-    mistypes a password twice and then gets it right starts from zero again.
+    `admit` counts an attempt before the password is checked, under a lock, because the
+    login route runs in a thread pool and bcrypt releases the interpreter lock: counting
+    after the check would let every request in a burst pass the limit first. A successful
+    login clears the count, so someone who mistypes a password twice and then gets it
+    right starts from zero again.
     """
 
     def __init__(self, max_attempts: int, interval: int) -> None:
         self._window = SlidingWindow(max_attempts, interval)
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
         return self._window.enabled
 
-    def blocked(self, key: str) -> bool:
-        return self.enabled and self._window.count(key) >= self._window.limit
-
-    def record_failure(self, key: str) -> None:
-        self._window.record(key)
+    def admit(self, key: str) -> bool:
+        """Records an attempt and reports whether it is within the limit."""
+        if not self.enabled:
+            return True
+        with self._lock:
+            if self._window.count(key) >= self._window.limit:
+                return False
+            self._window.record(key)
+            return True
 
     def reset(self, key: str) -> None:
-        self._window.reset(key)
+        with self._lock:
+            self._window.reset(key)
 
 
 class RateLimiter:

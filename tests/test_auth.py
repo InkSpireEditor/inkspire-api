@@ -8,6 +8,8 @@ reads, so a change that breaks one of these assertions breaks that client.
 from __future__ import annotations
 
 import datetime
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import jwt
 import pytest
@@ -357,6 +359,29 @@ def test_a_successful_login_clears_the_failure_count(throttled_client: TestClien
     assert throttled_client.post(
         "/auth", json={"username": EMAIL, "password": PASSWORD}
     ).status_code == 200
+
+
+def test_parallel_failures_do_not_exceed_the_limit(
+    throttled_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The password check is slow, as bcrypt is, so every request is inside it together."""
+
+    def slow_refusal(_password: str, _hashed: str) -> bool:
+        time.sleep(0.2)
+        return False
+
+    monkeypatch.setattr("inkspire_api.auth.verify_password", slow_refusal)
+
+    def attempt(_: int) -> int:
+        return throttled_client.post(
+            "/auth", json={"username": EMAIL, "password": "wrong"}
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        codes = list(pool.map(attempt, range(10)))
+
+    assert codes.count(401) == 2
+    assert codes.count(429) == 8
 
 
 def test_throttling_is_off_in_the_test_configuration(client: TestClient, user: User) -> None:
