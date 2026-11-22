@@ -922,7 +922,7 @@ class Verdict:
     index: int
     #: The hash the paragraph has now.
     digest: str
-    #: `ok`, `recovered`, `reset` or `generated`.
+    #: `ok`, `recovered`, `reset`, `generated` or `recorded` (the file had no section).
     state: str
     #: The stale key this was recovered from, where it was.
     was: str | None = None
@@ -1008,15 +1008,32 @@ def reclassify_file(
     `inserted` is the kind given to text no stored run accounts for (`provenance.GEN`
     for `--generated`).
 
-    The text is `None` where there is nothing to write — the file has no provenance
-    section, or every paragraph's hash already matches. A file whose section cannot be
-    read at all answers no verdicts, so the caller reports it and leaves it alone:
-    there is no recovery to apply to a section nobody can parse.
+    A file with no provenance section has no stored hash to be stale, so nothing is
+    looked up in history: every paragraph is recorded as `inserted`, which is the section
+    the editor would write on its first save of a file of plain prose. A file with no
+    paragraph at all gets none.
+
+    The text is `None` where there is nothing to write — the file has no paragraph, or
+    every paragraph's hash already matches. A file whose section cannot be read at all
+    answers no verdicts, so the caller reports it and leaves it alone: there is no
+    recovery to apply to a section nobody can parse.
     """
     document = ink.parse(path.read_text(encoding="utf-8"))
     section = document.sections.get(ink.SECTION_PROVENANCE)
     if section is None:
-        return [], None, None
+        recorded = provenance.without_recovery(document.body, {}, inserted=inserted)
+        if not recorded:
+            return [], None, None
+        return (
+            [
+                Verdict(index, digest, "recorded", generated=generated_characters(recorded[digest]))
+                for index, digest in enumerate(provenance.hashes_of(document.body), start=1)
+            ],
+            None,
+            ink.render_with(
+                document, document.body, ink.SECTION_PROVENANCE, provenance.render_section(recorded)
+            ),
+        )
 
     stored = provenance.parse_section(section)
     if stored is None:
@@ -1117,6 +1134,15 @@ def run_provenance_pass(
         return False
 
     typer.secho(shown(path))
+    if found and all(verdict.state == "recorded" for verdict in found):
+        kind = "generated" if inserted == provenance.GEN else "user"
+        typer.secho(
+            f"  no provenance section  -> {plural(len(found), 'paragraph')} recorded as {kind}",
+            fg=typer.colors.YELLOW,
+        )
+        counts["unrecorded"] += 1
+        sections[ink.SECTION_PROVENANCE] = ink.parse(patched).sections[ink.SECTION_PROVENANCE]
+        return True
     for verdict in found:
         report_provenance(verdict, revision, inserted == provenance.GEN)
         if verdict.state == "generated":
@@ -1369,7 +1395,10 @@ def maintenance(
     against the old. Instead the paragraph's own earlier text is looked for in the
     file's history, diffed forward, and the runs replayed over the result. What history
     cannot explain resets to plain prose rather than being guessed at. A notes file has
-    no history and can only ever reset.
+    no history and can only ever reset. A file with no `ink:provenance` section at all
+    (one never saved in the editor, or made by copying text) has no stored hash to be
+    stale: it gets a section recording every paragraph as written by hand, or as `gen`
+    with `--generated`. A dry run lists these files but does not fail on them.
 
     **`--generated`** (with `--provenance`) is for a file a model edited directly. What
     the edit inserted is recorded as `gen` instead of `user`, and a paragraph nothing
@@ -1445,11 +1474,16 @@ def maintenance(
         f"{plural(len(files), 'file')} checked, {counts['stale']} stale, "
         f"{counts['recoverable']} recoverable, {counts['would_reset']} would reset, "
         + (f"{counts['all_generated']} all generated, " if generated else "")
+        + (
+            f"{plural(counts['unrecorded'], 'file')} without a provenance section, "
+            if counts["unrecorded"]
+            else ""
+        )
         + f"{resummarised} {'due for a new summary' if dry_run else 'resummarised'}."
     )
 
     if dry_run:
-        if counts["stale"] or counts["summary_due"]:
+        if counts["stale"] or counts["summary_due"] or counts["unrecorded"]:
             typer.secho(
                 f"{summary} Nothing written; omit --dry-run to apply.",
                 fg=typer.colors.YELLOW,

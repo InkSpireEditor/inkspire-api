@@ -36,7 +36,7 @@ from tests.conftest import (
     sse_body,
 )
 
-from inkspire_api import cli, provenance
+from inkspire_api import cli, ink, provenance
 from inkspire_api import prompt as prompt_lib
 from inkspire_api.llm import LLMService
 from inkspire_api.models import RefreshToken, User
@@ -1440,8 +1440,52 @@ def test_a_clean_file_is_not_reported_at_all(maintenance, story_repo) -> None:
     assert "1 file checked, 0 stale" in result.output
 
 
-def test_a_file_with_no_provenance_is_left_alone(maintenance, tmp_path) -> None:
+def test_a_file_with_no_provenance_section_gets_one(maintenance, tmp_path) -> None:
+    path = write_chapter(tmp_path, "one.ink", ink_file("Once.\n\nTwice."))
+
+    result, _ = maintenance("--provenance")
+
+    assert result.exit_code == 0
+    assert "no provenance section  -> 2 paragraphs recorded as user" in result.output
+    assert "1 file without a provenance section" in result.output
+    section = provenance.parse_section(ink.parse(path.read_text(encoding="utf-8")).sections["provenance"])
+    assert section == {
+        provenance.paragraph_hash("Once."): [],
+        provenance.paragraph_hash("Twice."): [],
+    }
+
+
+def test_a_file_with_no_provenance_section_is_all_generated_with_the_flag(
+    maintenance, tmp_path
+) -> None:
+    path = write_chapter(tmp_path, "one.ink", ink_file("Once.\n\nTwice."))
+
+    result, _ = maintenance("--provenance", "--generated")
+
+    assert "2 paragraphs recorded as generated" in result.output
+    section = provenance.parse_section(ink.parse(path.read_text(encoding="utf-8")).sections["provenance"])
+    assert section == {
+        provenance.paragraph_hash("Once."): [(0, 5, "gen")],
+        provenance.paragraph_hash("Twice."): [(0, 6, "gen")],
+    }
+
+
+def test_a_dry_run_reports_a_file_with_no_section_and_writes_nothing(
+    maintenance, tmp_path
+) -> None:
     path = write_chapter(tmp_path, "one.ink", ink_file("Once."))
+    before = path.read_bytes()
+
+    result, _ = maintenance("--provenance", "-n")
+
+    assert result.exit_code == 0
+    assert path.read_bytes() == before
+    assert "1 paragraph recorded as user" in result.output
+    assert "Nothing written; omit --dry-run to apply." in result.output
+
+
+def test_a_file_with_no_paragraph_and_no_section_is_left_alone(maintenance, tmp_path) -> None:
+    path = write_chapter(tmp_path, "one.ink", ink_file(""))
     before = path.read_bytes()
 
     result, _ = maintenance("--provenance")

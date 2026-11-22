@@ -210,9 +210,14 @@ what was in the file. A clean file prints nothing at all, so running this over a
 repository is quiet unless there is news.
 
 Unlike the route the provenance pass walks the whole history rather than stopping at a
-ceiling — it is run by hand, after a miss, and is worth however long that takes. A section
-that cannot be parsed is reported and left alone: there is no recovery to apply to one nobody
-can read, and rewriting it from nothing would discard whatever it was meant to say.
+ceiling — it is run by hand, after a miss, and is worth however long that takes. A file
+with **no section at all**, one never saved in the editor or made by copying text, has no stored
+hash to be stale, so no history is walked: a section is written recording every paragraph as
+written by hand (an empty run list each), or as `gen` with `--generated`. The report is one line
+for the file, `no provenance section  -> N paragraphs recorded as user`, and a dry run lists it
+without failing on it. A file with no paragraph is left alone. A section that cannot be parsed
+is reported and left alone: there is no recovery to apply to one nobody can read, and rewriting
+it from nothing would discard whatever it was meant to say.
 
 ### `--generated`: text a model wrote into the file (api#43)
 
@@ -249,8 +254,9 @@ What it needs:
   `ink:context_summary` sections are left as they are.
 - **The chapter is not open in the editor** while it is edited from outside, since an
   autosave writes the editor's own copy over the file.
-- **The file has an `ink:provenance` section.** A chapter the editor has never saved has none,
-  and the pass leaves it alone, as it does without the flag.
+- **A file with no `ink:provenance` section** is recorded as `gen` throughout, since no stored
+  hash and no earlier text can say which words were the writer's. Use it for a file a model
+  wrote whole.
 
 The flag is refused without `--provenance`. A run without it is unchanged.
 
