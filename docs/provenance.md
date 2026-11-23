@@ -171,7 +171,7 @@ drift at all. Four rules make that safe:
    opening a chapter would otherwise dirty the working tree and show up in the git panel. The
    reconciled metadata is returned and the file stays stale on disk until the next ordinary
    save persists it.
-3. **No lock.** `repository.py`'s commit/push/pull lock serialises writes; a read-only history
+3. **No lock.** `repository.py`'s git lock (commit, push, pull, stage, unstage, reset) serialises writes; a read-only history
    walk must not take it, or opening a chapter would fail while a push is running.
 4. **A failed recovery resets, and says so.** The response's `reconciled` field names what
    happened per paragraph — `revision`, `recovered`, `reset`, `dropped` — so an interface can

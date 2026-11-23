@@ -1,6 +1,6 @@
 # Routes
 
-Every route the API serves, 47 in all, with what it takes, what it answers and how it fails. The
+Every route the API serves, 50 in all, with what it takes, what it answers and how it fails. The
 routers are in `inkspire_api/`: `main.py` (`/api/me`), `auth.py`, `files.py`, `documents.py`, `activity.py`, `llm.py`, `titles.py`,
 `completions.py`, `timelines.py`, `lore.py` and `repository.py`. This document lists what those
 files declare, and `tests/test_routes_doc.py` fails if a route is added or removed without this
@@ -142,12 +142,15 @@ cannot be read.
 ## Git
 
 The story repository, at `INKSPIRE_DATA_ROOT`. The notes root is not a repository. Commit, push and
-pull share one non-blocking lock: a second one while the first runs is refused with 409, not queued.
+pull, stage, unstage and reset share one non-blocking lock: a second one while the first runs is refused with 409, not queued.
 
 | Route | Takes | Answers |
 |---|---|---|
-| `GET /api/git/status` | | `{"branch", "upstream", "ahead", "behind", "fetched", "clean", "changes"}`. `ahead` and `behind` are `null` without an upstream and are only as fresh as the last pull; `fetched` is always `false`. A change is `{"path", "state", "staged", "dir", "committable"}`. 409 when `HEAD` is not on a branch |
-| `POST /api/git/commit` | `{"message"}` | The status, and `sha`, `message` and `committed`. Commits only a story's `story.yaml` and its `chapters/*.ink`; anything else changed, or staged by hand, is left as it was. 409 when nothing committable has changed |
+| `GET /api/git/status` | | `{"branch", "upstream", "ahead", "behind", "fetched", "clean", "changes"}`. `ahead` and `behind` are `null` without an upstream and are only as fresh as the last pull; `fetched` is always `false`. A change is `{"path", "state", "staged", "unstaged", "id", "dir", "committable"}`: `staged` is a difference between the last commit and the index, `unstaged` one between the index and the file (an untracked file is unstaged), a file can be both, `id` is the id the tree gives a chapter or a one-shot and `null` for any other path, such as a `story.yaml`. 409 when `HEAD` is not on a branch |
+| `POST /api/git/stage` | `{"files": [id], "dir": id}`, both optional | The new status. Stages the committable changes the body names: the listed chapters and one-shots, and every committable change inside the story `dir`; with neither, all of them. Only a story's `story.yaml`, its `chapters/*.ink` and a one-shot are ever touched. 409 when the selection has no unstaged change (an id that matches no change selects nothing) |
+| `POST /api/git/unstage` | the same | The new status. Takes the selected staged changes out of the index and leaves the files as they are; a new file becomes untracked again. 409 when the selection has no staged change |
+| `POST /api/git/reset` | the same | The new status. Restores the selected files from the last commit, index and file both, and discards the edit for good. Only files the last commit has (state `modified` or `deleted`): a new file is left as it is. A restored deleted chapter is in the tree again. 409 when the selection has nothing of that kind |
+| `POST /api/git/commit` | `{"message"}` | The status, and `sha`, `message` and `committed`. Commits what is staged, as `git commit` does, so a path staged by hand in a shell goes in too. 409 when nothing is staged |
 | `POST /api/git/push` | | The new status. 409 without an upstream, or when the remote has commits the branch does not; 502 when the remote cannot be reached |
 | `POST /api/git/pull` | | The new status. Fast-forward only: 409 without an upstream or when the branch has diverged; 502 when the remote cannot be reached |
 

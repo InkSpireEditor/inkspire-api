@@ -17,6 +17,11 @@ def _committable_paths(changes: list[dict]) -> list[str]:
     return sorted(change["path"] for change in changes if change["committable"])
 
 
+def _stage_all(client: TestClient) -> None:
+    """Stages every committable change, as the editor's "Stage all" does."""
+    assert client.post("/api/git/stage", json={}).status_code == 200
+
+
 def _clone_and_push(git_origin: Path, tmp_path: Path, name: str, text: str) -> None:
     """Simulates another writer: clones the bare remote, adds one file, pushes it back."""
     clone_dir = tmp_path / f"clone-{name}"
@@ -80,6 +85,7 @@ def test_a_one_shot_is_committable(
 def test_committing_a_one_shot(logged_in: TestClient, git_root: Repo, data_root: Path) -> None:
     (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
 
+    response = _stage_all(logged_in)
     response = logged_in.post("/api/git/commit", json={"message": "A one-shot"})
     assert response.status_code == 200
     assert response.json()["committed"] == ["stories/solo.ink"]
@@ -132,6 +138,7 @@ def test_committing_writes_only_the_committable_paths(
     (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
     (story / "lorebook" / "data" / "entities.yaml").write_text("x: 1\n", encoding="utf-8")
 
+    _stage_all(logged_in)
     response = logged_in.post("/api/git/commit", json={"message": "Edit the opening"})
     assert response.status_code == 200
     body = response.json()
@@ -150,17 +157,18 @@ def test_a_new_chapter_that_was_never_tracked_is_committed(
 ) -> None:
     make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
 
+    response = _stage_all(logged_in)
     response = logged_in.post("/api/git/commit", json={"message": "First chapter"})
     assert response.status_code == 200
     assert "stories/example/chapters/one.ink" in response.json()["committed"]
     assert logged_in.get("/api/git/status").json()["clean"] is True
 
 
-def test_something_staged_by_hand_is_left_staged(
+def test_something_staged_by_hand_is_committed_with_the_rest(
     logged_in: TestClient, git_root: Repo, data_root: Path
 ) -> None:
-    """`--only` commits exactly the paths this API decided on, not whatever else a
-    person staged in a shell alongside them."""
+    """A commit takes the index, so a file staged in a shell goes in with the chapters
+    staged here."""
     story = make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
     git_root.git.add("-A")
     git_root.index.commit("Add a story")
@@ -168,18 +176,204 @@ def test_something_staged_by_hand_is_left_staged(
     (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
     (data_root / "by-hand.txt").write_text("not the API's", encoding="utf-8")
     git_root.git.add("by-hand.txt")
+    _stage_all(logged_in)
 
     response = logged_in.post("/api/git/commit", json={"message": "Edit the opening"})
     assert response.status_code == 200
+    assert sorted(response.json()["committed"]) == [
+        "by-hand.txt",
+        "stories/example/chapters/one.ink",
+    ]
 
-    status_after = git_root.git.status("--porcelain")
-    assert "by-hand.txt" in status_after
-    assert "A  by-hand.txt" in status_after
 
-
-def test_nothing_committable_is_refused(logged_in: TestClient, git_root: Repo) -> None:
-    response = logged_in.post("/api/git/commit", json={"message": "Nothing changed"})
+def test_nothing_staged_is_refused(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
+    response = logged_in.post("/api/git/commit", json={"message": "Nothing staged"})
     assert response.status_code == 409
+    assert "staged" in response.json()["message"]
+
+
+def test_commit_takes_only_what_is_staged(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = make_story(
+        data_root, "example", title="Example Story", chapters={"one.ink": "One.", "two.ink": "Two."}
+    )
+    _stage_all(logged_in)
+    logged_in.post("/api/git/commit", json={"message": "Two chapters"})
+
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    (story / "chapters" / "two.ink").write_text("Two, edited.", encoding="utf-8")
+    one = chapter_id(logged_in, "Example Story", "one")
+    assert logged_in.post("/api/git/stage", json={"files": [one]}).status_code == 200
+
+    body = logged_in.post("/api/git/commit", json={"message": "Edit one"}).json()
+    assert body["committed"] == ["stories/example/chapters/one.ink"]
+    remaining = [c for c in body["changes"] if c["committable"]]
+    assert [c["path"] for c in remaining] == ["stories/example/chapters/two.ink"]
+    assert remaining[0]["unstaged"] is True
+
+
+# --- stage, unstage, reset ------------------------------------------------------
+
+
+def _committed_story(logged_in: TestClient, git_root: Repo, data_root: Path) -> Path:
+    story = make_story(
+        data_root, "example", title="Example Story", chapters={"one.ink": "One.", "two.ink": "Two."}
+    )
+    git_root.git.add("-A")
+    git_root.index.commit("Add a story")
+    return story
+
+
+def test_a_change_carries_the_id_the_tree_gives_its_file(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
+    (story / "story.yaml").write_text("title: Example Story\nsummary: x\n", encoding="utf-8")
+
+    by_path = {c["path"]: c for c in logged_in.get("/api/git/status").json()["changes"]}
+    assert by_path["stories/example/chapters/one.ink"]["id"] == chapter_id(logged_in, "Example Story", "one")
+    assert by_path["stories/solo.ink"]["id"] is not None
+    assert by_path["stories/example/story.yaml"]["id"] is None
+    assert by_path["stories/example/chapters/one.ink"]["unstaged"] is True
+    assert by_path["stories/example/chapters/one.ink"]["staged"] is False
+
+
+def test_staging_one_file_leaves_the_other_unstaged(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    (story / "chapters" / "two.ink").write_text("Two, edited.", encoding="utf-8")
+
+    response = logged_in.post(
+        "/api/git/stage", json={"files": [chapter_id(logged_in, "Example Story", "one")]}
+    )
+    by_path = {c["path"]: c for c in response.json()["changes"]}
+    assert by_path["stories/example/chapters/one.ink"]["staged"] is True
+    assert by_path["stories/example/chapters/one.ink"]["unstaged"] is False
+    assert by_path["stories/example/chapters/two.ink"]["staged"] is False
+
+
+def test_staging_a_story_stages_what_is_inside_it_and_nothing_else(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
+
+    response = logged_in.post("/api/git/stage", json={"dir": story_id(logged_in)})
+    by_path = {c["path"]: c for c in response.json()["changes"]}
+    assert by_path["stories/example/chapters/one.ink"]["staged"] is True
+    assert by_path["stories/solo.ink"]["staged"] is False
+
+
+def test_staging_never_touches_a_lorebook(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    make_lorebook(story)
+    git_root.git.add("-A")
+    git_root.index.commit("Add a lorebook")
+    (story / "lorebook" / "data" / "entities.yaml").write_text("x: 1\n", encoding="utf-8")
+
+    assert logged_in.post("/api/git/stage", json={}).status_code == 409
+    assert "entities.yaml" not in git_root.git.diff("--cached", "--name-only")
+
+
+def test_unstaging_a_modified_file_keeps_its_edit(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    _stage_all(logged_in)
+
+    response = logged_in.post("/api/git/unstage", json={})
+    change = response.json()["changes"][0]
+    assert (change["staged"], change["unstaged"]) == (False, True)
+    assert (story / "chapters" / "one.ink").read_text(encoding="utf-8") == "One, edited."
+
+
+def test_unstaging_a_new_file_leaves_it_untracked(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
+    _stage_all(logged_in)
+
+    change = logged_in.post("/api/git/unstage", json={}).json()["changes"][0]
+    assert change["state"] == "untracked"
+    assert (data_root / "stories" / "solo.ink").read_text(encoding="utf-8") == "Once."
+
+
+def test_resetting_a_modified_file_restores_the_committed_text(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    _stage_all(logged_in)
+
+    response = logged_in.post("/api/git/reset", json={"files": [chapter_id(logged_in, "Example Story", "one")]})
+    assert response.status_code == 200
+    assert response.json()["clean"] is True
+    assert (story / "chapters" / "one.ink").read_text(encoding="utf-8") == "One."
+
+
+def test_resetting_a_deleted_chapter_puts_it_back_in_the_tree(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    assert logged_in.get("/api/stories/tree").status_code == 200
+    (story / "chapters" / "one.ink").unlink()
+    names = [f["name"] for d in logged_in.get("/api/stories/tree").json()["dirs"] for f in d["files"]]
+    assert len(names) == 1
+
+    assert logged_in.post("/api/git/reset", json={}).status_code == 200
+    names = [f["name"] for d in logged_in.get("/api/stories/tree").json()["dirs"] for f in d["files"]]
+    assert len(names) == 2
+
+
+def test_reset_leaves_a_new_file_and_a_lorebook_alone(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    make_lorebook(story)
+    git_root.git.add("-A")
+    git_root.index.commit("Add a lorebook")
+    (story / "lorebook" / "data" / "entities.yaml").write_text("x: 1\n", encoding="utf-8")
+    (data_root / "stories" / "solo.ink").write_text("Once.", encoding="utf-8")
+
+    assert logged_in.post("/api/git/reset", json={}).status_code == 409
+    assert (data_root / "stories" / "solo.ink").read_text(encoding="utf-8") == "Once."
+    assert (story / "lorebook" / "data" / "entities.yaml").read_text(encoding="utf-8") == "x: 1\n"
+
+
+def test_a_file_that_has_not_changed_selects_nothing(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    _committed_story(logged_in, git_root, data_root)
+    one = chapter_id(logged_in, "Example Story", "one")
+    for route in ("stage", "unstage", "reset"):
+        assert logged_in.post(f"/api/git/{route}", json={"files": [one]}).status_code == 409
+        assert logged_in.post(f"/api/git/{route}", json={"files": ["nope"]}).status_code == 409
+
+
+def test_stage_unstage_and_reset_are_refused_while_another_git_change_runs(
+    logged_in: TestClient, git_root: Repo, data_root: Path
+) -> None:
+    story = _committed_story(logged_in, git_root, data_root)
+    (story / "chapters" / "one.ink").write_text("One, edited.", encoding="utf-8")
+    lock = logged_in.app.state.git_lock
+    assert lock.acquire(blocking=False)
+    try:
+        for route in ("stage", "unstage", "reset"):
+            assert logged_in.post(f"/api/git/{route}", json={}).status_code == 409
+    finally:
+        lock.release()
 
 
 def test_an_overlong_message_is_refused_before_the_route_runs(
@@ -194,6 +388,7 @@ def test_committing_moves_the_branch_ahead_of_its_upstream(
     logged_in: TestClient, git_root: Repo, data_root: Path
 ) -> None:
     make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
+    body = _stage_all(logged_in)
     body = logged_in.post("/api/git/commit", json={"message": "First chapter"}).json()
     assert body["ahead"] == 1
     assert body["behind"] == 0
@@ -206,6 +401,7 @@ def test_pushing_reaches_the_bare_remote(
     logged_in: TestClient, git_root: Repo, git_origin: Path, data_root: Path
 ) -> None:
     make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
+    _stage_all(logged_in)
     logged_in.post("/api/git/commit", json={"message": "First chapter"})
 
     response = logged_in.post("/api/git/push")
@@ -235,6 +431,7 @@ def test_a_diverged_branch_is_refused_and_the_tree_is_untouched(
     logged_in: TestClient, git_root: Repo, git_origin: Path, data_root: Path, tmp_path: Path
 ) -> None:
     make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
+    _stage_all(logged_in)
     logged_in.post("/api/git/commit", json={"message": "First chapter"})
     before = git_root.head.commit.hexsha
 
@@ -260,6 +457,7 @@ def test_a_second_git_change_while_one_is_running_is_refused(
     logged_in: TestClient, git_root: Repo, data_root: Path
 ) -> None:
     make_story(data_root, "example", title="Example Story", chapters={"one.ink": "One."})
+    _stage_all(logged_in)
     lock = logged_in.app.state.git_lock
     assert lock.acquire(blocking=False)
     try:

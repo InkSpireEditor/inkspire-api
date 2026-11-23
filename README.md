@@ -254,15 +254,15 @@ entity typed with a class the vocabulary does not declare. Those are the writer'
 ### The story repository as git
 
 `INKSPIRE_DATA_ROOT` is a git working tree, and the API drives it directly: its status, a commit,
-a push, a pull, and a chapter's history, all in [`docs/routes.md`](docs/routes.md).
+a push, a pull, staging, unstaging and resetting a story's files, and a chapter's history, all in [`docs/routes.md`](docs/routes.md).
 
-Saving a chapter never commits — only `/commit` does, and only onto a story's own
-`story.yaml` and its `chapters/*.ink`. A hand-edited lorebook or `timeline.yaml` shows
-in `/status` like anything else, marked `"committable": false`, and is never staged by
-the button. `/status` never fetches, so `ahead`/`behind` are only as fresh as the last
+Saving a chapter never commits — only `/commit` does, and it commits what is staged. `/stage`,
+`/unstage` and `/reset` act only on a story's own `story.yaml`, its `chapters/*.ink` and a
+one-shot. A hand-edited lorebook or `timeline.yaml` shows in `/status` like anything else,
+marked `"committable": false`, and is never staged or reset from here. `/status` never fetches, so `ahead`/`behind` are only as fresh as the last
 pull, and a pull that cannot fast-forward is refused rather than merged.
 
-Commit, push and pull each take one lock for the whole request, so a second one of
+Commit, push, pull, stage, unstage and reset each take one lock for the whole request, so a second one of
 those while the first is still running is refused rather than run alongside it.
 
 ### Everything that is not a novel

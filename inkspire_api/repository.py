@@ -2,7 +2,10 @@
 """The story repository as git, and the routes that drive it.
 
     GET  /api/git/status                    the branch, what has changed, ahead/behind
-    POST /api/git/commit    {"message"}      stage and commit only what the API writes
+    POST /api/git/stage     {"files", "dir"} stage the chosen chapters, one-shots and manifests
+    POST /api/git/unstage   {"files", "dir"} take them out of the index again
+    POST /api/git/reset     {"files", "dir"} restore them from the last commit
+    POST /api/git/commit    {"message"}      commit what is staged
     POST /api/git/push                       push the branch to its upstream
     POST /api/git/pull                       fast-forward onto the upstream
 
@@ -11,10 +14,10 @@
 
 `INKSPIRE_DATA_ROOT` is a git working tree, and this is the only module that knows
 that: `storage.py` walks it as a filesystem and never runs `git`. Saving a chapter
-never commits — only the button behind `/commit` does, and only onto the two kinds of
-path the API itself writes: a story's `story.yaml` and its `chapters/*.ink`. A
-hand-edited lorebook, a `timeline.yaml`, or anything staged in a shell is left exactly
-as it was.
+never commits — only the button behind `/commit` does, and it commits the index, as git
+does. `/stage`, `/unstage` and `/reset` act only on the two kinds of path the API itself
+writes (a story's `story.yaml`, its `chapters/*.ink` and a one-shot), so a hand-edited
+lorebook or a `timeline.yaml` is never staged or restored from here.
 
 `/status` never fetches, so `ahead`/`behind` are only as fresh as the last pull. A
 pull that cannot fast-forward is refused rather than merged, and a push the remote
@@ -87,9 +90,20 @@ class GitTimeout(StorageError):
 
 
 class CommitBody(BaseModel):
-    """What to commit. Only the message: the paths are decided by what changed."""
+    """What to commit. Only the message: the paths are what is staged."""
 
     message: Message
+
+
+class Selection(BaseModel):
+    """Which changes `/stage`, `/unstage` and `/reset` act on, by id and never by path.
+
+    `files` are chapter and one-shot ids, `dir` a story id. Both empty means every
+    committable change; both given means the union of the two.
+    """
+
+    files: list[str] = []
+    dir: str | None = None
 
 
 # --- opening the repository --------------------------------------------------
@@ -191,6 +205,16 @@ def _committable(path: str) -> bool:
     )
 
 
+def _file_id(path: str) -> str | None:
+    """The id the tree gives the chapter or one-shot at `path`, `None` for any other path."""
+    parts = PurePosixPath(path).parts
+    chapter = len(parts) == 4 and parts[2] == CHAPTERS
+    one_shot = len(parts) == 2
+    if parts[:1] == (STORIES,) and (chapter or one_shot) and path.endswith(CHAPTER_SUFFIX):
+        return derive_id(SPACE, path)
+    return None
+
+
 def _dir_id(path: str) -> str | None:
     """The story id a path sits under, or `None` for a path outside every story."""
     parts = PurePosixPath(path).parts
@@ -259,6 +283,8 @@ def status(repo: Repo) -> dict:
             "path": path,
             "state": _state(code),
             "staged": code[0] not in (" ", "?"),
+            "unstaged": code[1] != " ",
+            "id": _file_id(path),
             "dir": _dir_id(path),
             "committable": _committable(path),
         }
@@ -336,23 +362,108 @@ def _identity(repo: Repo, settings: Settings) -> dict[str, str]:
 # --- commit, push, pull --------------------------------------------------------
 
 
-def commit(repo: Repo, settings: Settings, message: str) -> dict:
-    """Stages and commits only the committable paths, and answers the new status.
+def _selected(repo: Repo, selection: Selection) -> list[dict]:
+    """The committable changes a selection names, in status order.
 
-    `--only` commits exactly the named paths, so anything staged by hand alongside
-    them is left staged rather than swept into this commit; `git add -A --` restricted
-    to the same paths is what stages them, additions and deletions alike.
+    An id that matches no change selects nothing, so a file that has not changed and a
+    file that does not exist are the same answer: nothing to act on.
     """
-    paths = [change["path"] for change in status(repo)["changes"] if change["committable"]]
+    changes = [change for change in status(repo)["changes"] if change["committable"]]
+    if not selection.files and selection.dir is None:
+        return changes
+    return [
+        change
+        for change in changes
+        if change["id"] in selection.files or change["dir"] == selection.dir
+    ]
+
+
+def _in_head(repo: Repo, path: str) -> bool:
+    """Whether the last commit has a file at `path`."""
+    try:
+        repo.head.commit.tree / path
+    except KeyError:
+        return False
+    return True
+
+
+def stage(repo: Repo, settings: Settings, selection: Selection) -> dict:
+    """Stages the selected changes, additions and deletions alike."""
+    paths = [change["path"] for change in _selected(repo, selection) if change["unstaged"]]
     if not paths:
-        raise GitRefused("Nothing committable has changed.")
+        raise GitRefused("Nothing to stage: those files have no unstaged change.")
+    try:
+        _run(repo.git.add, "-A", "--", *paths, timeout=settings.git_timeout)
+    except GitCommandError as error:
+        raise GitRefused(_explanation(error)) from error
+    return status(repo)
+
+
+def unstage(repo: Repo, settings: Settings, selection: Selection) -> dict:
+    """Takes the selected paths out of the index, leaving the working tree as it is.
+
+    A path the last commit does not have is removed from the index, which leaves it
+    untracked; one it has is put back to what the commit holds.
+    """
+    paths = [change["path"] for change in _selected(repo, selection) if change["staged"]]
+    if not paths:
+        raise GitRefused("Nothing to unstage: those files have no staged change.")
+    known = [path for path in paths if _in_head(repo, path)]
+    added = [path for path in paths if path not in known]
+    try:
+        if known:
+            _run(repo.git.restore, "--staged", "--", *known, timeout=settings.git_timeout)
+        if added:
+            _run(repo.git.rm, "--cached", "-q", "--", *added, timeout=settings.git_timeout)
+    except GitCommandError as error:
+        raise GitRefused(_explanation(error)) from error
+    return status(repo)
+
+
+def reset(repo: Repo, scanner: Scanner, settings: Settings, selection: Selection) -> dict:
+    """Restores the selected paths from the last commit, index and working tree both.
+
+    Only a path the last commit has: a new file has nothing to go back to, and is left
+    as it is. The text is not kept anywhere. Invalidates the scan, since a restored
+    file may be one the tree no longer listed.
+    """
+    paths = [
+        change["path"]
+        for change in _selected(repo, selection)
+        if change["state"] in ("modified", "deleted")
+    ]
+    if not paths:
+        raise GitRefused("Nothing to reset: those files are new, or have not changed.")
+    try:
+        _run(
+            repo.git.restore,
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            *paths,
+            timeout=settings.git_timeout,
+        )
+    except GitCommandError as error:
+        raise GitRefused(_explanation(error)) from error
+    scanner.invalidate()
+    return status(repo)
+
+
+def commit(repo: Repo, settings: Settings, message: str) -> dict:
+    """Commits what is staged, and answers the new status.
+
+    Only the index is committed. What the API stages is decided by `/stage`; anything
+    staged by hand is committed with it.
+    """
+    if not repo.git.diff("--cached", "--name-only", "-z"):
+        raise GitRefused("Nothing is staged.")
+    paths = [path for path in repo.git.diff("--cached", "--name-only", "-z").split("\0") if path]
 
     identity = _identity(repo, settings)
-    timeout = settings.git_timeout
     try:
         with repo.git.custom_environment(**identity):
-            _run(repo.git.add, "-A", "--", *paths, timeout=timeout)
-            _run(repo.git.commit, "--only", "-m", message, "--", *paths, timeout=timeout)
+            _run(repo.git.commit, "-m", message, timeout=settings.git_timeout)
     except GitCommandError as error:
         raise GitRefused(_explanation(error)) from error
 
@@ -819,9 +930,29 @@ def git_status(repo: RepoDep) -> dict:
     return status(repo)
 
 
+@router.post("/stage")
+def git_stage(body: Selection, settings: SettingsDep, repo: RepoDep, _lock: LockDep) -> dict:
+    """Stages the chosen chapters, one-shots and manifests, or all of them."""
+    return stage(repo, settings, body)
+
+
+@router.post("/unstage")
+def git_unstage(body: Selection, settings: SettingsDep, repo: RepoDep, _lock: LockDep) -> dict:
+    """Takes the chosen changes out of the index; the files keep their edits."""
+    return unstage(repo, settings, body)
+
+
+@router.post("/reset")
+def git_reset(
+    body: Selection, scanner: ScannerDep, settings: SettingsDep, repo: RepoDep, _lock: LockDep
+) -> dict:
+    """Discards the chosen changes to files the last commit has."""
+    return reset(repo, scanner, settings, body)
+
+
 @router.post("/commit")
 def git_commit(body: CommitBody, settings: SettingsDep, repo: RepoDep, _lock: LockDep) -> dict:
-    """Commits only what the API itself wrote: a story's manifest and its chapters."""
+    """Commits what is staged."""
     return commit(repo, settings, body.message)
 
 
