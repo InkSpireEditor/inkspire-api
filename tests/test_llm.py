@@ -579,6 +579,53 @@ async def test_complete_posts_without_streaming_and_returns_the_text(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_complete_writes_no_log_unless_one_is_set(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("A Title"))
+
+    service = llm_service(tmp_path, handler)
+    await service.complete("p/model", "prompt", tags=())
+
+    assert service.call_log is None
+    assert not list(tmp_path.rglob("*.jsonl"))
+
+
+@pytest.mark.asyncio
+async def test_complete_appends_the_request_and_the_answer_to_the_call_log(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("A Title"))
+
+    service = llm_service(tmp_path, handler)
+    service.call_log = tmp_path / "logs" / "calls.jsonl"
+    await service.complete("p/model", "first prompt", tags=())
+    await service.complete("p/model", "second prompt", tags=())
+
+    lines = [json.loads(line) for line in service.call_log.read_text(encoding="utf-8").splitlines()]
+    assert [line["answer"] for line in lines] == ["A Title", "A Title"]
+    assert "first prompt" in json.dumps(lines[0]["request"])
+    assert "second prompt" in json.dumps(lines[1]["request"])
+    assert lines[0]["model"] == "p/model"
+    assert lines[0]["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_call_is_logged_with_its_error(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    service = llm_service(tmp_path, handler)
+    service.call_log = tmp_path / "calls.jsonl"
+    with pytest.raises(LLMError):
+        await service.complete("p/model", "prompt", tags=())
+
+    entry = json.loads(service.call_log.read_text(encoding="utf-8"))
+    assert entry["answer"] is None
+    assert entry["error"]
+
+
+@pytest.mark.asyncio
 async def test_complete_against_the_native_protocol(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/chat"

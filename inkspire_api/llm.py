@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Collection
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, NamedTuple
@@ -43,6 +45,8 @@ from .fs import MAX_FILE_BYTES
 from .ink import normalise_tags
 from .settings import Settings
 from .storage import Chapter
+
+logger = logging.getLogger(__name__)
 
 #: Upper bound on a model identifier, across every provider.
 MAX_MODEL_LENGTH = 255
@@ -219,6 +223,10 @@ class LLMService:
         # response is streamed, it does not have to cover a whole generation.
         self.timeout = httpx.Timeout(settings.llm_timeout, connect=10.0)
         self.cache = cache if cache is not None else ModelCache(settings.llm_cache_ttl)
+        #: A file each `complete` call is appended to, one JSON object per line, when
+        #: set. Only the command line sets it (`ink maintenance -v`); the server never
+        #: does, since a request's prompt is story text.
+        self.call_log: Path | None = None
 
     def parse_model(self, model: str) -> tuple[ProviderConfig, str]:
         provider, separator, name = model.partition("/")
@@ -424,26 +432,63 @@ class LLMService:
         url = _chat_url(config, native=native)
         resolved = options if options is not None else self.defaults
 
+        payload = self._chat_payload(
+            name,
+            prompt,
+            native=native,
+            options=resolved,
+            stream=False,
+            max_output_tokens=max_output_tokens,
+        )
+        started = time.monotonic()
+        answer: str | None = None
+        failure: str | None = None
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout, transport=self.transport
             ) as client:
-                response = await client.post(
-                    url,
-                    headers=headers(config),
-                    json=self._chat_payload(
-                        name,
-                        prompt,
-                        native=native,
-                        options=resolved,
-                        stream=False,
-                        max_output_tokens=max_output_tokens,
-                    ),
-                )
+                response = await client.post(url, headers=headers(config), json=payload)
                 await _raise_for_status(response)
-                return _answer(response.json(), native=native)
+                answer = _answer(response.json(), native=native)
+                return answer
         except httpx.HTTPError as error:
-            raise LLMError(f"Provider is unreachable: {error}") from error
+            failure = f"Provider is unreachable: {error}"
+            raise LLMError(failure) from error
+        except LLMError as error:
+            failure = str(error)
+            raise
+        finally:
+            self._record(model, url, payload, started, answer, failure)
+
+    def _record(
+        self,
+        model: str,
+        url: str,
+        payload: dict[str, Any],
+        started: float,
+        answer: str | None,
+        failure: str | None,
+    ) -> None:
+        """Appends one call to `call_log`, if there is one. The provider's key is
+        sent as a header, which is not recorded. A log that cannot be written is not
+        a reason to fail the call."""
+        if self.call_log is None:
+            return
+        entry = {
+            "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model": model,
+            "url": url,
+            "seconds": round(time.monotonic() - started, 2),
+            "request": payload,
+            "answer": answer,
+            "error": failure,
+        }
+        try:
+            self.call_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.call_log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as error:
+            logger.warning("the call log %s could not be written: %s", self.call_log, error)
 
     def _payload(
         self,

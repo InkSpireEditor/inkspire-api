@@ -270,6 +270,13 @@ the same decision sequence `update` below uses, with its trigger check skippable
 (`respect_trigger=False`) only from the command line. A frontend surface for the same action
 is a separate, not-yet-built step (the issue's own "hidden manual trigger").
 
+`inkspire ink maintenance -v` appends each model call to `var/llm-calls.jsonl`, relative to the
+directory the command runs from, one JSON object per line: `time`, `model`, `url`, `seconds`, the
+whole `request` body, the `answer` and an `error` (the one that is not null says why there is no
+answer). It is `LLMService.call_log`, set by the command line only, and written by `complete`, so
+a title or a completion called from the command line would be recorded the same way. The provider's
+key is a header and is not written. The file holds story text, and `var/` is ignored by git.
+
 **Bounded by the small model's own window, not by `INKSPIRE_LLM_PROMPT_BUDGET` (api#28).**
 `resummarise` used to pass one `budget` to two different things: `dropped()`, which is right --
 it is the writer's own prompt budget that decides what a generation's trim removes -- and

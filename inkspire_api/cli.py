@@ -1316,6 +1316,11 @@ async def maintain_all(
     return counts
 
 
+#: Where `ink maintenance -v` writes, relative to the directory it is run from.
+#: `var/` is ignored by git.
+CALL_LOG = Path("var/llm-calls.jsonl")
+
+
 @ink_app.command("maintenance")
 def maintenance(
     paths: Annotated[
@@ -1384,6 +1389,17 @@ def maintenance(
             ),
         ),
     ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help=(
+                f"Append every model call (request and answer) to {CALL_LOG}, one JSON "
+                "object per line. The file holds story text."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Regenerate every derived section a `.ink` file carries.
 
@@ -1453,6 +1469,9 @@ def maintenance(
         passes = passes - {"summaries"}
 
     svc = service(think=False) if ("summaries" in passes and not dry_run) else None
+    if svc is not None and verbose:
+        svc.call_log = CALL_LOG
+        typer.secho(f"Logging model calls to {CALL_LOG}.", err=True)
     chosen_num_ctx = summary_num_ctx if summary_num_ctx is not None else settings.llm_summary_num_ctx
 
     counts = asyncio.run(

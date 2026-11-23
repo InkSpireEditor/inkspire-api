@@ -1629,6 +1629,37 @@ def test_a_bare_run_does_both_passes(maintenance, story_repo) -> None:
     assert "1 resummarised." in result.output
 
 
+def test_verbose_logs_each_model_call_to_a_file(maintenance, story_repo, tmp_path, monkeypatch) -> None:
+    edit(story_repo, _LONG_BODY)
+    monkeypatch.chdir(tmp_path)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    result, _ = maintenance("--summaries", "-v", handler=handler, small_model="p/model")
+
+    assert result.exit_code == 0
+    log = tmp_path / "var" / "llm-calls.jsonl"
+    assert "var/llm-calls.jsonl" in result.output
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 1
+    assert entries[0]["answer"] == "Jane Doe is the narrator."
+    assert entries[0]["model"] == "p/model"
+
+
+def test_without_verbose_no_log_is_written(maintenance, story_repo, tmp_path, monkeypatch) -> None:
+    edit(story_repo, _LONG_BODY)
+    monkeypatch.chdir(tmp_path)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=answer_body("Jane Doe is the narrator."))
+
+    result, _ = maintenance("--summaries", handler=handler, small_model="p/model")
+
+    assert result.exit_code == 0
+    assert not (tmp_path / "var").exists()
+
+
 def test_dry_run_reports_a_due_summary_and_calls_no_model(maintenance, tmp_path) -> None:
     write_chapter(tmp_path, "one.ink", ink_file(_LONG_BODY))
 

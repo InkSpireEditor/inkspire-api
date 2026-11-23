@@ -184,6 +184,7 @@ it right on disk:
 poetry run inkspire ink maintenance                      # repairs provenance, resummarises -- writes
 poetry run inkspire ink maintenance -n                   # report; writes nothing, calls no model
 poetry run inkspire ink maintenance --provenance chapters/02.ink  # one file, one pass
+poetry run inkspire ink maintenance --summaries -v         # also appends each model call to var/llm-calls.jsonl
 ```
 
     chapters/02.ink
