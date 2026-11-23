@@ -54,6 +54,30 @@ read by whoever can inspect the container.
 | `INKSPIRE_DATABASE_URL`, `INKSPIRE_FILES_ROOT`, `INKSPIRE_DATA_ROOT` | paths under `/data` | the volume above |
 | `HOME` | `/data/home` | git and ssh write their configuration there |
 
+**Settings the image leaves for the deployment.** The committed `.env` is copied into the image,
+so what it sets (`INKSPIRE_LLM_NUM_CTX`, the prompt budget, the prefix share, the timeout) is
+already in effect. Three groups are not set there, because the right value depends on the
+installation. Set them with `-e`; none of them is a secret.
+
+| Variable | Without it |
+|---|---|
+| `INKSPIRE_LLM_SMALL_MODEL`, as `<provider>/<model>` | `GET /api/llm/features` answers `title: false` and `summary: false`. The editor shows no title button and no title field in the edit dialog, and no context summary is written. The provider has to be in `providers.yaml`. |
+| `INKSPIRE_LLM_THINK` (`true` or `false`) | Nothing is sent, and each model uses its own default. A reasoning model thinks, delaying the first chunk of a generation by the whole reasoning pass, and can spend a small context window on it and answer nothing. Title and completion requests send `false` whatever this is. |
+| `INKSPIRE_GIT_AUTHOR_NAME` and `INKSPIRE_GIT_AUTHOR_EMAIL` | A commit made from the editor uses the `user.name` and `user.email` that git finds under `/data/home` or in the story repository. If there are none, the commit is refused and the message names these two settings. |
+
+`INKSPIRE_LLM_SMALL_MODEL` also turns on the context summary, a model call after the save of any
+chapter longer than the prompt budget, so it is a cost on a slow provider.
+
+**The story repository's remote.** Push and pull run `ssh` inside the container, and the
+`known_hosts` file it reads decides which servers it accepts. With `StrictHostKeyChecking=yes`
+and a `known_hosts` file given by `UserKnownHostsFile`, an entry is matched against the host name
+written in the remote's URL. A `known_hosts` line for `gitea` does not cover a remote
+`git@git.example.org:owner/repo.git`, and the pull fails with `No ED25519 host key is known for
+git.example.org`. The error comes from the container, not the host running it. Either clone with
+the name that has an entry, or add an entry for the name the URL uses, taking the key from
+`ssh-keyscan -t ed25519 <name>` and checking its fingerprint against the server's. A remote's URL
+is in `/data/story-repo/.git/config`; `git -C /data/story-repo remote set-url origin <url>` changes it.
+
 **Behind a reverse proxy,** set `FORWARDED_ALLOW_IPS` to the proxy's address and nothing wider.
 uvicorn then reads `X-Forwarded-For` and `X-Forwarded-Proto` from that address only. Without it
 every client has the proxy's address, and the login throttle, which counts attempts per client
