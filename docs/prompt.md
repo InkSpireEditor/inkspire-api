@@ -561,6 +561,47 @@ may well be a reasoning one.
 Both roots serve it, unlike `titles.py`'s stories-only route — nothing about a completion
 needs a story, and the editor opens a note through the same component it opens a chapter in.
 
+## A fourth prompt: proposing a commit message (api#59)
+
+`POST /api/git/commit-message` answers one line for the commit dialog, from
+`INKSPIRE_LLM_SMALL_MODEL` with thinking off, through `LLMService.complete`. Its module is
+`commit_messages.py` and its template `templates/commit_message.j2`.
+
+The message names files, not events: `<Kind>: <what>`, where the kind is one of `Added`,
+`Updated`, `Fixup`, `Removed`, `Renamed` and `Reordered`, each described in the template with
+when it applies, and the template gives three examples (`Updated: chapter 4 of Example Story`,
+`Fixup: typos in chapter 2 of Example Story`, `Added: chapter 3 of Example Story, and updated
+chapter 2`). The list of kinds and the examples are edited in the template.
+
+What is sent is the index, since that is what `POST /api/git/commit` commits:
+
+- every staged path, from `git diff --cached -M --name-status`, with its state and a label
+  read from the scan: `chapter N of <story> (titled "<title>")` for a chapter, N its place in
+  `story.yaml`; `the one-shot "<title>"`; `the manifest of <story>`; the path itself for a
+  deleted file or a path outside every story;
+- then, in the same order, the unified diff of each `.ink` file's body (`activity.body_of` on
+  `HEAD:<path>` and `:<path>`) and of each `story.yaml`, one line of context. The `ink:meta`,
+  `ink:provenance` and `ink:context_summary` sections are never sent: an edited paragraph
+  changes its hash in the provenance, so a raw diff would be mostly hashes. Other paths have
+  no diff;
+- a diff that does not fit what is left of `INKSPIRE_LLM_PROMPT_BUDGET` is left out and its
+  path named under "Not shown:", and the next one is tried.
+
+The labels are there so the model can name a chapter as the writer does; the diffs are there
+so it can tell a `Fixup` (a few words changed) from an `Updated` (a paragraph written). The
+template also says that a manifest changes whenever a chapter is added, removed or moved, and
+is mentioned only when nothing else changed: without that sentence, the small model this was
+tried against named the manifest in every message of a commit that added a chapter.
+
+`previous` is the last proposal, sent by the dialog's dice button, and adds a paragraph asking
+for a different message, as `title.j2` does with the current title. The tags passed to
+`complete` are those of every staged `.ink` file, read from its header in the index, so a
+provider refusing one of them is sent none of the diffs. `clean_commit_message` keeps the
+first line that is not a code fence, strips a surrounding quote, a `Commit message:` prefix and
+a trailing full stop, and caps it at 120 characters; a line without a known kind is kept as
+answered, since the writer edits it before committing. `inkspire llm commit-message` runs the
+same assembly on the index of `INKSPIRE_DATA_ROOT`, `--show-prompt` printing the prompt.
+
 ## Providers that refuse a file's tags
 
 A provider in `config/providers.yaml` may list `refused_tags`. A file whose `ink:meta` carries
@@ -577,8 +618,10 @@ The callers read the tags from the scan entry they already look up:
 | `POST .../generate` | 403, before any chunk |
 | `POST /stories/file/{id}/title` | 403 |
 | `POST .../complete` | 403 |
+| `POST /git/commit-message` | 403, for a tag of any staged chapter |
 | the background context summary (`documents._schedule_summary`) | skipped without a message, before the account's summary budget is spent; `summaries.update` also logs and swallows a `RefusedProvider`, so one cannot escape the background task |
 | `inkspire llm generate`, `title`, `summary`, `complete` | exit non-zero with the same message, for a text whose header carries the tag |
+| `inkspire llm commit-message` | exits non-zero with the same message, for a tag of any staged chapter |
 | `inkspire ink maintenance --summaries` | the file is reported as skipped and counted in the summary line, and is not a failure |
 
 A dry run of `ink maintenance` does not know which model it would use, so it still lists a

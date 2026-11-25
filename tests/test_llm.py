@@ -68,6 +68,7 @@ CONTINUATION_PROMPTS: dict[str, dict[str, str]] = {
         "context_summary",
         "completion",
         "instruction",
+        "commit_message",
     )
 }
 FIM_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["fim"]
@@ -79,6 +80,9 @@ TITLE_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["title"]
 #: `completions.render_completion` rather than `prompt_lib.render` -- see
 #: test_completions.py (frontend#9).
 COMPLETION_PROMPTS: dict[str, dict[str, str]] = _PROMPTS["completion"]
+#: Pinned here, alongside every other prompt shape, but rendered by
+#: `commit_messages.render_commit_message` -- see test_commit_messages.py (api#59).
+COMMIT_MESSAGE_PROMPTS: dict[str, dict[str, Any]] = _PROMPTS["commit_message"]
 #: A single case (api#17): a continuation with a synopsis above it. One is enough
 #: to prove the new section renders correctly without disturbing the other nine --
 #: it is not a new prompt shape the way fim/rewrite/title each are.
@@ -931,19 +935,23 @@ def test_listing_defaults_requires_authentication(client: TestClient) -> None:
     assert client.get("/api/llm/defaults").status_code == 401
 
 
-def test_features_reports_title_and_summary_off_with_no_small_model(llm_client) -> None:
+def test_features_reports_the_small_model_features_off_with_no_small_model(llm_client) -> None:
     response = llm_client.get("/api/llm/features")
     assert response.status_code == 200
-    assert response.json() == {"title": False, "summary": False}
+    assert response.json() == {"title": False, "summary": False, "commit_message": False}
 
 
-def test_features_reports_title_and_summary_on_once_a_small_model_is_set(
+def test_features_reports_the_small_model_features_on_once_a_small_model_is_set(
     app, settings, logged_in
 ) -> None:
     app.dependency_overrides[get_settings] = lambda: settings.model_copy(
         update={"llm_small_model": "p/model"}
     )
-    assert logged_in.get("/api/llm/features").json() == {"title": True, "summary": True}
+    assert logged_in.get("/api/llm/features").json() == {
+        "title": True,
+        "summary": True,
+        "commit_message": True,
+    }
 
 
 def test_listing_features_requires_authentication(client: TestClient) -> None:

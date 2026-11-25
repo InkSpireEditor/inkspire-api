@@ -796,12 +796,16 @@ async def get_features(settings: SettingsDep) -> dict[str, bool]:
 
     Not a field on `/defaults`, which answers `GenerationOptions` -- a capability is
     not one generation's setting, and adding one here would change that pinned
-    response shape for something unrelated to it. `title` and `summary` are both on
-    once `INKSPIRE_LLM_SMALL_MODEL` is configured -- one setting governs both
-    features, so one condition answers both keys.
+    response shape for something unrelated to it. `title`, `summary` and
+    `commit_message` are all on once `INKSPIRE_LLM_SMALL_MODEL` is configured -- one
+    setting governs the three features, so one condition answers every key.
     """
     small_model_configured = settings.llm_small_model is not None
-    return {"title": small_model_configured, "summary": small_model_configured}
+    return {
+        "title": small_model_configured,
+        "summary": small_model_configured,
+        "commit_message": small_model_configured,
+    }
 
 
 def _stored_summary(section: str | None) -> str:

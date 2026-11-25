@@ -172,5 +172,83 @@
     "text": "The lantern outside the house had not been lit.",
     "instruction": "Make this more neutral.",
     "prompt": "You are a skilled writer helping out a fellow writer.\n\nContinue the text below. What you write is appended directly onto the end of it,\nwith nothing inserted in between, so your first character has to join on cleanly.\n\n- Never repeat, quote or restate any part of the existing text. Do not open by\n  echoing its last words, line or sentence. Start exactly where it stops.\n- If it breaks off mid-word or mid-sentence, finish that word or sentence first,\n  then carry on.\n- If its final sentence is complete but has no closing punctuation, write that\n  punctuation before anything else.\n- Begin with whatever joins on cleanly: no leading character when completing an\n  interrupted word, a single space when the text ends on a finished word, a\n  newline when what follows belongs on its own line, or a blank line when you\n  are starting a new paragraph.\n- Write plain text and Markdown only. Never emit HTML: break a line with a real\n  newline character, never with a <br> tag.\n- Match the existing voice, tense and formatting exactly, including any Markdown.\n  If the text is verse, keep the line breaks and metre of the lines above.\n- Write at most two sentences.\n- Output the continuation and nothing else: no preamble, no commentary, no\n  quotation marks around it.\n\nThe writer also asks: Make this more neutral.\n\nExisting text:\nThe lantern outside the house had not been lit."
+  },
+  "commit_message": {
+    "commit_message_example_1": {
+      "files": [
+        {
+          "path": "stories/example/chapters/02.ink",
+          "state": "modified",
+          "label": "chapter 2 of Example Story (titled \"The River\")",
+          "diff": "@@ -3 +3,3 @@\n He did not see her come in.\n+\n+Jane Doe left the forge at dawn, the guild's seal in her coat."
+        },
+        {
+          "path": "stories/example/chapters/03.ink",
+          "state": "added",
+          "label": "chapter 3 of Example Story (titled \"The Guild\")",
+          "diff": "@@ -0,0 +1 @@\n+The guild met in Example Town the next morning."
+        },
+        {
+          "path": "stories/example/story.yaml",
+          "state": "modified",
+          "label": "the manifest of Example Story",
+          "diff": "@@ -5,2 +5,3 @@\n - file: 02.ink\n+- file: 03.ink\n - file: 04.ink"
+        }
+      ],
+      "prompt": "You are helping a writer commit changes to the repository that holds their stories.\n\nPropose a commit message for the staged changes listed below. Write one line,\n\"<Kind>: <what>\", naming the files that changed rather than describing what\nhappens in the story.\n\nThe kinds are:\n- Added: a new chapter or one-shot\n- Updated: prose written or rewritten in an existing file\n- Fixup: small corrections: typos, punctuation, a word changed here and there\n- Removed: a chapter or one-shot deleted\n- Renamed: a file renamed, its prose unchanged\n- Reordered: only the chapter order in a story's manifest changed\n\nName a chapter as \"chapter N of <story>\", and say in a few words what was done to\nit when that is clear from its diff. For example:\n- Updated: chapter 4 of Example Story\n- Fixup: typos in chapter 2 of Example Story\n- Added: chapter 3 of Example Story, and updated chapter 2\n\nWhen the changes are of several kinds, start with the kind of the largest change\nand name the other files after it, as in the last example. A story's manifest\nchanges whenever a chapter is added, removed or moved: mention it only when\nnothing else changed.\n\n- Name each file as the list below labels it, never by its path.\n- Answer with the message alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives.\n- Write plain text on one line, with no full stop at the end.\n\nStaged changes:\n- modified stories/example/chapters/02.ink: chapter 2 of Example Story (titled \"The River\")\n- added stories/example/chapters/03.ink: chapter 3 of Example Story (titled \"The Guild\")\n- modified stories/example/story.yaml: the manifest of Example Story\n\nstories/example/chapters/02.ink\n@@ -3 +3,3 @@\n He did not see her come in.\n+\n+Jane Doe left the forge at dawn, the guild's seal in her coat.\n\nstories/example/chapters/03.ink\n@@ -0,0 +1 @@\n+The guild met in Example Town the next morning.\n\nstories/example/story.yaml\n@@ -5,2 +5,3 @@\n - file: 02.ink\n+- file: 03.ink\n - file: 04.ink"
+    },
+    "commit_message_example_2": {
+      "files": [
+        {
+          "path": "stories/example/chapters/04.ink",
+          "state": "modified",
+          "label": "chapter 4 of Example Story (titled \"The Seal\")",
+          "diff": "@@ -1 +1 @@\n-She turnd the seal over in her fingres.\n+She turned the seal over in her fingers."
+        }
+      ],
+      "prompt": "You are helping a writer commit changes to the repository that holds their stories.\n\nPropose a commit message for the staged changes listed below. Write one line,\n\"<Kind>: <what>\", naming the files that changed rather than describing what\nhappens in the story.\n\nThe kinds are:\n- Added: a new chapter or one-shot\n- Updated: prose written or rewritten in an existing file\n- Fixup: small corrections: typos, punctuation, a word changed here and there\n- Removed: a chapter or one-shot deleted\n- Renamed: a file renamed, its prose unchanged\n- Reordered: only the chapter order in a story's manifest changed\n\nName a chapter as \"chapter N of <story>\", and say in a few words what was done to\nit when that is clear from its diff. For example:\n- Updated: chapter 4 of Example Story\n- Fixup: typos in chapter 2 of Example Story\n- Added: chapter 3 of Example Story, and updated chapter 2\n\nWhen the changes are of several kinds, start with the kind of the largest change\nand name the other files after it, as in the last example. A story's manifest\nchanges whenever a chapter is added, removed or moved: mention it only when\nnothing else changed.\n\n- Name each file as the list below labels it, never by its path.\n- Answer with the message alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives.\n- Write plain text on one line, with no full stop at the end.\n\nStaged changes:\n- modified stories/example/chapters/04.ink: chapter 4 of Example Story (titled \"The Seal\")\n\nstories/example/chapters/04.ink\n@@ -1 +1 @@\n-She turnd the seal over in her fingres.\n+She turned the seal over in her fingers."
+    },
+    "commit_message_with_previous": {
+      "previous": "Fixup: chapter 4 of Example Story",
+      "files": [
+        {
+          "path": "stories/example/chapters/04.ink",
+          "state": "modified",
+          "label": "chapter 4 of Example Story (titled \"The Seal\")",
+          "diff": "@@ -1 +1 @@\n-She turnd the seal over in her fingres.\n+She turned the seal over in her fingers."
+        }
+      ],
+      "prompt": "You are helping a writer commit changes to the repository that holds their stories.\n\nPropose a commit message for the staged changes listed below. Write one line,\n\"<Kind>: <what>\", naming the files that changed rather than describing what\nhappens in the story.\n\nThe kinds are:\n- Added: a new chapter or one-shot\n- Updated: prose written or rewritten in an existing file\n- Fixup: small corrections: typos, punctuation, a word changed here and there\n- Removed: a chapter or one-shot deleted\n- Renamed: a file renamed, its prose unchanged\n- Reordered: only the chapter order in a story's manifest changed\n\nName a chapter as \"chapter N of <story>\", and say in a few words what was done to\nit when that is clear from its diff. For example:\n- Updated: chapter 4 of Example Story\n- Fixup: typos in chapter 2 of Example Story\n- Added: chapter 3 of Example Story, and updated chapter 2\n\nWhen the changes are of several kinds, start with the kind of the largest change\nand name the other files after it, as in the last example. A story's manifest\nchanges whenever a chapter is added, removed or moved: mention it only when\nnothing else changed.\n\nThe last proposal was \"Fixup: chapter 4 of Example Story\". Propose a different one: not a\nrewording of it.\n\n- Name each file as the list below labels it, never by its path.\n- Answer with the message alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives.\n- Write plain text on one line, with no full stop at the end.\n\nStaged changes:\n- modified stories/example/chapters/04.ink: chapter 4 of Example Story (titled \"The Seal\")\n\nstories/example/chapters/04.ink\n@@ -1 +1 @@\n-She turnd the seal over in her fingres.\n+She turned the seal over in her fingers."
+    },
+    "commit_message_rename_deletion_not_shown": {
+      "not_shown": [
+        "stories/example/chapters/03.ink"
+      ],
+      "files": [
+        {
+          "path": "stories/example/chapters/02-river.ink",
+          "old_path": "stories/example/chapters/02.ink",
+          "state": "renamed",
+          "label": "chapter 2 of Example Story (titled \"The River\")",
+          "diff": "@@ -3 +3,3 @@\n He did not see her come in.\n+\n+The bell rang a third time."
+        },
+        {
+          "path": "stories/example/chapters/03.ink",
+          "state": "modified",
+          "label": "chapter 3 of Example Story (titled \"The Guild\")"
+        },
+        {
+          "path": "stories/example/chapters/05.ink",
+          "state": "deleted",
+          "label": "stories/example/chapters/05.ink"
+        },
+        {
+          "path": "notes.txt",
+          "state": "added",
+          "label": "notes.txt"
+        }
+      ],
+      "prompt": "You are helping a writer commit changes to the repository that holds their stories.\n\nPropose a commit message for the staged changes listed below. Write one line,\n\"<Kind>: <what>\", naming the files that changed rather than describing what\nhappens in the story.\n\nThe kinds are:\n- Added: a new chapter or one-shot\n- Updated: prose written or rewritten in an existing file\n- Fixup: small corrections: typos, punctuation, a word changed here and there\n- Removed: a chapter or one-shot deleted\n- Renamed: a file renamed, its prose unchanged\n- Reordered: only the chapter order in a story's manifest changed\n\nName a chapter as \"chapter N of <story>\", and say in a few words what was done to\nit when that is clear from its diff. For example:\n- Updated: chapter 4 of Example Story\n- Fixup: typos in chapter 2 of Example Story\n- Added: chapter 3 of Example Story, and updated chapter 2\n\nWhen the changes are of several kinds, start with the kind of the largest change\nand name the other files after it, as in the last example. A story's manifest\nchanges whenever a chapter is added, removed or moved: mention it only when\nnothing else changed.\n\n- Name each file as the list below labels it, never by its path.\n- Answer with the message alone: no preamble, no commentary, no quotation marks\n  around it, and no alternatives.\n- Write plain text on one line, with no full stop at the end.\n\nStaged changes:\n- renamed stories/example/chapters/02.ink -> stories/example/chapters/02-river.ink: chapter 2 of Example Story (titled \"The River\")\n- modified stories/example/chapters/03.ink: chapter 3 of Example Story (titled \"The Guild\")\n- deleted stories/example/chapters/05.ink\n- added notes.txt\n\nstories/example/chapters/02-river.ink\n@@ -3 +3,3 @@\n He did not see her come in.\n+\n+The bell rang a third time.\n\nNot shown:\n- stories/example/chapters/03.ink"
+    }
   }
 }

@@ -1,0 +1,51 @@
+You are helping a writer commit changes to the repository that holds their stories.
+
+Propose a commit message for the staged changes listed below. Write one line,
+"<Kind>: <what>", naming the files that changed rather than describing what
+happens in the story.
+
+The kinds are:
+- Added: a new chapter or one-shot
+- Updated: prose written or rewritten in an existing file
+- Fixup: small corrections: typos, punctuation, a word changed here and there
+- Removed: a chapter or one-shot deleted
+- Renamed: a file renamed, its prose unchanged
+- Reordered: only the chapter order in a story's manifest changed
+
+Name a chapter as "chapter N of <story>", and say in a few words what was done to
+it when that is clear from its diff. For example:
+- Updated: chapter 4 of Example Story
+- Fixup: typos in chapter 2 of Example Story
+- Added: chapter 3 of Example Story, and updated chapter 2
+
+When the changes are of several kinds, start with the kind of the largest change
+and name the other files after it, as in the last example. A story's manifest
+changes whenever a chapter is added, removed or moved: mention it only when
+nothing else changed.
+{%- if ctx.previous %}
+
+The last proposal was "{{ ctx.previous }}". Propose a different one: not a
+rewording of it.
+{%- endif %}
+
+- Name each file as the list below labels it, never by its path.
+- Answer with the message alone: no preamble, no commentary, no quotation marks
+  around it, and no alternatives.
+- Write plain text on one line, with no full stop at the end.
+
+Staged changes:
+{%- for file in ctx.files %}
+- {{ file.state }} {% if file.old_path %}{{ file.old_path }} -> {% endif %}{{ file.path }}{% if file.label != file.path %}: {{ file.label }}{% endif %}
+{%- endfor %}
+{%- for file in ctx.files if file.diff %}
+
+{{ file.path }}
+{{ file.diff }}
+{%- endfor %}
+{%- if ctx.not_shown %}
+
+Not shown:
+{%- for path in ctx.not_shown %}
+- {{ path }}
+{%- endfor %}
+{%- endif %}

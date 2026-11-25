@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from . import (
     activity,
     auth,
+    commit_messages,
     completions,
     documents,
     files,
@@ -174,6 +175,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(completions.stories_router)
     api.include_router(completions.notes_router)
     api.include_router(repository.router)
+    api.include_router(commit_messages.router)
     api.include_router(repository.history_router)
     application.include_router(api)
     # Last, because its catch-all would answer any route registered after it.

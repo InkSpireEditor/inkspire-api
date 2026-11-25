@@ -1,8 +1,8 @@
 # Routes
 
-Every route the API serves, 50 in all, with what it takes, what it answers and how it fails. The
+Every route the API serves, 51 in all, with what it takes, what it answers and how it fails. The
 routers are in `inkspire_api/`: `main.py` (`/api/me`), `auth.py`, `files.py`, `documents.py`, `activity.py`, `llm.py`, `titles.py`,
-`completions.py`, `timelines.py`, `lore.py` and `repository.py`. This document lists what those
+`completions.py`, `timelines.py`, `lore.py`, `repository.py` and `commit_messages.py`. This document lists what those
 files declare, and `tests/test_routes_doc.py` fails if a route is added or removed without this
 document changing.
 
@@ -97,7 +97,7 @@ Under `/api/stories` only:
 |---|---|---|
 | `GET /api/llm/models` | | A list of `{"name": "<provider>/<model>", "protocol": "openai" or "ollama", "refused_tags": [<tags>]}`; `refused_tags` is the provider's own list, the tags of files it is never used for. A provider that cannot be reached contributes nothing, and is asked again at the next request. A provider's answer is held for an hour |
 | `GET /api/llm/defaults` | | The server's own generation settings: `temperature`, `prompt_budget`, `prefix_share`, `num_ctx`, `think`, `send_selection` |
-| `GET /api/llm/features` | | `{"title": bool, "summary": bool}`; both are `true` exactly when `INKSPIRE_LLM_SMALL_MODEL` is set |
+| `GET /api/llm/features` | | `{"title": bool, "summary": bool, "commit_message": bool}`; all three are `true` exactly when `INKSPIRE_LLM_SMALL_MODEL` is set |
 | `POST /api/stories/file/{file_id}/generate` | see below | `text/event-stream` |
 | `POST /api/notes/file/{file_id}/generate` | see below | `text/event-stream` |
 
@@ -151,6 +151,7 @@ pull, stage, unstage and reset share one non-blocking lock: a second one while t
 | `POST /api/git/unstage` | the same | The new status. Takes the selected staged changes out of the index and leaves the files as they are; a new file becomes untracked again. 409 when the selection has no staged change |
 | `POST /api/git/reset` | the same | The new status. Restores the selected files from the last commit, index and file both, and discards the edit for good. Only files the last commit has (state `modified` or `deleted`): a new file is left as it is. A restored deleted chapter is in the tree again. 409 when the selection has nothing of that kind |
 | `POST /api/git/commit` | `{"message"}` | The status, and `sha`, `message` and `committed`. Commits what is staged, as `git commit` does, so a path staged by hand in a shell goes in too. 409 when nothing is staged |
+| `POST /api/git/commit-message` | `{"previous"?}`, or no body | `{"message"}`: one line, `<Kind>: <what>`, naming the staged files, proposed by `INKSPIRE_LLM_SMALL_MODEL` from the list of staged paths and the diffs of their prose ([`prompt.md`](prompt.md)). `previous`, up to 120 characters, is the last proposal, to ask for a different one. Stages and commits nothing and takes no lock. 409 when no small model is set or nothing is staged, 403 when that model's provider refuses a tag of a staged chapter, 429 past the generation limit it shares, 500 when the provider fails, 502 when the answer holds nothing usable |
 | `POST /api/git/push` | | The new status. 409 without an upstream, or when the remote has commits the branch does not; 502 when the remote cannot be reached |
 | `POST /api/git/pull` | | The new status. Fast-forward only: 409 without an upstream or when the branch has diverged; 502 when the remote cannot be reached |
 

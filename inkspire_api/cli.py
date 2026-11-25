@@ -50,14 +50,24 @@ import typer
 from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from . import completions, context_summary, ink, prompt, provenance, repository, summaries, titles
+from . import (
+    commit_messages,
+    completions,
+    context_summary,
+    ink,
+    prompt,
+    provenance,
+    repository,
+    summaries,
+    titles,
+)
 from .db import get_sessionmaker
-from .fs import write_atomically
+from .fs import StorageError, write_atomically
 from .llm import LLMError, LLMService, RefusedProvider, UnknownModel
 from .models import MAX_EMAIL_LENGTH, RefreshToken, User, utcnow
 from .security import hash_password
 from .settings import SecretNotConfigured, Settings, get_settings
-from .storage import CHAPTER_SUFFIX
+from .storage import CHAPTER_SUFFIX, Scanner
 
 #: Bytes of randomness behind a generated password. Hex-encoded, so 24 characters.
 GENERATED_PASSWORD_BYTES = 12
@@ -737,6 +747,84 @@ def complete_command(
     cleaned = completions.clean_completion(raw)
     if not cleaned:
         fail("The model answered with nothing usable as a completion.")
+    typer.echo(cleaned)
+
+
+@llm_app.command("commit-message")
+def commit_message_command(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Model to ask, as listed by `llm models`. Left unset, "
+                "INKSPIRE_LLM_SMALL_MODEL applies -- the same model the API's "
+                "commit-message route uses."
+            ),
+        ),
+    ] = None,
+    *,
+    previous: Annotated[
+        str,
+        typer.Option(
+            "--previous",
+            help=(
+                "The last proposal, as the commit dialog's dice button sends, to ask "
+                "for a different one. Left unset, the prompt makes no mention of one."
+            ),
+        ),
+    ] = "",
+    show_prompt: Annotated[
+        bool,
+        typer.Option("--show-prompt", help="Print the rendered prompt and ask nothing."),
+    ] = False,
+) -> None:
+    """Propose a commit message for what is staged in the story repository.
+
+        inkspire llm commit-message
+        inkspire llm commit-message --show-prompt
+        inkspire llm commit-message --previous "Updated: chapter 2 of Example Story"
+
+    Reads the index of INKSPIRE_DATA_ROOT and wraps it in the prompt the API's
+    commit-message route sends (`commit_messages.py`). Always asks with thinking
+    disabled, as the route does. Output is the cleaned message alone; nothing is
+    committed.
+    """
+    settings = get_settings()
+    svc = service(think=False)
+    try:
+        with repository.open_repository(settings.data_root) as repo:
+            context = commit_messages.assemble_commit_message(
+                repo,
+                Scanner(settings.data_root),
+                budget=svc.defaults.prompt_budget,
+                previous=previous,
+            )
+            tags = commit_messages.staged_tags(repo)
+    except StorageError as error:
+        fail(str(error))
+        raise AssertionError from error  # unreachable: fail() exits
+    rendered = commit_messages.render_commit_message(context)
+
+    if show_prompt:
+        typer.echo(rendered)
+        return
+
+    chosen_model = model or settings.llm_small_model
+    if chosen_model is None:
+        fail("No model given and INKSPIRE_LLM_SMALL_MODEL is unset.")
+        raise AssertionError  # unreachable: fail() exits
+
+    try:
+        raw = asyncio.run(svc.complete(chosen_model, rendered, tags=tags))
+    except (UnknownModel, RefusedProvider, LLMError) as error:
+        fail(str(error))
+        raise AssertionError from error  # unreachable: fail() exits
+
+    cleaned = commit_messages.clean_commit_message(raw)
+    if not cleaned:
+        fail(commit_messages.NOTHING_USABLE)
     typer.echo(cleaned)
 
 
